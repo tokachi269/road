@@ -11,12 +11,32 @@ bl_info = {
 }
 
 import json
+import importlib
 from pathlib import Path
 
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup, UIList
 from bpy_extras.io_utils import ExportHelper, ImportHelper
+
+# Blender's Reload Scripts reloads this package, but Python otherwise keeps
+# package children cached. Reload the Blender-independent modules explicitly
+# even on the first reload from an older add-on version.
+from . import domain as _domain
+from . import geometry_plan as _geometry_plan
+
+importlib.reload(_domain)
+importlib.reload(_geometry_plan)
+
+from .domain import (
+    MODE_LENGTH,
+    NODE_SLICES,
+    SEGMENT_SLICES,
+    cross_section_widths,
+    expected_boundaries,
+    strip_id,
+)
+from .geometry_plan import plan_main_girders
 
 
 MODE_ITEMS = (
@@ -83,11 +103,6 @@ MODE_COLORS = {
     "slope": (0.18, 0.22, 0.27, 1.0),
     "tunnel": (0.10, 0.12, 0.15, 1.0),
 }
-MODE_LENGTH = 64.0
-SEGMENT_SLICES = 20
-NODE_SLICES = 8
-
-
 def _enum_value(value: str, available, fallback: str) -> str:
     normalized = value.upper().replace(" ", "_")
     compact = normalized.replace("_", "")
@@ -155,7 +170,17 @@ def _marking_material(mode: str, paint_width: float, region_width: float) -> bpy
     return material
 
 
-def _mesh_object(collection, name, vertices, faces, face_kinds, face_uvs, materials) -> bpy.types.Object:
+def _structure_material(mode: str) -> bpy.types.Material:
+    name = f"CS1 Road {mode.title()} Structure Preview"
+    material = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    material.diffuse_color = (0.34, 0.36, 0.38, 1.0)
+    return material
+
+
+def _mesh_object(
+    collection, name, vertices, faces, face_kinds, face_uvs, materials,
+    material_indices=None,
+) -> bpy.types.Object:
     mesh = bpy.data.meshes.new(f"{name}_mesh")
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
@@ -163,7 +188,7 @@ def _mesh_object(collection, name, vertices, faces, face_kinds, face_uvs, materi
     mesh_y_min = min(vertex.co.y for vertex in mesh.vertices)
     mesh_y_max = max(vertex.co.y for vertex in mesh.vertices)
     for polygon, kind, explicit_uvs in zip(mesh.polygons, face_kinds, face_uvs):
-        polygon.material_index = 1 if kind == "marking" else 0
+        polygon.material_index = (material_indices or {}).get(kind, 0)
         if explicit_uvs is not None:
             for loop_index, uv in zip(polygon.loop_indices, explicit_uvs):
                 uv_layer.data[loop_index].uv = uv
@@ -222,25 +247,34 @@ class _SurfaceMesh:
         self.face_kinds.append(kind)
         self.face_uvs.append(tuple(uvs) if uvs is not None else None)
 
-    def horizontal_strip(self, x_min, x_max, y_min, y_max, start_z, end_z, slices=1, flip=False) -> None:
+    def horizontal_strip(
+        self, x_min, x_max, y_min, y_max, start_z, end_z,
+        slices=1, flip=False, kind="surface",
+    ) -> None:
         for index in range(slices):
             t0, t1 = index / slices, (index + 1) / slices
             ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
             za, zb = start_z + (end_z - start_z) * t0, start_z + (end_z - start_z) * t1
             points = ((x_min, ya, za), (x_max, ya, za), (x_max, yb, zb), (x_min, yb, zb))
-            self.quad(*tuple(reversed(points)) if flip else points)
+            self.quad(*tuple(reversed(points)) if flip else points, kind=kind)
 
-    def vertical_strip(self, x, y_min, y_max, start_bottom, end_bottom, start_top, end_top, flip=False, slices=1) -> None:
+    def vertical_strip(
+        self, x, y_min, y_max, start_bottom, end_bottom, start_top, end_top,
+        flip=False, slices=1, kind="surface",
+    ) -> None:
         for index in range(slices):
             t0, t1 = index / slices, (index + 1) / slices
             ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
             ba, bb = start_bottom + (end_bottom - start_bottom) * t0, start_bottom + (end_bottom - start_bottom) * t1
             ta, tb = start_top + (end_top - start_top) * t0, start_top + (end_top - start_top) * t1
             points = ((x, ya, ba), (x, yb, bb), (x, yb, tb), (x, ya, ta))
-            self.quad(*tuple(reversed(points)) if flip else points)
+            self.quad(*tuple(reversed(points)) if flip else points, kind=kind)
 
-    def create(self, collection, name, materials) -> bpy.types.Object:
-        return _mesh_object(collection, name, self.vertices, self.faces, self.face_kinds, self.face_uvs, materials)
+    def create(self, collection, name, materials, material_indices=None) -> bpy.types.Object:
+        return _mesh_object(
+            collection, name, self.vertices, self.faces, self.face_kinds,
+            self.face_uvs, materials, material_indices,
+        )
 
 
 def _marking_layout(props) -> tuple[list[float], list[float]]:
@@ -371,16 +405,120 @@ def _add_cross_section_top(
             )
 
 
-def _add_deck_structure(mesh, half_width, y_min, y_max, start_z, end_z, depth, slices) -> None:
-    mesh.horizontal_strip(-half_width, half_width, y_min, y_max, start_z - depth, end_z - depth, slices, flip=True)
-    mesh.vertical_strip(-half_width, y_min, y_max, start_z - depth, end_z - depth, start_z, end_z, flip=True, slices=slices)
-    mesh.vertical_strip(half_width, y_min, y_max, start_z - depth, end_z - depth, start_z, end_z, slices=slices)
+def _add_structure_bottom_region(
+    mesh, x_min, x_max, half_width, y_min, y_max, start_z, end_z, slices,
+) -> None:
+    for index in range(slices):
+        t0, t1 = index / slices, (index + 1) / slices
+        ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
+        za, zb = start_z + (end_z - start_z) * t0, start_z + (end_z - start_z) * t1
+        u0 = (x_min + half_width) / (2.0 * half_width)
+        u1 = (x_max + half_width) / (2.0 * half_width)
+        mesh.quad(
+            (x_min, yb, zb), (x_max, yb, zb),
+            (x_max, ya, za), (x_min, ya, za),
+            kind="structure",
+            uvs=((u0, t1), (u1, t1), (u1, t0), (u0, t0)),
+        )
+
+
+def _girder_profile(layout, center_x, top_z):
+    half_width = layout.width * 0.5
+    bottom_z = top_z - layout.depth
+    return (
+        (center_x - half_width, top_z),
+        (center_x - half_width, bottom_z),
+        (center_x + half_width, bottom_z),
+        (center_x + half_width, top_z),
+    )
+
+
+def _add_open_profile_extrusion(
+    mesh, start_profile, end_profile, y_min, y_max, slices,
+) -> None:
+    edge_lengths = [
+        ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
+        for a, b in zip(start_profile, start_profile[1:])
+    ]
+    perimeter = max(sum(edge_lengths), 1e-8)
+    u_values = [0.0]
+    for length in edge_lengths:
+        u_values.append(u_values[-1] + length / perimeter)
+
+    for edge_index in range(len(start_profile) - 1):
+        for slice_index in range(slices):
+            t0, t1 = slice_index / slices, (slice_index + 1) / slices
+            ya = y_min + (y_max - y_min) * t0
+            yb = y_min + (y_max - y_min) * t1
+            start_a, start_b = start_profile[edge_index], start_profile[edge_index + 1]
+            end_a, end_b = end_profile[edge_index], end_profile[edge_index + 1]
+            a0 = (start_a[0], ya, start_a[1] + (end_a[1] - start_a[1]) * t0)
+            a1 = (start_a[0], yb, start_a[1] + (end_a[1] - start_a[1]) * t1)
+            b1 = (start_b[0], yb, start_b[1] + (end_b[1] - start_b[1]) * t1)
+            b0 = (start_b[0], ya, start_b[1] + (end_b[1] - start_b[1]) * t0)
+            u0, u1 = u_values[edge_index], u_values[edge_index + 1]
+            mesh.quad(
+                a0, a1, b1, b0,
+                kind="structure",
+                uvs=((u0, t0), (u0, t1), (u1, t1), (u1, t0)),
+            )
+
+
+def _add_deck_structure(
+    mesh, half_width, y_min, y_max, start_z, end_z, depth, slices,
+    girder_layout=None,
+) -> None:
+    underside_start = start_z - depth
+    underside_end = end_z - depth
+    cutouts = []
+    if girder_layout is not None:
+        cutouts = [
+            (
+                center - girder_layout.width * 0.5,
+                center + girder_layout.width * 0.5,
+            )
+            for center in girder_layout.centers
+        ]
+
+    cursor = -half_width
+    for cutout_start, cutout_end in cutouts:
+        if cutout_start > cursor + 1e-8:
+            _add_structure_bottom_region(
+                mesh, cursor, cutout_start, half_width, y_min, y_max,
+                underside_start, underside_end, slices,
+            )
+        cursor = max(cursor, cutout_end)
+    if cursor < half_width - 1e-8:
+        _add_structure_bottom_region(
+            mesh, cursor, half_width, half_width, y_min, y_max,
+            underside_start, underside_end, slices,
+        )
+
+    mesh.vertical_strip(
+        -half_width, y_min, y_max, underside_start, underside_end,
+        start_z, end_z, flip=True, slices=slices, kind="structure",
+    )
+    mesh.vertical_strip(
+        half_width, y_min, y_max, underside_start, underside_end,
+        start_z, end_z, slices=slices, kind="structure",
+    )
+
+    if girder_layout is not None:
+        for center in girder_layout.centers:
+            _add_open_profile_extrusion(
+                mesh,
+                _girder_profile(girder_layout, center, underside_start),
+                _girder_profile(girder_layout, center, underside_end),
+                y_min,
+                y_max,
+                slices,
+            )
 
 
 def _add_tunnel_envelope(mesh, half_width, y_min, y_max, side_z, roof_z, slices) -> None:
-    mesh.vertical_strip(-half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, slices=slices)
-    mesh.vertical_strip(half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, flip=True, slices=slices)
-    mesh.horizontal_strip(-half_width, half_width, y_min, y_max, roof_z, roof_z, slices, flip=True)
+    mesh.vertical_strip(-half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, slices=slices, kind="structure")
+    mesh.vertical_strip(half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, flip=True, slices=slices, kind="structure")
+    mesh.horizontal_strip(-half_width, half_width, y_min, y_max, roof_z, roof_z, slices, flip=True, kind="structure")
 
 
 def _add_default_lanes(props) -> None:
@@ -421,44 +559,11 @@ def _ensure_lane_ids(props) -> None:
 
 
 def _strip_id(lane) -> str:
-    if lane.zone == "LEFT_SIDEWALK":
-        return "strip-left-sidewalk"
-    if lane.zone == "RIGHT_SIDEWALK":
-        return "strip-right-sidewalk"
-    return f"strip-{lane.lane_id}"
+    return strip_id(lane)
 
 
 def _expected_boundaries(props):
-    road_lanes = [lane for lane in props.lanes if lane.zone == "ROAD"]
-    if not road_lanes:
-        return []
-    expected = []
-    left_road_strip, right_road_strip = _strip_id(road_lanes[0]), _strip_id(road_lanes[-1])
-    if props.shoulder_width > 1e-8:
-        expected.extend((
-            ("boundary-left-curb", "Left curb", "CURB", "strip-left-sidewalk", "strip-left-shoulder", False, "CARRIAGEWAY_EDGE"),
-            ("boundary-left-carriageway", "Left roadside line", "CARRIAGEWAY_EDGE", "strip-left-shoulder", left_road_strip, True, "CARRIAGEWAY_EDGE"),
-        ))
-    else:
-        expected.append((
-            "boundary-left-curb", "Left curb / roadside", "CURB", "strip-left-sidewalk", left_road_strip, True, "CARRIAGEWAY_EDGE",
-        ))
-    for left, right in zip(road_lanes, road_lanes[1:]):
-        marking_role = "CENTER_LINE" if left.direction != right.direction else "LANE_SEPARATOR"
-        expected.append((
-            f"boundary-{left.lane_id}-{right.lane_id}", f"{left.name} / {right.name}", "LANE_DIVIDER",
-            _strip_id(left), _strip_id(right), True, marking_role,
-        ))
-    if props.shoulder_width > 1e-8:
-        expected.extend((
-            ("boundary-right-carriageway", "Right roadside line", "CARRIAGEWAY_EDGE", right_road_strip, "strip-right-shoulder", True, "CARRIAGEWAY_EDGE"),
-            ("boundary-right-curb", "Right curb", "CURB", "strip-right-shoulder", "strip-right-sidewalk", False, "CARRIAGEWAY_EDGE"),
-        ))
-    else:
-        expected.append((
-            "boundary-right-curb", "Right curb / roadside", "CURB", right_road_strip, "strip-right-sidewalk", True, "CARRIAGEWAY_EDGE",
-        ))
-    return expected
+    return expected_boundaries(props.lanes, props.shoulder_width)
 
 
 def _sync_boundaries(props, legacy_edge_lines=None, legacy_lane_lines=None) -> None:
@@ -499,14 +604,10 @@ def _initialize_scene_lanes():
     return None
 
 
-def _road_lane_width(props) -> float:
-    return max(sum(lane.width for lane in props.lanes if lane.zone == "ROAD"), 0.01)
-
-
 def _cross_section(props) -> tuple[float, float, float]:
-    roadway_width = _road_lane_width(props) + 2.0 * props.shoulder_width
-    total_width = roadway_width + 2.0 * props.sidewalk_width
-    return roadway_width, total_width, total_width * 0.5
+    return cross_section_widths(
+        props.lanes, props.shoulder_width, props.sidewalk_width
+    )
 
 
 def _lane_positions(props):
@@ -531,6 +632,7 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
     _clear_collection(collection)
     material = _material(mode)
     marking_material = _marking_material(mode, props.marking_paint_width, props.marking_region_width)
+    structure_material = _structure_material(mode)
     roadway_width, _, total_half = _cross_section(props)
     road_half = roadway_width * 0.5
     segment_markings, edge_centers = _marking_layout(props)
@@ -541,6 +643,7 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
     props.half_width = total_half
     y_min, y_max = -MODE_LENGTH * 0.5, MODE_LENGTH * 0.5
     segment_mesh, node_mesh = _SurfaceMesh(), _SurfaceMesh()
+    girder_layout = None
 
     if mode == "basic":
         segment_z = 0.0 if props.surface_profile == "FLUSH" else -props.curb_height
@@ -550,15 +653,17 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
         _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, far_z, 0.0, 0.0, True, NODE_SLICES)
     elif mode == "elevated":
         road_z, side_z = props.elevated_height, props.elevated_height + curb_rise
+        girder_layout = plan_main_girders(total_half * 2.0)
         _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES)
         _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES)
-        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, SEGMENT_SLICES)
+        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, SEGMENT_SLICES, girder_layout)
         _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, NODE_SLICES)
     elif mode == "bridge":
         road_z, side_z = props.bridge_height, props.bridge_height + curb_rise
+        girder_layout = plan_main_girders(total_half * 2.0)
         _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES)
         _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES)
-        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, SEGMENT_SLICES)
+        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, SEGMENT_SLICES, girder_layout)
         _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, NODE_SLICES)
     elif mode == "slope":
         road_start, road_end = 0.0, -props.tunnel_depth
@@ -575,14 +680,35 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
         _add_tunnel_envelope(segment_mesh, total_half, y_min, y_max, side_z, roof_z, SEGMENT_SLICES)
         _add_tunnel_envelope(node_mesh, total_half, y_min, y_max, side_z, roof_z, NODE_SLICES)
 
-    segment = segment_mesh.create(collection, f"{mode}_segment", (material, marking_material))
-    node = node_mesh.create(collection, f"{mode}_node", (material,))
+    segment_materials = (material, marking_material)
+    segment_indices = {"marking": 1}
+    node_materials = (material,)
+    node_indices = {}
+    if mode != "basic":
+        segment_materials += (structure_material,)
+        segment_indices["structure"] = 2
+        node_materials += (structure_material,)
+        node_indices["structure"] = 1
+    segment = segment_mesh.create(
+        collection, f"{mode}_segment", segment_materials, segment_indices,
+    )
+    node = node_mesh.create(
+        collection, f"{mode}_node", node_materials, node_indices,
+    )
     segment.location.y, node.location.y = -MODE_LENGTH * 0.5, MODE_LENGTH * 0.5
     for obj, part in ((segment, "segment"), (node, "node")):
         obj["cs1_road_mode"], obj["cs1_road_name"], obj["cs1_road_part"] = mode, props.road_name, part
         obj["cs1_local_length"] = MODE_LENGTH
         obj["cs1_longitudinal_slices"] = SEGMENT_SLICES if part == "segment" else NODE_SLICES
     node["cs1_center_split"] = True
+    if girder_layout is not None:
+        segment["cs1_geometry_groups"] = "surface,deck,fascia,girder"
+        segment["cs1_girder_count"] = girder_layout.count
+        segment["cs1_girder_centers"] = list(girder_layout.centers)
+        segment["cs1_girder_spacing"] = girder_layout.spacing
+        segment["cs1_girder_outer_offset"] = girder_layout.outer_offset
+        segment["cs1_girder_reference_span"] = girder_layout.reference_span
+        segment["cs1_girder_standard"] = girder_layout.standard_name
     return [segment, node]
 
 
@@ -1002,8 +1128,18 @@ class CS1ROAD_PT_main(Panel):
         mode_box.label(text="Active mode only")
         if props.mode == "elevated":
             mode_box.prop(props, "elevated_height"); mode_box.prop(props, "deck_depth")
+            _, total_width, _ = _cross_section(props)
+            girders = plan_main_girders(total_width)
+            mode_box.label(text=f"JIS PC compo: {girders.count} girders / {girders.spacing:.1f} m centers")
+            mode_box.label(text=f"35 m reference: 0.70 x {girders.depth:.2f} m rectangle")
+            mode_box.label(text=f"Edge offset: {girders.outer_offset:.2f} m")
         elif props.mode == "bridge":
             mode_box.prop(props, "bridge_height"); mode_box.prop(props, "bridge_deck_depth")
+            _, total_width, _ = _cross_section(props)
+            girders = plan_main_girders(total_width)
+            mode_box.label(text=f"JIS PC compo: {girders.count} girders / {girders.spacing:.1f} m centers")
+            mode_box.label(text=f"35 m reference: 0.70 x {girders.depth:.2f} m rectangle")
+            mode_box.label(text=f"Edge offset: {girders.outer_offset:.2f} m")
         elif props.mode in {"slope", "tunnel"}:
             mode_box.prop(props, "tunnel_depth")
             if props.mode == "tunnel":

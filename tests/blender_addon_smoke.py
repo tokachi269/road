@@ -154,6 +154,15 @@ road_builder.build_mode(bpy.context.scene, "basic")
 
 elevated_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["elevated_segment"].data.vertices}
 assert 8.0 in elevated_z and 8.2 in elevated_z, elevated_z
+elevated_segment = bpy.data.objects["elevated_segment"]
+assert elevated_segment["cs1_girder_count"] == 6
+assert elevated_segment["cs1_geometry_groups"] == "surface,deck,fascia,girder"
+assert len(elevated_segment["cs1_girder_centers"]) == 6
+assert elevated_segment["cs1_girder_spacing"] == 3.8
+assert elevated_segment["cs1_girder_reference_span"] == 35.0
+assert len(elevated_segment.data.materials) == 3
+assert sum(polygon.material_index == 2 for polygon in elevated_segment.data.polygons) > 0
+assert min(elevated_z) < 7.4
 tunnel_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["tunnel_segment"].data.vertices}
 assert -12.0 in tunnel_z and -11.8 in tunnel_z and -7.0 in tunnel_z, tunnel_z
 
@@ -196,6 +205,22 @@ assert props.lanes[2].direction == "FORWARD"
 
 panel = type("FakePanel", (), {"layout": FakeLayout()})()
 road_builder.CS1ROAD_PT_main.draw(panel, bpy.context)
+
+# Match Blender's F3 > Reload Scripts lifecycle. The package must refresh its
+# child modules and register cleanly again without restarting Blender.
+road_builder.unregister()
+road_builder = importlib.reload(road_builder)
+road_builder.register()
+road_builder._initialize_scene_lanes()
+reloaded_props = bpy.context.scene.cs1_road_builder
+assert reloaded_props is not None
+road_builder.build_mode(bpy.context.scene, "elevated")
+_, reloaded_total_width, _ = road_builder._cross_section(reloaded_props)
+reloaded_layout = road_builder.plan_main_girders(reloaded_total_width)
+assert (
+    bpy.data.objects["elevated_segment"]["cs1_girder_spacing"]
+    == reloaded_layout.spacing
+)
 
 output = ROOT / "build" / "smoke" / "road-builder-addon-smoke.blend"
 output.parent.mkdir(parents=True, exist_ok=True)

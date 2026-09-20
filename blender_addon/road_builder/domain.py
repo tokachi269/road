@@ -1,0 +1,148 @@
+"""Blender-independent derivation used by the current road prototype.
+
+This isolates behavior that already existed in the Blender add-on. It does not
+declare the current persisted schema to be the final product model.
+"""
+
+from __future__ import annotations
+
+from typing import Iterable, Protocol
+
+
+MODE_LENGTH = 64.0
+SEGMENT_SLICES = 20
+NODE_SLICES = 8
+
+
+class LaneLike(Protocol):
+    lane_id: str
+    name: str
+    zone: str
+    width: float
+    direction: str
+
+
+def strip_id(lane: LaneLike) -> str:
+    if lane.zone == "LEFT_SIDEWALK":
+        return "strip-left-sidewalk"
+    if lane.zone == "RIGHT_SIDEWALK":
+        return "strip-right-sidewalk"
+    return f"strip-{lane.lane_id}"
+
+
+def expected_boundaries(
+    lanes: Iterable[LaneLike], shoulder_width: float
+) -> list[tuple[str, str, str, str, str, bool, str]]:
+    """Derive stable boundary identities and default marking roles.
+
+    The current prototype derives boundary identity from adjacent lane IDs.
+    Whether this becomes the final persisted contract remains a design choice.
+    """
+    road_lanes = [lane for lane in lanes if lane.zone == "ROAD"]
+    if not road_lanes:
+        return []
+
+    expected: list[tuple[str, str, str, str, str, bool, str]] = []
+    left_road_strip = strip_id(road_lanes[0])
+    right_road_strip = strip_id(road_lanes[-1])
+    if shoulder_width > 1e-8:
+        expected.extend(
+            (
+                (
+                    "boundary-left-curb",
+                    "Left curb",
+                    "CURB",
+                    "strip-left-sidewalk",
+                    "strip-left-shoulder",
+                    False,
+                    "CARRIAGEWAY_EDGE",
+                ),
+                (
+                    "boundary-left-carriageway",
+                    "Left roadside line",
+                    "CARRIAGEWAY_EDGE",
+                    "strip-left-shoulder",
+                    left_road_strip,
+                    True,
+                    "CARRIAGEWAY_EDGE",
+                ),
+            )
+        )
+    else:
+        expected.append(
+            (
+                "boundary-left-curb",
+                "Left curb / roadside",
+                "CURB",
+                "strip-left-sidewalk",
+                left_road_strip,
+                True,
+                "CARRIAGEWAY_EDGE",
+            )
+        )
+
+    for left, right in zip(road_lanes, road_lanes[1:]):
+        marking_role = (
+            "CENTER_LINE"
+            if left.direction != right.direction
+            else "LANE_SEPARATOR"
+        )
+        expected.append(
+            (
+                f"boundary-{left.lane_id}-{right.lane_id}",
+                f"{left.name} / {right.name}",
+                "LANE_DIVIDER",
+                strip_id(left),
+                strip_id(right),
+                True,
+                marking_role,
+            )
+        )
+
+    if shoulder_width > 1e-8:
+        expected.extend(
+            (
+                (
+                    "boundary-right-carriageway",
+                    "Right roadside line",
+                    "CARRIAGEWAY_EDGE",
+                    right_road_strip,
+                    "strip-right-shoulder",
+                    True,
+                    "CARRIAGEWAY_EDGE",
+                ),
+                (
+                    "boundary-right-curb",
+                    "Right curb",
+                    "CURB",
+                    "strip-right-shoulder",
+                    "strip-right-sidewalk",
+                    False,
+                    "CARRIAGEWAY_EDGE",
+                ),
+            )
+        )
+    else:
+        expected.append(
+            (
+                "boundary-right-curb",
+                "Right curb / roadside",
+                "CURB",
+                right_road_strip,
+                "strip-right-sidewalk",
+                True,
+                "CARRIAGEWAY_EDGE",
+            )
+        )
+    return expected
+
+
+def cross_section_widths(
+    lanes: Iterable[LaneLike], shoulder_width: float, sidewalk_width: float
+) -> tuple[float, float, float]:
+    road_lane_width = max(
+        sum(lane.width for lane in lanes if lane.zone == "ROAD"), 0.01
+    )
+    roadway_width = road_lane_width + 2.0 * shoulder_width
+    total_width = roadway_width + 2.0 * sidewalk_width
+    return roadway_width, total_width, total_width * 0.5

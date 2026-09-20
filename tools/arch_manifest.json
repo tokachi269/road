@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "scan": {
+    "roots": [
+      "blender_addon",
+      "generator",
+      "tests",
+      "tools",
+      "scripts",
+      "src/RoadImporter"
+    ],
+    "extensions": [".py", ".ps1", ".cs"],
+    "exclude_patterns": [
+      "**/__pycache__/**",
+      "src/RoadImporter/bin/**",
+      "src/RoadImporter/obj/**"
+    ]
+  },
+  "layers": [
+    {
+      "name": "road_domain",
+      "patterns": [
+        "blender_addon/road_builder/domain.py",
+        "blender_addon/road_builder/geometry_plan.py"
+      ],
+      "forbidden_tokens": ["import bpy", "from bpy", "bpy.", "System.Collections", "UnityEngine"]
+    },
+    {
+      "name": "blender_adapter",
+      "patterns": ["blender_addon/road_builder/__init__.py", "generator/*.py"],
+      "forbidden_tokens": ["src/RoadImporter"]
+    },
+    {
+      "name": "verification",
+      "patterns": ["tests/*.py", "tests/**/*.py"],
+      "forbidden_tokens": []
+    },
+    {
+      "name": "architecture_tools",
+      "patterns": ["tools/*.py", "tools/harness/*.py", "tools/harness/__init__.py"],
+      "forbidden_tokens": ["import bpy", "from bpy"]
+    },
+    {
+      "name": "automation",
+      "patterns": ["scripts/*.ps1", "scripts/*.py"],
+      "forbidden_tokens": []
+    },
+    {
+      "name": "road_importer",
+      "patterns": ["src/RoadImporter/*.cs", "src/RoadImporter/**/*.cs"],
+      "forbidden_tokens": ["import bpy", "from bpy"]
+    }
+  ]
+}
