@@ -1,0 +1,11 @@
+build/
+dist/
+*.user
+*.suo
+*.pdb
+*.cache
+**/bin/
+**/obj/
+__pycache__/
+*.pyc
+

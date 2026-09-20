@@ -1,0 +1,6 @@
+[submodule "references/RoadImporter"]
+	path = references/RoadImporter
+	url = https://github.com/citiesskylines-csur/RoadImporter.git
+[submodule "references/CSUR"]
+	path = references/CSUR
+	url = https://github.com/citiesskylines-csur/CSUR.git

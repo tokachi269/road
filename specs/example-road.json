@@ -1,0 +1,58 @@
+{
+  "schema_version": 3,
+  "name": "Example Road",
+  "shared_geometry": {
+    "segment_length": 64.0,
+    "node_length": 64.0,
+    "segment_slices": 20,
+    "node_slices": 8,
+    "curb_height": 0.15,
+    "surface_profile": "DEPRESSED"
+  },
+  "styles": {
+    "markings": {
+      "SOLID_WHITE": {
+        "paint_width": 0.15,
+        "region_width": 0.4,
+        "texture_tile": "solid_white"
+      }
+    }
+  },
+  "layout": {
+    "alignment_offset_from_left": 6.0,
+    "strips": [
+      {"id": "strip-left-sidewalk", "function": "SIDEWALK", "width": 2.5, "surface_style": "SIDEWALK"},
+      {"id": "strip-left-shoulder", "function": "SHOULDER", "width": 0.5, "surface_style": "ASPHALT"},
+      {"id": "strip-lane-backward-1", "function": "CARRIAGEWAY", "width": 3.0, "surface_style": "ASPHALT"},
+      {"id": "strip-lane-forward-1", "function": "CARRIAGEWAY", "width": 3.0, "surface_style": "ASPHALT"},
+      {"id": "strip-right-shoulder", "function": "SHOULDER", "width": 0.5, "surface_style": "ASPHALT"},
+      {"id": "strip-right-sidewalk", "function": "SIDEWALK", "width": 2.5, "surface_style": "SIDEWALK"}
+    ],
+    "boundaries": [
+      {"id": "boundary-left-curb", "role": "CURB", "left_strip_id": "strip-left-sidewalk", "right_strip_id": "strip-left-shoulder", "profile_id": "CURB", "marking": null},
+      {"id": "boundary-left-carriageway", "role": "CARRIAGEWAY_EDGE", "left_strip_id": "strip-left-shoulder", "right_strip_id": "strip-lane-backward-1", "profile_id": "FLAT", "marking": {"role": "CARRIAGEWAY_EDGE", "style_id": "SOLID_WHITE", "placement": "CENTER"}},
+      {"id": "boundary-lane-backward-1-lane-forward-1", "role": "LANE_DIVIDER", "left_strip_id": "strip-lane-backward-1", "right_strip_id": "strip-lane-forward-1", "profile_id": "FLAT", "marking": {"role": "CENTER_LINE", "style_id": "SOLID_WHITE", "placement": "CENTER"}},
+      {"id": "boundary-right-carriageway", "role": "CARRIAGEWAY_EDGE", "left_strip_id": "strip-lane-forward-1", "right_strip_id": "strip-right-shoulder", "profile_id": "FLAT", "marking": {"role": "CARRIAGEWAY_EDGE", "style_id": "SOLID_WHITE", "placement": "CENTER"}},
+      {"id": "boundary-right-curb", "role": "CURB", "left_strip_id": "strip-right-shoulder", "right_strip_id": "strip-right-sidewalk", "profile_id": "CURB", "marking": null}
+    ]
+  },
+  "node": {
+    "length": 64.0,
+    "center_split": true,
+    "shoulder_bands": false,
+    "transition_target": "FLUSH"
+  },
+  "lanes": [
+    {"id": "lane-left-sidewalk", "name": "Left sidewalk", "zone": "LEFT_SIDEWALK", "surface_strip_id": "strip-left-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "speed_limit": 0.1, "vertical_offset": 0.15, "stop_offset": 0.0, "allow_connect": true},
+    {"id": "lane-backward-1", "name": "Backward 1", "zone": "ROAD", "surface_strip_id": "strip-lane-backward-1", "lateral_start": 0.0, "lateral_end": 3.0, "direction": "BACKWARD", "lane_type": "VEHICLE", "vehicle_type": "CAR", "speed_limit": 1.0, "vertical_offset": 0.0, "stop_offset": 0.0, "allow_connect": true},
+    {"id": "lane-forward-1", "name": "Forward 1", "zone": "ROAD", "surface_strip_id": "strip-lane-forward-1", "lateral_start": 0.0, "lateral_end": 3.0, "direction": "FORWARD", "lane_type": "VEHICLE", "vehicle_type": "CAR", "speed_limit": 1.0, "vertical_offset": 0.0, "stop_offset": 0.0, "allow_connect": true},
+    {"id": "lane-right-sidewalk", "name": "Right sidewalk", "zone": "RIGHT_SIDEWALK", "surface_strip_id": "strip-right-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "speed_limit": 0.1, "vertical_offset": 0.15, "stop_offset": 0.0, "allow_connect": true}
+  ],
+  "modes": {
+    "basic": {"shader": "Custom/Net/Road"},
+    "elevated": {"height": 8.0, "deck_depth": 1.0, "shader": "Custom/Net/RoadBridge"},
+    "bridge": {"height": 12.0, "deck_depth": 1.5, "pillar": null, "shader": "Custom/Net/RoadBridge"},
+    "slope": {"tunnel_depth": 12.0, "shader": "Custom/Net/RoadBridge"},
+    "tunnel": {"depth": 12.0, "clearance_height": 5.0, "shader": "Custom/Net/RoadBridge"}
+  }
+}
