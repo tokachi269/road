@@ -73,7 +73,7 @@ Blenderを通常起動し、3D Viewで`N`キーを押し、`Road`タブを開き
 
 `Build active mode`または`Build all modes`で専用コレクションへ生成します。生成物は通常のMeshなので、生成後はEdit Mode、Modifier、Materialで直接編集できます。同じモードを再生成すると、そのモードの専用コレクション内だけが置き換わります。
 
-アドオンのPythonを変更した場合、Blenderの再起動は不要です。`F3`で`Reload Scripts`を実行すると`domain.py`と`geometry_plan.py`を含めて再読込されます。コード反映後の形状は自動更新されないため、`Build active mode`または`Build all modes`で再生成します。
+アドオンのPythonを変更した場合、Blenderの再起動は不要です。Roadサイドバー下部の`Development > Reload Scripts`ボタンで`domain.py`と`geometry_plan.py`を含めて再読込できます。コード反映後の形状は自動更新されないため、`Build active mode`または`Build all modes`で再生成します。
 
 ### Elevatedのカスタム端部Mesh
 

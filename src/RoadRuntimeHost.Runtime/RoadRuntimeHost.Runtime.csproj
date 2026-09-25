@@ -10,7 +10,7 @@
     <AssemblyName>RoadRuntimeHost.Runtime</AssemblyName>
     <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
-    <Deterministic>true</Deterministic>
+    <Deterministic>false</Deterministic>
     <NoWarn>0649</NoWarn>
     <CitiesSkylinesManagedDir Condition="'$(CitiesSkylinesManagedDir)' == ''">C:\Program Files (x86)\SteamLibrary\steamapps\common\Cities_Skylines\Cities_Data\Managed</CitiesSkylinesManagedDir>
   </PropertyGroup>
@@ -27,8 +27,6 @@
     <Reference Include="ColossalManaged"><HintPath>$(CitiesSkylinesManagedDir)\ColossalManaged.dll</HintPath></Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
-    <Reference Include="System.Runtime.Serialization" />
-    <Reference Include="System.ServiceModel.Web" />
     <Reference Include="System.Xml" />
     <Reference Include="UnityEngine"><HintPath>$(CitiesSkylinesManagedDir)\UnityEngine.dll</HintPath></Reference>
   </ItemGroup>
@@ -36,6 +34,7 @@
     <Compile Include="BundleModels.cs" />
     <Compile Include="DiagnosticLog.cs" />
     <Compile Include="JsonFiles.cs" />
+    <Compile Include="LaneContractValidator.cs" />
     <Compile Include="PrefabUpdater.cs" />
     <Compile Include="RuntimeEntry.cs" />
     <Compile Include="TestLayoutManager.cs" />

@@ -41,10 +41,35 @@ def create_elevated_edge_source(name, bottom_x, fence_x):
     return obj
 
 
+def create_centered_unsplit_edge_source(name):
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    mesh.from_pydata(
+        (
+            (0.0000015, -32.0, 0.75),
+            (0.0000015, 32.0, 0.75),
+            (0.0000015, 32.0, -0.75),
+            (0.0000015, -32.0, -0.75),
+        ),
+        (),
+        ((0, 1, 2, 3),),
+    )
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
 class FakeLayout:
     """Minimal Blender UILayout stand-in that exercises the panel draw code."""
 
     layout_type = "DEFAULT"
+
+    def __init__(self):
+        self.operator_ids = []
+
+    def operator(self, operator_id, *args, **kwargs):
+        self.operator_ids.append(operator_id)
+        return self
 
     def __getattr__(self, name):
         def method(*args, **kwargs):
@@ -53,6 +78,25 @@ class FakeLayout:
         return method
 
 props = bpy.context.scene.cs1_road_builder
+props.lanes.clear()
+road_builder._add_default_lanes(props)
+default_lane_offsets = {lane.lane_id: lane.vertical_offset for lane in props.lanes}
+assert default_lane_offsets["lane-left-sidewalk"] == props.curb_height
+assert default_lane_offsets["lane-right-sidewalk"] == props.curb_height
+assert default_lane_offsets["lane-backward-1"] == 0.0
+assert default_lane_offsets["lane-forward-1"] == 0.0
+centered_edge = create_centered_unsplit_edge_source("CenteredUnsplitEdge")
+centered_plan = road_builder._prepare_elevated_edge_mesh(
+    centered_edge, "right", 10.5, 8.0, 1.0,
+    road_builder.SEGMENT_SLICES, "CS1_NO_SPLIT",
+)
+assert len(centered_plan.polygons) == 40, len(centered_plan.polygons)
+assert any(
+    abs(point[0] - 10.5) < 1e-8 and abs(point[2] - 8.0) < 1e-8
+    for polygon, _uvs in centered_plan.polygons for point in polygon
+), "origin-crossing face was not split at the road corner"
+bpy.data.objects.remove(centered_edge, do_unlink=True)
+
 props.road_name = "Addon Smoke Road"
 props.lanes.clear()
 for index, direction in enumerate(("BACKWARD", "BACKWARD", "FORWARD", "FORWARD")):
@@ -87,6 +131,27 @@ for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
         for uv in (loop.uv for loop in obj.data.uv_layers[0].data):
             assert -1e-6 <= uv.x <= 1.0 + 1e-6, (obj.name, uv[:])
             assert -1e-6 <= uv.y <= 1.0 + 1e-6, (obj.name, uv[:])
+
+for mode_index, mode in enumerate(("basic", "elevated", "bridge", "slope", "tunnel")):
+    for part in ("segment", "node"):
+        obj = bpy.data.objects[f"{mode}_{part}"]
+        assert obj.location.x == 0.0, (obj.name, obj.location[:])
+        assert obj.location.z == mode_index * 16.0, (obj.name, obj.location[:])
+        roadway_faces = [
+            polygon for polygon in obj.data.polygons
+            if polygon.material_index in ({0, 1} if part == "segment" else {0})
+            and abs(polygon.center.x) < 6.5 - 1e-5
+            and polygon.normal.z > 0.9
+        ]
+        assert roadway_faces, obj.name
+        roadway_z = {
+            round(obj.data.vertices[index].co.z, 6)
+            for polygon in roadway_faces for index in polygon.vertices
+        }
+        if mode == "basic" and part == "node":
+            assert min(roadway_z) == -0.2 and max(roadway_z) == 0.0, (obj.name, roadway_z)
+        else:
+            assert roadway_z == {-0.2}, (obj.name, roadway_z)
 
 left_node = bpy.data.objects["basic_node"]
 node_top_z = sorted({round(vertex.co.z, 4) for vertex in left_node.data.vertices})
@@ -181,7 +246,7 @@ props.node_shoulder_bands = False
 road_builder.build_mode(bpy.context.scene, "basic")
 
 elevated_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["elevated_segment"].data.vertices}
-assert 8.0 in elevated_z and 8.2 in elevated_z, elevated_z
+assert -0.2 in elevated_z and 0.0 in elevated_z, elevated_z
 elevated_segment = bpy.data.objects["elevated_segment"]
 assert elevated_segment["cs1_girder_count"] == 6
 assert elevated_segment["cs1_geometry_groups"] == "surface,deck,custom_edge,girder"
@@ -190,7 +255,7 @@ assert elevated_segment["cs1_girder_spacing"] == 3.8
 assert elevated_segment["cs1_girder_reference_span"] == 35.0
 assert len(elevated_segment.data.materials) == 3
 assert sum(polygon.material_index == 2 for polygon in elevated_segment.data.polygons) > 0
-assert min(elevated_z) < 7.4
+assert min(elevated_z) < -0.6
 assert elevated_segment["cs1_elevated_edge_source"] == "ElevatedEdge"
 assert elevated_segment["cs1_elevated_left_edge_mirrored"] is True
 
@@ -204,18 +269,18 @@ def y_values_at_xz(obj, x, z):
 
 
 # The structural side face is sliced; the disconnected fence face is not.
-assert len(y_values_at_xz(elevated_segment, -9.9, 7.2)) == 21
-assert len(y_values_at_xz(elevated_segment, 9.9, 7.2)) == 21
-assert y_values_at_xz(elevated_segment, -10.65, 9.2) == {-32.0, 32.0}
-assert y_values_at_xz(elevated_segment, 10.65, 9.2) == {-32.0, 32.0}
+assert len(y_values_at_xz(elevated_segment, -9.9, -1.0)) == 21
+assert len(y_values_at_xz(elevated_segment, 9.9, -1.0)) == 21
+assert y_values_at_xz(elevated_segment, -10.65, 1.0) == {-32.0, 32.0}
+assert y_values_at_xz(elevated_segment, 10.65, 1.0) == {-32.0, 32.0}
 elevated_node = bpy.data.objects["elevated_node"]
-assert len(y_values_at_xz(elevated_node, -9.9, 7.2)) == 9
+assert len(y_values_at_xz(elevated_node, -9.9, -1.0)) == 9
 
 # Mirroring reverses face order so outward normals remain opposite.
 edge_side_faces = [
     polygon for polygon in elevated_segment.data.polygons
     if abs(polygon.center.x) > 9.8
-    and 7.2 - 1e-4 <= polygon.center.z <= 8.2 + 1e-4
+    and -1.0 - 1e-4 <= polygon.center.z <= 0.0 + 1e-4
     and abs(polygon.normal.x) > 0.1
 ]
 edge_normal_samples = [
@@ -232,12 +297,12 @@ assert any(
 
 # Custom lowest edge replaces the fixed vertical fascia and shares the deck
 # underside vertex, producing one connected mesh.
-assert not y_values_at_xz(elevated_segment, -10.5, 7.2)
+assert not y_values_at_xz(elevated_segment, -10.5, -1.0)
 join_vertices = [
     vertex.index for vertex in elevated_segment.data.vertices
     if abs(vertex.co.x + 9.9) < 1e-5
     and abs(vertex.co.y + 32.0) < 1e-5
-    and abs(vertex.co.z - 7.2) < 1e-5
+    and abs(vertex.co.z + 1.0) < 1e-5
 ]
 assert len(join_vertices) == 1, [
     (
@@ -253,12 +318,12 @@ assert sum(join_vertices[0] in polygon.vertices for polygon in elevated_segment.
 props.deck_depth = 2.0
 road_builder.build_mode(bpy.context.scene, "elevated")
 depth_scaled = bpy.data.objects["elevated_segment"]
-assert len(y_values_at_xz(depth_scaled, -9.9, 6.2)) == 21
-assert y_values_at_xz(depth_scaled, -10.65, 9.2) == {-32.0, 32.0}
+assert len(y_values_at_xz(depth_scaled, -9.9, -2.0)) == 21
+assert y_values_at_xz(depth_scaled, -10.65, 1.0) == {-32.0, 32.0}
 props.deck_depth = 1.0
 road_builder.build_mode(bpy.context.scene, "elevated")
 tunnel_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["tunnel_segment"].data.vertices}
-assert -12.0 in tunnel_z and -11.8 in tunnel_z and -7.0 in tunnel_z, tunnel_z
+assert -0.2 in tunnel_z and 0.0 in tunnel_z and 4.8 in tunnel_z, tunnel_z
 
 left_edge_boundary = next(item for item in props.boundaries if item.boundary_id == "boundary-left-carriageway")
 left_edge_boundary.marking_enabled = False
@@ -305,10 +370,18 @@ assert bpy.ops.cs1_road.export_runtime() == {"FINISHED"}
 manifest = json.loads((runtime_output / "manifest.json").read_text(encoding="utf-8"))
 bundle = json.loads((runtime_output / "roads" / "smoke-road.json").read_text(encoding="utf-8"))
 assert manifest["roads"][0]["revision"] == bundle["revision"]
+assert bundle["half_width"] == 6.0
+assert bundle["pavement_width"] == 2.5
 assert len(bundle["revision"]) == 64
 assert len(bundle["structural_signature"]) == 64
 mode_entries = {item["mode"]: item["entries"] for item in bundle["modes"]}
 assert set(mode_entries) == {"basic", "elevated", "bridge", "slope", "tunnel"}
+for mode, entries in mode_entries.items():
+    surface = entries[0]["mesh"]
+    surface_indices = set(surface["triangles"])
+    exported_heights = [surface["vertices"][index * 3 + 1] for index in surface_indices]
+    assert round(min(exported_heights), 6) == round(-props.curb_height, 6), mode
+    assert round(max(exported_heights), 6) == 0.0, mode
 basic_segment = mode_entries["basic"][0]["mesh"]
 assert len(basic_segment["vertices"]) == len(basic_segment["normals"])
 assert len(basic_segment["uv"]) * 3 == len(basic_segment["vertices"]) * 2
@@ -316,6 +389,33 @@ assert len(basic_segment["triangles"]) > 0
 assert basic_segment["material"]["shader"] == "Custom/Net/Road"
 assert min(basic_segment["vertices"][2::3]) == -32.0
 assert max(basic_segment["vertices"][2::3]) == 32.0
+for entries in mode_entries.values():
+    for entry in entries:
+        mesh = entry["mesh"]
+        vertices = mesh["vertices"]
+        normals = mesh["normals"]
+        triangles = mesh["triangles"]
+        for offset in range(0, len(triangles), 3):
+            indices = triangles[offset:offset + 3]
+            points = [vertices[index * 3:index * 3 + 3] for index in indices]
+            edge_ab = [points[1][axis] - points[0][axis] for axis in range(3)]
+            edge_ac = [points[2][axis] - points[0][axis] for axis in range(3)]
+            geometric_normal = (
+                edge_ab[1] * edge_ac[2] - edge_ab[2] * edge_ac[1],
+                edge_ab[2] * edge_ac[0] - edge_ab[0] * edge_ac[2],
+                edge_ab[0] * edge_ac[1] - edge_ab[1] * edge_ac[0],
+            )
+            if sum(component * component for component in geometric_normal) <= 1e-12:
+                continue
+            exported_normal = [
+                sum(normals[index * 3 + axis] for index in indices) / 3.0
+                for axis in range(3)
+            ]
+            alignment = sum(
+                geometric_normal[axis] * exported_normal[axis]
+                for axis in range(3)
+            )
+            assert alignment > 1e-8, (mesh["name"], offset // 3, alignment)
 props.runtime_road_id = "smoke-road-two"
 props.runtime_prefab_name = "Smoke Road Two"
 assert bpy.ops.cs1_road.export_runtime() == {"FINISHED"}
@@ -344,10 +444,12 @@ assert manifest_roads["smoke-road"]["revision"] == updated_bundle["revision"]
 assert manifest_roads["smoke-road-two"]["revision"] == second_bundle["revision"]
 props.runtime_auto_export = False
 
-panel = type("FakePanel", (), {"layout": FakeLayout()})()
+panel_layout = FakeLayout()
+panel = type("FakePanel", (), {"layout": panel_layout})()
 road_builder.CS1ROAD_PT_main.draw(panel, bpy.context)
+assert "script.reload" in panel_layout.operator_ids
 
-# Match Blender's F3 > Reload Scripts lifecycle. The package must refresh its
+# Match Blender's Reload Scripts lifecycle. The package must refresh its
 # child modules and register cleanly again without restarting Blender.
 road_builder.unregister()
 road_builder = importlib.reload(road_builder)

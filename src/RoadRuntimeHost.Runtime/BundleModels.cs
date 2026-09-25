@@ -1,182 +1,149 @@
-using System.Runtime.Serialization;
-
 namespace RoadRuntimeHost.Runtime
 {
-    [DataContract]
     internal sealed class Manifest
     {
-        [DataMember(Name = "schema_version")] public int SchemaVersion;
-        [DataMember(Name = "revision")] public string Revision;
-        [DataMember(Name = "roads")] public ManifestRoad[] Roads;
+        public int SchemaVersion;
+        public string Revision;
+        public ManifestRoad[] Roads;
     }
-
-    [DataContract]
     internal sealed class ManifestRoad
     {
-        [DataMember(Name = "road_id")] public string RoadId;
-        [DataMember(Name = "prefab_name")] public string PrefabName;
-        [DataMember(Name = "bundle_path")] public string BundlePath;
-        [DataMember(Name = "revision")] public string Revision;
-        [DataMember(Name = "structural_signature")] public string StructuralSignature;
+        public string RoadId;
+        public string PrefabName;
+        public string BundlePath;
+        public string Revision;
+        public string StructuralSignature;
     }
-
-    [DataContract]
     internal sealed class RoadBundle
     {
-        [DataMember(Name = "schema_version")] public int SchemaVersion;
-        [DataMember(Name = "road_id")] public string RoadId;
-        [DataMember(Name = "prefab_name")] public string PrefabName;
-        [DataMember(Name = "template_name")] public string TemplateName;
-        [DataMember(Name = "revision")] public string Revision;
-        [DataMember(Name = "structural_signature")] public string StructuralSignature;
-        [DataMember(Name = "lanes")] public LaneBundle[] Lanes;
-        [DataMember(Name = "modes")] public ModeBundle[] Modes;
+        public int SchemaVersion;
+        public string RoadId;
+        public string PrefabName;
+        public string TemplateName;
+        public float HalfWidth;
+        public float PavementWidth;
+        public string Revision;
+        public string StructuralSignature;
+        public LaneBundle[] Lanes;
+        public ModeBundle[] Modes;
     }
-
-    [DataContract]
     internal sealed class LaneBundle
     {
-        [DataMember(Name = "lane_id")] public string LaneId;
-        [DataMember(Name = "position")] public float Position;
-        [DataMember(Name = "width")] public float Width;
-        [DataMember(Name = "vertical_offset")] public float VerticalOffset;
-        [DataMember(Name = "stop_offset")] public float StopOffset;
-        [DataMember(Name = "speed_limit")] public float SpeedLimit;
-        [DataMember(Name = "direction")] public string Direction;
-        [DataMember(Name = "lane_type")] public string LaneType;
-        [DataMember(Name = "vehicle_type")] public string VehicleType;
-        [DataMember(Name = "allow_connect")] public bool AllowConnect;
+        public string LaneId;
+        public float Position;
+        public float Width;
+        public float VerticalOffset;
+        public float StopOffset;
+        public float SpeedLimit;
+        public string Direction;
+        public string LaneType;
+        public string VehicleType;
+        public bool AllowConnect;
     }
-
-    [DataContract]
     internal sealed class ModeBundle
     {
-        [DataMember(Name = "mode")] public string Mode;
-        [DataMember(Name = "entries")] public GeometryEntry[] Entries;
+        public string Mode;
+        public GeometryEntry[] Entries;
     }
-
-    [DataContract]
     internal sealed class GeometryEntry
     {
-        [DataMember(Name = "kind")] public string Kind;
-        [DataMember(Name = "mesh")] public MeshBundle Mesh;
+        public string Kind;
+        public MeshBundle Mesh;
     }
-
-    [DataContract]
     internal sealed class MeshBundle
     {
-        [DataMember(Name = "name")] public string Name;
-        [DataMember(Name = "vertices")] public float[] Vertices;
-        [DataMember(Name = "normals")] public float[] Normals;
-        [DataMember(Name = "uv")] public float[] Uv;
-        [DataMember(Name = "triangles")] public int[] Triangles;
-        [DataMember(Name = "material")] public MaterialBundle Material;
+        public string Name;
+        public float[] Vertices;
+        public float[] Normals;
+        public float[] Uv;
+        public int[] Triangles;
+        public MaterialBundle Material;
     }
-
-    [DataContract]
     internal sealed class MaterialBundle
     {
-        [DataMember(Name = "name")] public string Name;
-        [DataMember(Name = "shader")] public string Shader;
-        [DataMember(Name = "color")] public float[] Color;
-        [DataMember(Name = "textures")] public NamedValue[] Textures;
-        [DataMember(Name = "material_properties")] public NamedValue[] MaterialProperties;
+        public string Name;
+        public string Shader;
+        public float[] Color;
+        public NamedValue[] Textures;
+        public NamedValue[] MaterialProperties;
     }
-
-    [DataContract]
     internal sealed class Catalog
     {
-        [DataMember(Name = "schema_version")] public int SchemaVersion;
-        [DataMember(Name = "revision")] public string Revision;
-        [DataMember(Name = "roads")] public CatalogRoad[] Roads;
-        [DataMember(Name = "props")] public CatalogProp[] Props;
-        [DataMember(Name = "conditions")] public CatalogCondition[] Conditions;
-        [DataMember(Name = "test_scenarios")] public TestScenario[] TestScenarios;
+        public int SchemaVersion;
+        public string Revision;
+        public CatalogRoad[] Roads;
+        public CatalogProp[] Props;
+        public CatalogCondition[] Conditions;
+        public TestScenario[] TestScenarios;
     }
-
-    [DataContract]
     internal sealed class CatalogRoad
     {
-        [DataMember(Name = "road_id")] public string RoadId;
-        [DataMember(Name = "category")] public string Category;
-        [DataMember(Name = "ui_priority")] public int UiPriority;
-        [DataMember(Name = "test_scenario_id")] public string TestScenarioId;
-        [DataMember(Name = "structural_signature")] public string StructuralSignature;
-        [DataMember(Name = "lanes")] public LaneBundle[] Lanes;
-        [DataMember(Name = "prop_placements")] public PropPlacement[] PropPlacements;
-        [DataMember(Name = "geometry_bindings")] public GeometryBinding[] GeometryBindings;
+        public string RoadId;
+        public string Category;
+        public int UiPriority;
+        public string TestScenarioId;
+        public string StructuralSignature;
+        public LaneBundle[] Lanes;
+        public PropPlacement[] PropPlacements;
+        public GeometryBinding[] GeometryBindings;
     }
-
-    [DataContract]
     internal sealed class CatalogProp
     {
-        [DataMember(Name = "prop_id")] public string PropId;
-        [DataMember(Name = "prefab_name")] public string PrefabName;
-        [DataMember(Name = "template_name")] public string TemplateName;
-        [DataMember(Name = "kind")] public string Kind;
-        [DataMember(Name = "shader")] public string Shader;
-        [DataMember(Name = "mesh_bundle")] public string MeshBundle;
-        [DataMember(Name = "textures")] public NamedValue[] Textures;
-        [DataMember(Name = "material_properties")] public NamedValue[] MaterialProperties;
+        public string PropId;
+        public string PrefabName;
+        public string TemplateName;
+        public string Kind;
+        public string Shader;
+        public string MeshBundle;
+        public NamedValue[] Textures;
+        public NamedValue[] MaterialProperties;
     }
-
-    [DataContract]
     internal sealed class CatalogCondition
     {
-        [DataMember(Name = "condition_id")] public string ConditionId;
-        [DataMember(Name = "scope")] public string Scope;
-        [DataMember(Name = "required")] public NamedValue[] Required;
-        [DataMember(Name = "forbidden")] public NamedValue[] Forbidden;
+        public string ConditionId;
+        public string Scope;
+        public NamedValue[] Required;
+        public NamedValue[] Forbidden;
     }
-
-    [DataContract]
     internal sealed class NamedValue
     {
-        [DataMember(Name = "name")] public string Name;
-        [DataMember(Name = "value_json")] public string ValueJson;
+        public string Name;
+        public string ValueJson;
     }
-
-    [DataContract]
     internal sealed class PropPlacement
     {
-        [DataMember(Name = "placement_id")] public string PlacementId;
-        [DataMember(Name = "lane_id")] public string LaneId;
-        [DataMember(Name = "prop_id")] public string PropId;
-        [DataMember(Name = "condition_id")] public string ConditionId;
-        [DataMember(Name = "position")] public float[] Position;
-        [DataMember(Name = "angle")] public float Angle;
-        [DataMember(Name = "repeat_distance")] public float RepeatDistance;
-        [DataMember(Name = "probability")] public int Probability;
+        public string PlacementId;
+        public string LaneId;
+        public string PropId;
+        public string ConditionId;
+        public float[] Position;
+        public float Angle;
+        public float RepeatDistance;
+        public int Probability;
     }
-
-    [DataContract]
     internal sealed class GeometryBinding
     {
-        [DataMember(Name = "binding_id")] public string BindingId;
-        [DataMember(Name = "mode")] public string Mode;
-        [DataMember(Name = "kind")] public string Kind;
-        [DataMember(Name = "material_name")] public string MaterialName;
-        [DataMember(Name = "order")] public int Order;
-        [DataMember(Name = "condition_id")] public string ConditionId;
-        [DataMember(Name = "direct_connect")] public bool DirectConnect;
+        public string BindingId;
+        public string Mode;
+        public string Kind;
+        public string MaterialName;
+        public int Order;
+        public string ConditionId;
+        public bool DirectConnect;
     }
-
-    [DataContract]
     internal sealed class TestScenario
     {
-        [DataMember(Name = "scenario_id")] public string ScenarioId;
-        [DataMember(Name = "layout")] public string Layout;
-        [DataMember(Name = "enabled")] public bool Enabled;
-        [DataMember(Name = "origin")] public float[] Origin;
-        [DataMember(Name = "spacing")] public float Spacing;
+        public string ScenarioId;
+        public string Layout;
+        public bool Enabled;
+        public float[] Origin;
+        public float Spacing;
     }
-
-    [DataContract]
     internal sealed class PropMeshFile
     {
-        [DataMember(Name = "schema_version")] public int SchemaVersion;
-        [DataMember(Name = "prop_id")] public string PropId;
-        [DataMember(Name = "revision")] public string Revision;
-        [DataMember(Name = "mesh")] public MeshBundle Mesh;
+        public int SchemaVersion;
+        public string PropId;
+        public string Revision;
+        public MeshBundle Mesh;
     }
 }

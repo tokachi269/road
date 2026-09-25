@@ -178,6 +178,8 @@ def load_catalog(table_dir: Path) -> dict:
             "order": _integer(row.get("order", ""), f"lanes:{line}.order"),
             "width": _number(row.get("width", ""), f"lanes:{line}.width"),
             "position": _number(row.get("position", ""), f"lanes:{line}.position"),
+            "vertical_offset": _number(row.get("vertical_offset", ""), f"lanes:{line}.vertical_offset"),
+            "stop_offset": _number(row.get("stop_offset", ""), f"lanes:{line}.stop_offset"),
             "direction": row.get("direction") or "Forward",
             "lane_type": row.get("lane_type") or "Vehicle",
             "vehicle_type": row.get("vehicle_type") or "Car",

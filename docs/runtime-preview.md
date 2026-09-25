@@ -22,7 +22,7 @@ Runtimeで断面からmeshを生成しない。道路meshの正本はBlenderの�
 
 `m_UIPriority`は`category → family_order → family → variant_order → road_id`のsortからcompile時に自動採番する。一件ごと手で直さない。
 
-通常マップで使うlane metadataはcatalog側を優先する。Blender bundleにも単体preview用のlane snapshotが入るが、同じ`road_id`がcatalogにある場合は`lanes.tsv`がRuntimeの正本になる。mesh幅とlane表が一致するかをRuntimeが推測補正することはしない。
+通常マップで使うlane metadataはcatalog側を適用する。Blender bundleにもmesh生成時のlane snapshotを入れ、同じ`road_id`がcatalogにある場合は、適用前に順序、ID、位置、幅、vertical/stop offset、速度、方向、lane/vehicle種別、接続可否を比較する。数値はJSONのfloat丸めを許容する小さい誤差内だけ同一とみなす。不一致時はcatalogで上書きせず道路全体を未適用にし、`lane_contract_mismatch`として差分を専用ログへ出す。Runtimeがmesh幅やlane表を推測補正することはしない。
 
 ## Blender export
 
@@ -65,7 +65,7 @@ runtime/
 .\scripts\publish-runtime-hot.ps1
 ```
 
-hash名の新DLLを先にコピーし、最後に`runtime.current`をatomicに置換する。Loader自体を変更した場合だけゲームを終了して再installする。
+hash名の新DLLを先にコピーし、最後に`runtime.current`をatomicに置換する。RuntimeはbuildごとにAssemblyVersionも変える。ファイル名だけ変えてAssembly identityが同じだとCS1のMonoが既に読み込んだ旧assemblyを返すためである。切替後は、ModTools等によるplugin型走査へ古い依存関係を露出させないため、現在版以外のRuntime DLLを削除する。既にMonoへ読み込まれたassemblyはプロセス終了まで残る。Loader自体を変更した場合だけゲームを終了して再installする。
 
 ## 専用診断ログ
 
@@ -101,13 +101,14 @@ Get-Content $log | ConvertFrom-Json | Where-Object level -eq 'ERROR' | Format-Li
 Get-Content $log | ConvertFrom-Json | Where-Object { $_.context.road_id -eq 'jp-basic-2l' } | Format-List
 ```
 
-同じmanifestでも未適用roadが残っていれば約1秒ごとに再試行する。したがって繰返す`road_apply_failed`は、一過性の更新途中ではなく継続中の入力・契約・CS1環境問題を示す。画面上の見た目が正しいこと自体はログだけでは証明しない。
+同じmanifestでも未適用roadが残っていれば約1秒ごとに再試行する。同じrevision、分類、原因、例外messageの失敗は専用ログへ一度だけ記録し、入力または失敗内容が変わるまで重複行を抑制する。復旧時は`road_apply_recovered`を記録する。画面上の見た目が正しいこと自体はログだけでは証明しない。
 
 ## 更新動作
 
 - Loaderは`runtime.current`を約1秒間隔で監視する。新しいhash名DLLがstage/installされるとRuntime実装を切り替える。
 - Runtimeは`catalog.json`と`manifest.json`を約1秒間隔で確認する。
 - revisionが変わったroadだけbundleを読む。
+- catalogとBlender bundleのlane契約が一致しないroadは適用せず、同じrevisionでも修正されるまで再試行する。
 - 同名Prefabがロード済みなら同じ`NetInfo` objectへmesh、material、lane、Prop配置を再設定する。既設道路を削除して引き直さない。
 - mesh/materialだけの変更では試験区画を作り直さない。
 - templateまたはlane metadataを含む構造signatureが変わった場合だけ、当該roadのHost所有試験区画を再生成する。

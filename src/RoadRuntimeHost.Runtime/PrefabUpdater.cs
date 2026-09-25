@@ -1,9 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Runtime.Serialization.Json;
 using System.Reflection;
-using System.Text;
 using ColossalFramework;
 using UnityEngine;
 
@@ -54,6 +52,8 @@ namespace RoadRuntimeHost.Runtime
                 }
                 string name = ModeName(bundle.PrefabName, mode.Mode);
                 NetInfo info = FindOrCloneNet(name, modeTemplate, bundle.RoadId + "." + mode.Mode);
+                info.m_halfWidth = bundle.HalfWidth;
+                info.m_pavementWidth = bundle.PavementWidth;
                 ApplyLanes(info, bundle.Lanes, catalogRoad);
                 ApplyGeometry(info, mode.Mode, mode.Entries, catalogRoad);
                 if (catalogRoad != null)
@@ -63,7 +63,7 @@ namespace RoadRuntimeHost.Runtime
                 }
                 info.InitializePrefab();
                 modes[mode.Mode] = info;
-                DiagnosticLog.Info("SUCCESS", "road_mode_applied", "Road mode prefab was updated", "road_id", bundle.RoadId ?? string.Empty, "mode", mode.Mode ?? string.Empty, "prefab_name", name, "lane_count", (info.m_lanes == null ? 0 : info.m_lanes.Length).ToString(), "segment_entry_count", (info.m_segments == null ? 0 : info.m_segments.Length).ToString(), "node_entry_count", (info.m_nodes == null ? 0 : info.m_nodes.Length).ToString());
+                DiagnosticLog.Info("SUCCESS", "road_mode_applied", "Road mode prefab was updated", "road_id", bundle.RoadId ?? string.Empty, "mode", mode.Mode ?? string.Empty, "prefab_name", name, "half_width", info.m_halfWidth.ToString(System.Globalization.CultureInfo.InvariantCulture), "pavement_width", info.m_pavementWidth.ToString(System.Globalization.CultureInfo.InvariantCulture), "lane_count", (info.m_lanes == null ? 0 : info.m_lanes.Length).ToString(), "segment_entry_count", (info.m_segments == null ? 0 : info.m_segments.Length).ToString(), "node_entry_count", (info.m_nodes == null ? 0 : info.m_nodes.Length).ToString());
             }
             NetInfo basic;
             if (!modes.TryGetValue("basic", out basic)) throw new InvalidDataException("Road bundle has no usable basic mode");
@@ -433,15 +433,13 @@ namespace RoadRuntimeHost.Runtime
         private static string DecodeJsonString(string json)
         {
             if (string.IsNullOrEmpty(json)) return null;
-            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(json)))
-                return new DataContractJsonSerializer(typeof(string)).ReadObject(stream) as string;
+            return JsonFiles.ReadValue<string>(json);
         }
 
         private static string[] DecodeJsonStrings(string json)
         {
             if (string.IsNullOrEmpty(json)) return new string[0];
-            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(json)))
-                return (string[])new DataContractJsonSerializer(typeof(string[])).ReadObject(stream);
+            return JsonFiles.ReadValue<string[]>(json);
         }
 
         private static void ApplyMaterialProperties(Material material, NamedValue[] properties)
@@ -452,9 +450,7 @@ namespace RoadRuntimeHost.Runtime
                 string json = property.ValueJson == null ? string.Empty : property.ValueJson.Trim();
                 if (json.StartsWith("[", StringComparison.Ordinal))
                 {
-                    float[] values;
-                    using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(json)))
-                        values = (float[])new DataContractJsonSerializer(typeof(float[])).ReadObject(stream);
+                    float[] values = JsonFiles.ReadValue<float[]>(json);
                     if (values.Length == 4) material.SetVector(property.Name, new Vector4(values[0], values[1], values[2], values[3]));
                     else if (values.Length == 2) material.SetVector(property.Name, new Vector4(values[0], values[1], 0f, 0f));
                     else throw new InvalidDataException("material vector property must have 2 or 4 values: " + property.Name);

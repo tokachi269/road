@@ -24,17 +24,24 @@ namespace RoadRuntimeHost.Runtime
         public static void Warn(string category, string eventName, string message, params string[] context)
         {
             Write("WARN", category, eventName, message, null, context);
-            Debug.LogWarning("RoadRuntimeHost [" + category + "/" + eventName + "]: " + message);
+            try { Debug.LogWarning("RoadRuntimeHost [" + category + "/" + eventName + "]: " + message); }
+            catch { }
         }
         public static void Error(string category, string eventName, string message, Exception error, params string[] context)
         {
             Write("ERROR", category, eventName, message, error, context);
-            Debug.LogError("RoadRuntimeHost [" + category + "/" + eventName + "]: " + message + (error == null ? string.Empty : " (" + error.GetType().Name + ": " + error.Message + ")"));
+            try { Debug.LogError("RoadRuntimeHost [" + category + "/" + eventName + "]: " + message + (error == null ? string.Empty : " (" + error.GetType().Name + ": " + error.Message + ")")); }
+            catch { }
         }
         public static string Classify(Exception error)
         {
             DiagnosticException diagnostic = error as DiagnosticException;
             if (diagnostic != null) return diagnostic.Category;
+            FileNotFoundException missingAssembly = error as FileNotFoundException;
+            if (missingAssembly != null && !string.IsNullOrEmpty(missingAssembly.FileName)
+                && missingAssembly.FileName.IndexOf(", Version=", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "MOD_DEPENDENCY";
+            if (error is FileLoadException || error is BadImageFormatException) return "MOD_DEPENDENCY";
             if (error is FileNotFoundException || error is DirectoryNotFoundException) return "DATA_MISSING";
             if (error is InvalidDataException) return "DATA_INVALID";
             if (error is MissingMethodException || error is TypeLoadException || error is MissingMemberException) return "MOD_CONTRACT";

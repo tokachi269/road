@@ -51,6 +51,7 @@ MODE_ITEMS = (
     ("slope", "Tunnel Entrance", "Transition between ground and tunnel"),
     ("tunnel", "Tunnel", "Underground road"),
 )
+MODE_PREVIEW_SPACING = 16.0
 SURFACE_PROFILE_ITEMS = (
     ("FLUSH", "Ground level", "Road surface is level with surrounding ground"),
     ("DEPRESSED", "Curb depth", "Road surface is lower by the curb height"),
@@ -316,6 +317,16 @@ def _group_vertex_indices(source, group_name: str) -> set[int]:
     }
 
 
+def _segment_crosses_origin_xz(first, second, tolerance=1e-4) -> bool:
+    dx, dz = second.x - first.x, second.z - first.z
+    length_squared = dx * dx + dz * dz
+    if length_squared <= 1e-16:
+        return first.x * first.x + first.z * first.z <= tolerance * tolerance
+    t = max(0.0, min(1.0, -(first.x * dx + first.z * dz) / length_squared))
+    x, z = first.x + dx * t, first.z + dz * t
+    return x * x + z * z <= tolerance * tolerance
+
+
 def _prepare_elevated_edge_mesh(
     source, side: str, anchor_x: float, surface_z: float, deck_depth: float,
     slices: int, group_name: str,
@@ -341,6 +352,10 @@ def _prepare_elevated_edge_mesh(
     coordinates = []
     for vertex in source.data.vertices:
         coordinate = basis @ vertex.co
+        if abs(coordinate.x) <= 1e-4:
+            coordinate.x = 0.0
+        if abs(coordinate.z) <= 1e-4:
+            coordinate.z = 0.0
         if mirrored:
             coordinate.x = -coordinate.x
         coordinates.append(coordinate)
@@ -360,10 +375,32 @@ def _prepare_elevated_edge_mesh(
             f"{source.name}: sliced faces need geometry below local Z=0 "
             "for deck-depth scaling"
         )
-    if not any(abs(value.x) <= 1e-4 and abs(value.z) <= 1e-4 for value in curve_coordinates):
+    anchor_candidates = sorted(
+        ((index, coordinates[index]) for index in selected_vertices),
+        key=lambda item: item[1].x * item[1].x + item[1].z * item[1].z,
+    )
+    anchor_crossing = False
+    for polygon in source.data.polygons:
+        if polygon.index not in selected_faces:
+            continue
+        indices = tuple(polygon.vertices)
+        for offset, first_index in enumerate(indices):
+            second_index = indices[(offset + 1) % len(indices)]
+            if _segment_crosses_origin_xz(coordinates[first_index], coordinates[second_index]):
+                anchor_crossing = True
+                break
+        if anchor_crossing:
+            break
+    if not anchor_crossing:
+        nearest_index, nearest = anchor_candidates[0]
         raise ValueError(
-            f"{source.name}: sliced faces need an edge point at local X=0, Z=0 "
-            "to anchor the road corner"
+            f"{source.name}: sliced face edges must cross local X=0, Z=0 "
+            f"to anchor the road corner; nearest vertex {nearest_index} is "
+            f"X={nearest.x:.9g}, Y={nearest.y:.9g}, Z={nearest.z:.9g}; "
+            f"checked {len(selected_vertices)} vertices from {len(selected_faces)} faces; "
+            f"object location=({source.location.x:.9g},{source.location.y:.9g},{source.location.z:.9g}), "
+            f"scale=({source.scale.x:.9g},{source.scale.y:.9g},{source.scale.z:.9g}), "
+            f"no-split vertices={len(no_split_vertices)}"
         )
 
     bottom_indices = {
@@ -384,9 +421,9 @@ def _prepare_elevated_edge_mesh(
 
     connector_local_x = sum(bottom_x_values) / len(bottom_x_values)
     connector_x = anchor_x + connector_local_x
-    if side == "left" and connector_x < anchor_x - 1e-6:
+    if side == "left" and connector_x < anchor_x - 1e-4:
         raise ValueError(f"{source.name}: left lowest edge must extend inward (+X) or vertically")
-    if side == "right" and connector_x > anchor_x + 1e-6:
+    if side == "right" and connector_x > anchor_x + 1e-4:
         raise ValueError(f"{source.name}: right lowest edge must extend inward (-X) or vertically")
 
     working = source.data.copy()
@@ -405,6 +442,19 @@ def _prepare_elevated_edge_mesh(
         split_layer = bm.faces.layers.int.new("cs1_curve_split")
         for face in bm.faces:
             face[split_layer] = 1 if face.index in selected_faces else 0
+
+        anchor_faces = [face for face in bm.faces if face.is_valid and face[split_layer] == 1]
+        anchor_edges = {edge for face in anchor_faces for edge in face.edges}
+        anchor_vertices = {vertex for face in anchor_faces for vertex in face.verts}
+        bmesh.ops.bisect_plane(
+            bm,
+            geom=[*anchor_vertices, *anchor_edges, *anchor_faces],
+            plane_co=(0.0, 0.0, surface_z),
+            plane_no=(0.0, 0.0, 1.0),
+            dist=1e-6,
+            clear_inner=False,
+            clear_outer=False,
+        )
 
         for index in range(1, slices):
             plane_y = -half_length + MODE_LENGTH * index / slices
@@ -717,6 +767,12 @@ def _add_default_lanes(props) -> None:
         lane.name, lane.zone, lane.width = name, zone, width
         lane.direction, lane.lane_type, lane.vehicle_type = direction, lane_type, vehicle_type
         lane.speed_limit = speed
+        lane.vertical_offset = (
+            props.curb_height
+            if zone in {"LEFT_SIDEWALK", "RIGHT_SIDEWALK"}
+            and props.surface_profile == "DEPRESSED"
+            else 0.0
+        )
 
 
 def _ensure_default_lanes(props) -> None:
@@ -817,9 +873,7 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
     if mode == "elevated":
         edge_source = props.elevated_edge_mesh
         if edge_source is not None:
-            side_z = props.elevated_height + (
-                props.curb_height if props.surface_profile == "DEPRESSED" else 0.0
-            )
+            side_z = 0.0
             group_name = props.elevated_edge_no_split_group
             half_width, surface_z, depth = total_half, side_z, props.deck_depth
             custom_edge_segments = (
@@ -868,7 +922,7 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
         _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, segment_z, 0.0, 0.0, False, SEGMENT_SLICES)
         _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, far_z, 0.0, 0.0, True, NODE_SLICES)
     elif mode == "elevated":
-        road_z, side_z = props.elevated_height, props.elevated_height + curb_rise
+        road_z, side_z = -curb_rise, 0.0
         girder_layout = plan_main_girders(total_half * 2.0)
         _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES)
         _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES)
@@ -893,22 +947,22 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
             _append_elevated_edge(node_mesh, left_node)
             _append_elevated_edge(node_mesh, right_node)
     elif mode == "bridge":
-        road_z, side_z = props.bridge_height, props.bridge_height + curb_rise
+        road_z, side_z = -curb_rise, 0.0
         girder_layout = plan_main_girders(total_half * 2.0)
         _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES)
         _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES)
         _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, SEGMENT_SLICES, girder_layout)
         _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, NODE_SLICES)
     elif mode == "slope":
-        road_start, road_end = 0.0, -props.tunnel_depth
-        side_start, side_end = road_start + curb_rise, road_end + curb_rise
+        road_start = road_end = -curb_rise
+        side_start = side_end = 0.0
         _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_start, road_end, side_start, side_end, False, SEGMENT_SLICES)
         _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_end, road_end, side_end, side_end, True, NODE_SLICES)
         _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_start, side_end, props.deck_depth, SEGMENT_SLICES)
         _add_deck_structure(node_mesh, total_half, y_min, y_max, side_end, side_end, props.deck_depth, NODE_SLICES)
     else:
-        road_z = -props.tunnel_depth
-        side_z, roof_z = road_z + curb_rise, road_z + props.tunnel_clearance
+        road_z = -curb_rise
+        side_z, roof_z = 0.0, road_z + props.tunnel_clearance
         _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES)
         _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES)
         _add_tunnel_envelope(segment_mesh, total_half, y_min, y_max, side_z, roof_z, SEGMENT_SLICES)
@@ -929,7 +983,10 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
     node = node_mesh.create(
         collection, f"{mode}_node", node_materials, node_indices,
     )
-    segment.location.y, node.location.y = -MODE_LENGTH * 0.5, MODE_LENGTH * 0.5
+    mode_index = next(index for index, item in enumerate(MODE_ITEMS) if item[0] == mode)
+    preview_z = mode_index * MODE_PREVIEW_SPACING
+    segment.location = (0.0, -MODE_LENGTH * 0.5, preview_z)
+    node.location = (0.0, MODE_LENGTH * 0.5, preview_z)
     for obj, part in ((segment, "segment"), (node, "node")):
         obj["cs1_road_mode"], obj["cs1_road_name"], obj["cs1_road_part"] = mode, props.road_name, part
         obj["cs1_local_length"] = MODE_LENGTH
@@ -1181,6 +1238,7 @@ def _runtime_output_path(props) -> Path:
 def _export_runtime_scene(scene):
     props = scene.cs1_road_builder
     _ensure_lane_ids(props)
+    _, _, half_width = _cross_section(props)
     modes = _runtime_mode_objects()
     if not modes:
         raise ValueError("Build at least one road mode before runtime export")
@@ -1189,6 +1247,8 @@ def _export_runtime_scene(scene):
         safe_road_id(props.runtime_road_id),
         props.runtime_prefab_name.strip() or props.road_name,
         props.runtime_template_name.strip() or "Basic Road",
+        half_width,
+        props.sidewalk_width,
         _runtime_lanes(props),
         modes,
     )
@@ -1587,6 +1647,11 @@ class CS1ROAD_PT_main(Panel):
         runtime.prop(props, "runtime_prop_id")
         runtime.prop(props, "runtime_prop_shader")
         runtime.operator("cs1_road.export_runtime_prop", icon="MESH_PLANE")
+
+        development = layout.box()
+        development.label(text="Development")
+        development.operator("script.reload", text="Reload Scripts", icon="FILE_REFRESH")
+        development.label(text="Rebuild generated meshes after reloading.", icon="INFO")
         layout.label(text="Generated objects remain editable meshes.", icon="EDITMODE_HLT")
 
 

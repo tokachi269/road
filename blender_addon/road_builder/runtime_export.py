@@ -62,6 +62,11 @@ def serialize_mesh_object(obj: bpy.types.Object, shader: str) -> dict:
     # road-local space while preserving an explicitly applied rotation/scale.
     basis = obj.matrix_world.to_3x3()
     normal_matrix = basis.inverted_safe().transposed()
+    # _unity_vector swaps Blender Y/Z. That axis permutation has determinant
+    # -1, so it reverses triangle winding unless the object basis already has
+    # a negative determinant. Keep Unity's geometric face normal aligned with
+    # the explicitly exported loop normal.
+    reverse_winding = basis.determinant() > 0.0
     uv_layer = mesh.uv_layers.active
     vertices = []
     normals = []
@@ -71,7 +76,8 @@ def serialize_mesh_object(obj: bpy.types.Object, shader: str) -> dict:
 
     for triangle in mesh.loop_triangles:
         material_index = min(max(triangle.material_index, 0), material_count - 1)
-        for loop_index in triangle.loops:
+        triangle_loops = reversed(triangle.loops) if reverse_winding else triangle.loops
+        for loop_index in triangle_loops:
             loop = mesh.loops[loop_index]
             vertex = mesh.vertices[loop.vertex_index]
             vertices.extend(_unity_vector(basis @ vertex.co))
@@ -121,6 +127,8 @@ def export_runtime_bundle(
     road_id: str,
     prefab_name: str,
     template_name: str,
+    half_width: float,
+    pavement_width: float,
     lanes: list[dict],
     modes: dict[str, list[bpy.types.Object]],
 ) -> dict:
@@ -137,12 +145,19 @@ def export_runtime_bundle(
                 })
         serialized_modes.append({"mode": mode, "entries": entries})
 
-    structural_signature = _hash({"template_name": template_name, "lanes": lanes})
+    structural_signature = _hash({
+        "template_name": template_name,
+        "half_width": half_width,
+        "pavement_width": pavement_width,
+        "lanes": lanes,
+    })
     payload = {
         "schema_version": BUNDLE_SCHEMA_VERSION,
         "road_id": road_id,
         "prefab_name": prefab_name,
         "template_name": template_name,
+        "half_width": half_width,
+        "pavement_width": pavement_width,
         "structural_signature": structural_signature,
         "lanes": lanes,
         "modes": serialized_modes,

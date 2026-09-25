@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Reflection;
+using ColossalFramework.Plugins;
 using UnityEngine;
 
 namespace RoadRuntimeHost.Loader
@@ -17,12 +18,21 @@ namespace RoadRuntimeHost.Loader
         private string _loadMode;
         private float _watchElapsed;
         private bool _reportedMissingPointer;
+        private string _rootPath;
+        private string _rootPathSource;
+        private string _assemblyLocation;
+        private string _pluginPath;
+        private Exception _pluginPathError;
 
         public static HotReloadCoordinator Instance { get { return _instance; } }
 
         private string RootPath
         {
-            get { return Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location); }
+            get
+            {
+                if (_rootPath == null) ResolveRootPath();
+                return _rootPath;
+            }
         }
 
         public void Start(string loadMode)
@@ -30,9 +40,93 @@ namespace RoadRuntimeHost.Loader
             _loadMode = loadMode;
             string logPath = Path.Combine(Path.Combine(RootPath, "logs"), "RoadRuntimeHost.jsonl");
             DiagnosticLog.Configure(logPath);
-            DiagnosticLog.Info("MOD", "loader_start", "Stable loader started", "root", RootPath, "load_mode", loadMode, "log_path", logPath);
+            DiagnosticLog.Info(
+                "MOD", "loader_start", "Stable loader started",
+                "root", RootPath,
+                "root_source", _rootPathSource,
+                "plugin_path", _pluginPath ?? string.Empty,
+                "assembly_location", _assemblyLocation ?? string.Empty,
+                "load_mode", loadMode,
+                "log_path", logPath);
+            if (_pluginPathError != null)
+            {
+                DiagnosticLog.Warn(
+                    "MOD", "plugin_path_lookup_failed",
+                    "PluginManager could not resolve the mod directory; the assembly location fallback was used",
+                    "exception_type", _pluginPathError.GetType().FullName,
+                    "exception", _pluginPathError.Message,
+                    "assembly_location", _assemblyLocation ?? string.Empty);
+            }
             Directory.CreateDirectory(Path.Combine(RootPath, "runtime"));
             ReloadIfChanged(true);
+        }
+
+        private void ResolveRootPath()
+        {
+            Assembly assembly = Assembly.GetExecutingAssembly();
+            _assemblyLocation = assembly.Location ?? string.Empty;
+            try
+            {
+                PluginManager.PluginInfo plugin = PluginManager.instance.FindPluginInfo(assembly);
+                _pluginPath = plugin == null ? string.Empty : plugin.modPath;
+            }
+            catch (Exception error)
+            {
+                _pluginPath = string.Empty;
+                _pluginPathError = error;
+            }
+            _rootPath = ResolveRootPath(_pluginPath, _assemblyLocation, out _rootPathSource);
+        }
+
+        internal static string ResolveRootPath(string pluginPath, string assemblyLocation)
+        {
+            string source;
+            return ResolveRootPath(pluginPath, assemblyLocation, out source);
+        }
+
+        private static string ResolveRootPath(string pluginPath, string assemblyLocation, out string source)
+        {
+            string resolved = NormalizeExistingDirectory(pluginPath);
+            if (resolved != null)
+            {
+                source = "plugin_manager";
+                return resolved;
+            }
+
+            if (!string.IsNullOrEmpty(assemblyLocation))
+            {
+                try
+                {
+                    string directory = Path.GetDirectoryName(Path.GetFullPath(assemblyLocation));
+                    resolved = NormalizeExistingDirectory(directory);
+                    if (resolved != null)
+                    {
+                        source = "assembly_location";
+                        return resolved;
+                    }
+                }
+                catch (ArgumentException) { }
+                catch (NotSupportedException) { }
+                catch (PathTooLongException) { }
+            }
+
+            throw new InvalidOperationException(
+                "RoadRuntimeHost could not resolve its mod directory from PluginManager or Assembly.Location; "
+                + "plugin_path='" + (pluginPath ?? string.Empty) + "', assembly_location='"
+                + (assemblyLocation ?? string.Empty) + "'");
+        }
+
+        private static string NormalizeExistingDirectory(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            try
+            {
+                string fullPath = Path.GetFullPath(path);
+                return Directory.Exists(fullPath) ? fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) : null;
+            }
+            catch (ArgumentException) { return null; }
+            catch (NotSupportedException) { return null; }
+            catch (PathTooLongException) { return null; }
         }
 
         public void Tick(float realTimeDelta, float simulationTimeDelta)

@@ -10,6 +10,10 @@ $project = Join-Path $repoRoot 'tests\RoadRuntimeHost.ContractSmoke\RoadRuntimeH
 
 & $config.MSBuildExe $project /t:Build /p:Configuration=Release "/p:CitiesSkylinesManagedDir=$managedDir" /m /nologo /v:minimal
 if ($LASTEXITCODE -ne 0) { throw "Runtime contract smoke build failed with exit code $LASTEXITCODE" }
+$runtimeDll = Join-Path $repoRoot 'src\RoadRuntimeHost.Runtime\bin\Release\RoadRuntimeHost.Runtime.dll'
+$runtimeReferences = ([Reflection.Assembly]::LoadFile($runtimeDll)).GetReferencedAssemblies() | ForEach-Object Name
+$unsupported = @('System.ServiceModel.Web', 'System.Runtime.Serialization') | Where-Object { $runtimeReferences -contains $_ }
+if ($unsupported) { throw "Runtime references assemblies unavailable or unusable in CS1 Mono: $($unsupported -join ', ')" }
 $exe = Join-Path $repoRoot 'tests\RoadRuntimeHost.ContractSmoke\bin\Release\RoadRuntimeHost.ContractSmoke.exe'
 & $exe ([IO.Path]::GetFullPath($PreviewPath))
 if ($LASTEXITCODE -ne 0) { throw "Runtime contract smoke failed with exit code $LASTEXITCODE" }
