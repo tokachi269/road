@@ -18,8 +18,9 @@ namespace RoadRuntimeHost.Runtime
                         return serializer.ReadObject(stream) as T;
                     }
                 }
-                catch (IOException)
+                catch (IOException error)
                 {
+                    DiagnosticLog.Warn("IO", "json_read_retry", "JSON file is temporarily unavailable; read will be retried", "path", path, "data_type", typeof(T).FullName, "attempt", (attempt + 1).ToString(), "error", error.Message);
                     if (attempt == 2) throw;
                 }
             }

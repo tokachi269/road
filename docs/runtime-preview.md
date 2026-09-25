@@ -67,6 +67,42 @@ runtime/
 
 hash名の新DLLを先にコピーし、最後に`runtime.current`をatomicに置換する。Loader自体を変更した場合だけゲームを終了して再installする。
 
+## 専用診断ログ
+
+Hostの詳細ログはUnityの共通`output_log.txt`ではなく、MOD directory内の次のファイルへJSON Lines形式で出す。
+
+```text
+RoadRuntimeHost/logs/RoadRuntimeHost.jsonl
+```
+
+1行が1事象で、例外stack traceもJSON文字列内へ収める。Unity共通ログへは起動・切替の短い要約とwarning/errorだけを残す。専用ログは10 MiBを超えてLoaderが起動した時に`.1`へ1世代rotateする。
+
+主要fieldは`ts / level / component / category / event / message / context / exception_type / exception`である。`event`は機械検索用のstableな識別子、`message`は人間向け説明、`context`には`road_id`、revision、入力path、mode、件数、処理時間等を入れる。
+
+| category | 判断できる範囲 |
+|---|---|
+| `MOD` | Host自身のlifecycleまたは、より狭い原因へ分類できなかった内部例外 |
+| `MOD_CONTRACT` | Loader/Runtime間のmethod契約不一致、未対応condition namespace等 |
+| `DATA` | catalog/manifest/bundleを読み、適用を開始した正常な入力処理段階 |
+| `DATA_MISSING` | catalog、manifest、bundle、texture、参照行等がない |
+| `DATA_INVALID` | schema、revision、安全な相対path、mesh配列等の値が不正 |
+| `CONTRACT_TYPE` | fieldは存在するがJSON型、enum、数値等の型契約が違う |
+| `IO` | atomic置換中等で一時的に読めず再試行するfilesystem障害 |
+| `CS1_ENVIRONMENT` | template prefabやshaderが未ロード、CS1がnode/segment生成を拒否した等 |
+| `SUCCESS` | 検証、Prefab更新、既設renderer refresh、試験区画更新が完了した証拠 |
+
+分類は原因を完全に断定するものではない。例えば`CS1_ENVIRONMENT`は「MOD外が悪い」ではなく、Hostの入力検証を通過した後のCS1状態・ロード順・他MODを含む境界で失敗したことを表す。`MOD`の未分類例外はコード不具合候補として扱う。
+
+PowerShellでは次のように絞れる。
+
+```powershell
+$log = "$env:LOCALAPPDATA\Colossal Order\Cities_Skylines\Addons\Mods\RoadRuntimeHost\logs\RoadRuntimeHost.jsonl"
+Get-Content $log | ConvertFrom-Json | Where-Object level -eq 'ERROR' | Format-List
+Get-Content $log | ConvertFrom-Json | Where-Object { $_.context.road_id -eq 'jp-basic-2l' } | Format-List
+```
+
+同じmanifestでも未適用roadが残っていれば約1秒ごとに再試行する。したがって繰返す`road_apply_failed`は、一過性の更新途中ではなく継続中の入力・契約・CS1環境問題を示す。画面上の見た目が正しいこと自体はログだけでは証明しない。
+
 ## 更新動作
 
 - Loaderは`runtime.current`を約1秒間隔で監視する。新しいhash名DLLがstage/installされるとRuntime実装を切り替える。

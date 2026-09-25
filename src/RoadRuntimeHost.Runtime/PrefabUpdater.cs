@@ -30,14 +30,17 @@ namespace RoadRuntimeHost.Runtime
             foreach (CatalogProp definition in catalog.Props)
             {
                 try { ApplyProp(definition); }
-                catch (Exception error) { Debug.LogException(error); }
+                catch (Exception error)
+                {
+                    DiagnosticLog.Error(DiagnosticLog.Classify(error), "prop_apply_failed", "Prop definition failed; roads referencing it may omit the placement", error, "prop_id", definition.PropId ?? string.Empty, "prefab_name", definition.PrefabName ?? string.Empty, "mesh_bundle", definition.MeshBundle ?? string.Empty);
+                }
             }
         }
 
         public NetInfo ApplyRoad(RoadBundle bundle, CatalogRoad catalogRoad)
         {
             NetInfo template = PrefabCollection<NetInfo>.FindLoaded(bundle.TemplateName);
-            if (template == null) throw new InvalidOperationException("Road template is not loaded: " + bundle.TemplateName);
+            if (template == null) throw new DiagnosticException("CS1_ENVIRONMENT", "road_template_not_loaded", "Road template is not loaded: " + bundle.TemplateName);
 
             Dictionary<string, NetInfo> modes = new Dictionary<string, NetInfo>();
             if (bundle.Modes == null) throw new InvalidDataException("Road bundle has no modes: " + bundle.RoadId);
@@ -46,7 +49,7 @@ namespace RoadRuntimeHost.Runtime
                 NetInfo modeTemplate = ModeTemplate(template, mode.Mode);
                 if (modeTemplate == null)
                 {
-                    Debug.LogWarning("RoadRuntimeHost: template has no " + mode.Mode + " mode: " + bundle.TemplateName);
+                    DiagnosticLog.Warn("CS1_ENVIRONMENT", "road_mode_template_missing", "Template does not expose the requested mode; that mode is skipped", "road_id", bundle.RoadId ?? string.Empty, "template", bundle.TemplateName ?? string.Empty, "mode", mode.Mode ?? string.Empty);
                     continue;
                 }
                 string name = ModeName(bundle.PrefabName, mode.Mode);
@@ -60,6 +63,7 @@ namespace RoadRuntimeHost.Runtime
                 }
                 info.InitializePrefab();
                 modes[mode.Mode] = info;
+                DiagnosticLog.Info("SUCCESS", "road_mode_applied", "Road mode prefab was updated", "road_id", bundle.RoadId ?? string.Empty, "mode", mode.Mode ?? string.Empty, "prefab_name", name, "lane_count", (info.m_lanes == null ? 0 : info.m_lanes.Length).ToString(), "segment_entry_count", (info.m_segments == null ? 0 : info.m_segments.Length).ToString(), "node_entry_count", (info.m_nodes == null ? 0 : info.m_nodes.Length).ToString());
             }
             NetInfo basic;
             if (!modes.TryGetValue("basic", out basic)) throw new InvalidDataException("Road bundle has no usable basic mode");
@@ -75,13 +79,13 @@ namespace RoadRuntimeHost.Runtime
             {
                 if (string.IsNullOrEmpty(definition.TemplateName))
                 {
-                    Debug.LogWarning("RoadRuntimeHost: prop requires template_name before it can be registered: " + definition.PropId);
+                    DiagnosticLog.Warn("DATA_MISSING", "prop_template_name_missing", "New prop requires template_name and was not registered", "prop_id", definition.PropId ?? string.Empty, "prefab_name", definition.PrefabName ?? string.Empty);
                     return;
                 }
                 PropInfo template = PrefabCollection<PropInfo>.FindLoaded(definition.TemplateName);
                 if (template == null)
                 {
-                    Debug.LogWarning("RoadRuntimeHost: prop template is not loaded: " + definition.TemplateName);
+                    DiagnosticLog.Warn("CS1_ENVIRONMENT", "prop_template_not_loaded", "Prop template is not loaded and the prop was not registered", "prop_id", definition.PropId ?? string.Empty, "template", definition.TemplateName ?? string.Empty);
                     return;
                 }
                 GameObject clone = UnityEngine.Object.Instantiate(template.gameObject) as GameObject;
@@ -101,9 +105,10 @@ namespace RoadRuntimeHost.Runtime
             }
             if (!string.IsNullOrEmpty(definition.Shader))
             {
-                if (info.m_material == null) info.m_material = new Material(Shader.Find(definition.Shader));
                 Shader shader = Shader.Find(definition.Shader);
-                if (shader != null) info.m_material.shader = shader;
+                if (shader == null) throw new DiagnosticException("CS1_ENVIRONMENT", "prop_shader_not_found", "Shader is not available: " + definition.Shader);
+                if (info.m_material == null) info.m_material = new Material(shader);
+                info.m_material.shader = shader;
             }
             if (string.Equals(definition.Kind, "DECAL", StringComparison.OrdinalIgnoreCase))
             {
@@ -115,6 +120,7 @@ namespace RoadRuntimeHost.Runtime
             ApplyMaterialProperties(info.m_material, definition.MaterialProperties);
             info.InitializePrefab();
             _props[definition.PropId] = info;
+            DiagnosticLog.Info("SUCCESS", "prop_apply_success", "Prop definition applied", "prop_id", definition.PropId ?? string.Empty, "prefab_name", definition.PrefabName ?? string.Empty, "kind", definition.Kind ?? string.Empty);
         }
 
         private void ApplyLanes(NetInfo info, LaneBundle[] definitions, CatalogRoad catalogRoad)
@@ -168,7 +174,11 @@ namespace RoadRuntimeHost.Runtime
             foreach (PropPlacement placement in source)
             {
                 PropInfo prop;
-                if (!_props.TryGetValue(placement.PropId, out prop)) continue;
+                if (!_props.TryGetValue(placement.PropId, out prop))
+                {
+                    DiagnosticLog.Warn("DATA_MISSING", "prop_placement_unresolved", "Placement references a prop that was not applied", "lane_id", laneId ?? string.Empty, "prop_id", placement.PropId ?? string.Empty);
+                    continue;
+                }
                 NetLaneProps.Prop value = new NetLaneProps.Prop();
                 value.m_prop = prop;
                 value.m_finalProp = prop;
@@ -190,7 +200,11 @@ namespace RoadRuntimeHost.Runtime
         {
             if (string.IsNullOrEmpty(conditionId)) return;
             CatalogCondition condition;
-            if (!_conditions.TryGetValue(conditionId, out condition)) return;
+            if (!_conditions.TryGetValue(conditionId, out condition))
+            {
+                DiagnosticLog.Warn("DATA_MISSING", "condition_reference_unresolved", "Prop placement references an unknown condition", "condition_id", conditionId);
+                return;
+            }
             ApplyConditionValues(target, condition.Required, true);
             ApplyConditionValues(target, condition.Forbidden, false);
         }
@@ -220,7 +234,7 @@ namespace RoadRuntimeHost.Runtime
                 }
                 else if (_unsupportedConditionNamespaces.Add(value.Name))
                 {
-                    Debug.LogWarning("RoadRuntimeHost preserves but does not yet apply condition namespace: " + value.Name);
+                    DiagnosticLog.Warn("MOD_CONTRACT", "condition_namespace_unsupported", "Condition is preserved in data but this runtime has no adapter for its namespace", "condition_name", value.Name ?? string.Empty);
                 }
             }
         }
@@ -285,7 +299,12 @@ namespace RoadRuntimeHost.Runtime
         private void ApplySegmentCondition(NetInfo.Segment target, string conditionId)
         {
             CatalogCondition condition;
-            if (string.IsNullOrEmpty(conditionId) || !_conditions.TryGetValue(conditionId, out condition)) return;
+            if (string.IsNullOrEmpty(conditionId)) return;
+            if (!_conditions.TryGetValue(conditionId, out condition))
+            {
+                DiagnosticLog.Warn("DATA_MISSING", "condition_reference_unresolved", "Segment binding references an unknown condition", "condition_id", conditionId);
+                return;
+            }
             ApplySegmentConditionValues(target, condition.Required, true);
             ApplySegmentConditionValues(target, condition.Forbidden, false);
         }
@@ -309,14 +328,19 @@ namespace RoadRuntimeHost.Runtime
                     if (required) target.m_backwardRequired |= parsed; else target.m_backwardForbidden |= parsed;
                 }
                 else if (_unsupportedConditionNamespaces.Add(value.Name))
-                    Debug.LogWarning("RoadRuntimeHost preserves but does not yet apply condition namespace: " + value.Name);
+                    DiagnosticLog.Warn("MOD_CONTRACT", "condition_namespace_unsupported", "Condition is preserved in data but this runtime has no adapter for its namespace", "condition_name", value.Name ?? string.Empty);
             }
         }
 
         private void ApplyNodeCondition(NetInfo.Node target, string conditionId)
         {
             CatalogCondition condition;
-            if (string.IsNullOrEmpty(conditionId) || !_conditions.TryGetValue(conditionId, out condition)) return;
+            if (string.IsNullOrEmpty(conditionId)) return;
+            if (!_conditions.TryGetValue(conditionId, out condition))
+            {
+                DiagnosticLog.Warn("DATA_MISSING", "condition_reference_unresolved", "Node binding references an unknown condition", "condition_id", conditionId);
+                return;
+            }
             ApplyNodeConditionValues(target, condition.Required, true);
             ApplyNodeConditionValues(target, condition.Forbidden, false);
         }
@@ -334,12 +358,13 @@ namespace RoadRuntimeHost.Runtime
                     if (required) target.m_flagsRequired |= parsed; else target.m_flagsForbidden |= parsed;
                 }
                 else if (_unsupportedConditionNamespaces.Add(value.Name))
-                    Debug.LogWarning("RoadRuntimeHost preserves but does not yet apply condition namespace: " + value.Name);
+                    DiagnosticLog.Warn("MOD_CONTRACT", "condition_namespace_unsupported", "Condition is preserved in data but this runtime has no adapter for its namespace", "condition_name", value.Name ?? string.Empty);
             }
         }
 
         private static Mesh BuildMesh(MeshBundle source)
         {
+            if (source == null) throw new InvalidDataException("mesh object is missing");
             if (source.Vertices == null || source.Vertices.Length % 3 != 0) throw new InvalidDataException("mesh vertices must be xyz triples");
             int count = source.Vertices.Length / 3;
             Vector3[] vertices = new Vector3[count];
@@ -367,6 +392,8 @@ namespace RoadRuntimeHost.Runtime
         private Material BuildMaterial(MaterialBundle source, Material fallback)
         {
             Shader shader = source != null ? Shader.Find(source.Shader) : null;
+            if (source != null && !string.IsNullOrEmpty(source.Shader) && shader == null)
+                throw new DiagnosticException("CS1_ENVIRONMENT", "material_shader_not_found", "Shader is not available: " + source.Shader);
             Material material = fallback != null ? new Material(fallback) : new Material(shader != null ? shader : Shader.Find("Custom/Net/Road"));
             if (shader != null) material.shader = shader;
             if (source != null)
@@ -386,7 +413,16 @@ namespace RoadRuntimeHost.Runtime
             {
                 string path = DecodeJsonString(texture.ValueJson);
                 if (!string.IsNullOrEmpty(path) && !Path.IsPathRooted(path)) path = SafePreviewPath(path);
-                if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+                if (string.IsNullOrEmpty(path))
+                {
+                    DiagnosticLog.Warn("DATA_MISSING", "texture_path_missing", "Texture binding has no path", "property", texture.Name ?? string.Empty);
+                    continue;
+                }
+                if (!File.Exists(path))
+                {
+                    DiagnosticLog.Warn("DATA_MISSING", "texture_file_missing", "Texture file does not exist", "property", texture.Name ?? string.Empty, "path", path);
+                    continue;
+                }
                 Texture2D image = new Texture2D(2, 2, TextureFormat.ARGB32, true);
                 image.name = Path.GetFileNameWithoutExtension(path);
                 image.LoadImage(File.ReadAllBytes(path));
@@ -488,17 +524,24 @@ namespace RoadRuntimeHost.Runtime
             List<NetInfo> targets = new List<NetInfo>(infos);
             SimulationManager.instance.AddAction(delegate
             {
-                NetManager manager = NetManager.instance;
-                for (ushort id = 1; id < manager.m_segments.m_size; ++id)
+                try
                 {
-                    NetInfo info = manager.m_segments.m_buffer[id].Info;
-                    if (targets.Contains(info)) manager.UpdateSegmentRenderer(id, true);
+                    int segmentCount = 0;
+                    int nodeCount = 0;
+                    NetManager manager = NetManager.instance;
+                    for (ushort id = 1; id < manager.m_segments.m_size; ++id)
+                    {
+                        NetInfo info = manager.m_segments.m_buffer[id].Info;
+                        if (targets.Contains(info)) { manager.UpdateSegmentRenderer(id, true); ++segmentCount; }
+                    }
+                    for (ushort id = 1; id < manager.m_nodes.m_size; ++id)
+                    {
+                        NetInfo info = manager.m_nodes.m_buffer[id].Info;
+                        if (targets.Contains(info)) { manager.UpdateNodeRenderer(id, true); ++nodeCount; }
+                    }
+                    DiagnosticLog.Info("SUCCESS", "existing_instances_refreshed", "Existing road renderers were marked for refresh without deleting the roads", "segment_count", segmentCount.ToString(), "node_count", nodeCount.ToString());
                 }
-                for (ushort id = 1; id < manager.m_nodes.m_size; ++id)
-                {
-                    NetInfo info = manager.m_nodes.m_buffer[id].Info;
-                    if (targets.Contains(info)) manager.UpdateNodeRenderer(id, true);
-                }
+                catch (Exception error) { DiagnosticLog.Error("CS1_ENVIRONMENT", "existing_instances_refresh_failed", "Existing road renderers could not be refreshed", error, "prefab_count", targets.Count.ToString()); }
             });
         }
 

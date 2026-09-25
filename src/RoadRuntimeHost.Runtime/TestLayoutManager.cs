@@ -17,13 +17,21 @@ namespace RoadRuntimeHost.Runtime
         private readonly Dictionary<string, LayoutState> _states = new Dictionary<string, LayoutState>();
         public void Rebuild(string roadId, NetInfo info, TestScenario scenario, int roadIndex)
         {
+            DiagnosticLog.Info("CS1_ENVIRONMENT", "test_layout_scheduled", "Test layout rebuild was queued on the simulation thread", "road_id", roadId, "scenario_id", scenario.ScenarioId ?? string.Empty, "layout", scenario.Layout ?? string.Empty);
             SimulationManager.instance.AddAction(delegate
             {
-                LayoutState previous;
-                if (_states.TryGetValue(roadId, out previous)) Release(previous);
-                LayoutState state = Create(info, scenario, roadIndex);
-                _states[roadId] = state;
-                Debug.Log("RoadRuntimeHost rebuilt test layout " + roadId + " (" + state.Segments.Count + " segments)");
+                try
+                {
+                    LayoutState previous;
+                    if (_states.TryGetValue(roadId, out previous)) Release(previous);
+                    LayoutState state = Create(info, scenario, roadIndex);
+                    _states[roadId] = state;
+                    DiagnosticLog.Info("SUCCESS", "test_layout_rebuilt", "Test layout was rebuilt", "road_id", roadId, "node_count", state.Nodes.Count.ToString(), "segment_count", state.Segments.Count.ToString());
+                }
+                catch (Exception error)
+                {
+                    DiagnosticLog.Error("CS1_ENVIRONMENT", "test_layout_rebuild_failed", "CS1 rejected or failed the test layout rebuild", error, "road_id", roadId, "scenario_id", scenario.ScenarioId ?? string.Empty, "layout", scenario.Layout ?? string.Empty);
+                }
             });
         }
 
@@ -33,8 +41,14 @@ namespace RoadRuntimeHost.Runtime
             {
                 SimulationManager.instance.AddAction(delegate
                 {
-                    foreach (LayoutState state in _states.Values) Release(state);
-                    _states.Clear();
+                    try
+                    {
+                        foreach (LayoutState state in _states.Values) Release(state);
+                        int count = _states.Count;
+                        _states.Clear();
+                        DiagnosticLog.Info("SUCCESS", "test_layouts_released", "All runtime-owned test layouts were released", "road_count", count.ToString());
+                    }
+                    catch (Exception error) { DiagnosticLog.Error("CS1_ENVIRONMENT", "test_layout_release_all_failed", "Some runtime-owned test layouts could not be released", error); }
                 });
             }
             else _states.Clear();
@@ -44,10 +58,15 @@ namespace RoadRuntimeHost.Runtime
         {
             SimulationManager.instance.AddAction(delegate
             {
-                LayoutState state;
-                if (!_states.TryGetValue(roadId, out state)) return;
-                Release(state);
-                _states.Remove(roadId);
+                try
+                {
+                    LayoutState state;
+                    if (!_states.TryGetValue(roadId, out state)) return;
+                    Release(state);
+                    _states.Remove(roadId);
+                    DiagnosticLog.Info("SUCCESS", "test_layout_released", "Runtime-owned test layout was released", "road_id", roadId);
+                }
+                catch (Exception error) { DiagnosticLog.Error("CS1_ENVIRONMENT", "test_layout_release_failed", "Runtime-owned test layout could not be released", error, "road_id", roadId); }
             });
         }
 

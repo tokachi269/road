@@ -68,6 +68,6 @@ python -m unittest tests.runtime_catalog_test
 .\scripts\test-runtime-contract.ps1 -PreviewPath 'D:\GitHub\road\build\smoke\runtime-preview'
 ```
 
-`RUNTIME_CONTRACT_OK`はBlenderが出したJSONをRuntime DLLと同じ.NET 3.5 serializerで読めることを証明する。`runtime.current`による差替え、Prefab登録、shader描画、map save再読込、Adaptive Roads条件、接続形状は実ゲーム起動なしでは証明しない。
+`RUNTIME_CONTRACT_OK`はBlenderが出したJSONをRuntime DLLと同じ.NET 3.5 serializerで読めることに加え、専用JSON Linesログへ成功事象と意図的なJSON型不一致がそれぞれ`SUCCESS` / `CONTRACT_TYPE`で記録されることを証明する。`runtime.current`による差替え、Prefab登録、shader描画、map save再読込、Adaptive Roads条件、接続形状は実ゲーム起動なしでは証明しない。
 
 これらはAsset Editor内の見た目、shader、AO、selector、カーブ接続を証明しない。最終gateには実ゲームimportが必要である。

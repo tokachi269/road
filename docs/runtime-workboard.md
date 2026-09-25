@@ -30,6 +30,7 @@
 | R9 | Adaptive Roads向け条件を失わない中立モデル | 要求範囲実装 | vanilla flag適用、未知namespace保持。AN adapter自体は未実装 |
 | R10 | build/stage/runbookと日本語設計文書 | 実装済み | stagingとrunbook確認 |
 | R11 | 全自動検証 | 完了（ゲーム外） | environment、arch lint、16 unit、Blender 5.1、RoadImporter、Runtime build/stage/contract |
+| R12 | 画面を見ずに追跡できる専用診断ログ | 実装済み・ゲーム待ち | JSONL出力、原因分類、road/revision/path/段階、例外stack、型不一致contract smoke。ゲーム内の実ファイル出力は未確認 |
 
 ## 確定している境界
 

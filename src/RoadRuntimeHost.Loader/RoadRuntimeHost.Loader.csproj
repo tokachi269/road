@@ -29,6 +29,7 @@
     <Reference Include="UnityEngine"><HintPath>$(CitiesSkylinesManagedDir)\UnityEngine.dll</HintPath></Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DiagnosticLog.cs" />
     <Compile Include="HotReloadCoordinator.cs" />
     <Compile Include="RoadRuntimeHostLoader.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
