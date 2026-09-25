@@ -8,6 +8,8 @@ Cities: Skylines 1向けの独自道路ジェネレータ開発環境です。CS
 - `blender_addon/road_builder/`: Blender内で道路を編集・プレビューするアドオン
 - `specs/`: 独自道路定義
 - `src/RoadImporter/`: RoadImporterのローカルビルド用コピー。テクスチャをCRPへ格納する設定
+- `src/RoadRuntimeHost.*`: 通常マップ上の差分preview用Loaderとhot-reload Runtime
+- `catalog/`: 道路、lane、Prop、条件、試験区画のTSV正本
 - `references/RoadImporter/`: upstream参照用submodule
 - `references/CSUR/`: XMLと全モード実装の参照用submodule。生成処理には使わない
 - `scripts/`: 環境確認、Blender起動、Importerビルド・配置、生成物配置
@@ -29,6 +31,16 @@ Set-Location D:\GitHub\road
 ```
 
 Blenderのテスト結果は`build/smoke/`へ出力されます。RoadImporterのビルド結果は`src/RoadImporter/bin/Release/RoadImporter.dll`です。
+
+## 通常マップで差分previewする
+
+Runtime側で断面meshは生成しません。Blenderで生成・編集した完成meshをbundleへ書き出し、通常マップ用Hostが同名Prefabへ反映します。
+
+```powershell
+.\scripts\stage-runtime-host.ps1 -PreviewPath 'D:\GitHub\road\build\runtime-preview'
+```
+
+初回だけ`install-runtime-host.ps1`でLoaderを配置します。以後はBlenderの`Runtime preview`で同じdirectoryへ出力し、必要なときだけstagingしたversioned Runtime DLLをMods directoryへ上書きします。詳細、制約、未検証項目は[docs/runtime-preview.md](docs/runtime-preview.md)と[docs/runtime-workboard.md](docs/runtime-workboard.md)に記載しています。
 
 ゲームへDLLを配置するときだけ次を実行します。
 

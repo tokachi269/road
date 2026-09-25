@@ -1,0 +1,2 @@
+road_id	prefab_name	template_name	display_name	category	family	family_order	variant_order	test_scenario_id	metadata
+example-road	Road Runtime Example	Basic Road	Road Runtime Example	RoadRuntimeHost	basic	10	10	standard-road	{}

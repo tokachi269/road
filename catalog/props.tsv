@@ -1,0 +1,2 @@
+prop_id	prefab_name	template_name	kind	shader	mesh_bundle	textures	material_properties
+example-decal	Road Runtime Example Decal		DECAL	Custom/Props/Decal/Blend		{}	{}

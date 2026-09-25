@@ -7,7 +7,9 @@
       "tests",
       "tools",
       "scripts",
-      "src/RoadImporter"
+      "src/RoadImporter",
+      "src/RoadRuntimeHost.Loader",
+      "src/RoadRuntimeHost.Runtime"
     ],
     "extensions": [".py", ".ps1", ".cs"],
     "exclude_patterns": [
@@ -27,12 +29,12 @@
     },
     {
       "name": "blender_adapter",
-      "patterns": ["blender_addon/road_builder/__init__.py", "generator/*.py"],
+      "patterns": ["blender_addon/road_builder/__init__.py", "blender_addon/road_builder/runtime_export.py", "generator/*.py"],
       "forbidden_tokens": ["src/RoadImporter"]
     },
     {
       "name": "verification",
-      "patterns": ["tests/*.py", "tests/**/*.py"],
+      "patterns": ["tests/*.py", "tests/**/*.py", "tests/**/*.cs"],
       "forbidden_tokens": []
     },
     {
@@ -49,6 +51,16 @@
       "name": "road_importer",
       "patterns": ["src/RoadImporter/*.cs", "src/RoadImporter/**/*.cs"],
       "forbidden_tokens": ["import bpy", "from bpy"]
+    },
+    {
+      "name": "runtime_loader",
+      "patterns": ["src/RoadRuntimeHost.Loader/*.cs", "src/RoadRuntimeHost.Loader/**/*.cs"],
+      "forbidden_tokens": ["import bpy", "from bpy", "RoadImporter"]
+    },
+    {
+      "name": "runtime_host",
+      "patterns": ["src/RoadRuntimeHost.Runtime/*.cs", "src/RoadRuntimeHost.Runtime/**/*.cs"],
+      "forbidden_tokens": ["import bpy", "from bpy", "RoadImporter", "AssetEditorRoadUtils"]
     }
   ]
 }

@@ -71,3 +71,28 @@ CS1 Asset Editor
 ```
 
 下流はlane adjacency、boundary role、幅を再推論しない。`road_domain`はBlender、Unity、RoadImporterへ依存しない。Architecture manifestと`tools/arch_lint.py`がこの依存方向の一部を機械検査する。
+
+## Runtime preview boundary
+
+Runtime previewはAsset Editor/CRP生成とは別経路である。
+
+```text
+TSV catalog ──compile──> catalog.json
+                              │
+Blender generated/editable mesh
+        └──baked mesh bundle──┼──> preview directory
+                              │
+stable Loader ──loads──> versioned Runtime DLL
+                              │
+                              └──> NetInfo / PropInfo in-place update
+```
+
+Runtimeは断面値からmeshを生成しない。Blenderで確定した頂点、法線、UV、三角形、material区分をUnity `Mesh`へ復元するだけである。TSVのlane値は`NetInfo.Lane`、Prop配置、構造signature、試験区画の再生成判断に使う。
+
+Blender object内のmaterial slotは、export時にCS1のsegment/node entryへ展開する。したがってBlenderのobject分割とCS1 entry数は1対1ではない。selectorは現在templateの先頭entryから継承しており、複数selector contractの表現方法は未確定である。
+
+Loaderはゲームから読み込まれ続ける最小assemblyで、`runtime.current`が指すversioned Runtime DLLを約1秒ごとに確認する。切替時は新Runtimeの`Start`が成功してから旧Runtimeの`Stop`を呼ぶ。Mono AppDomainから旧assemblyをunloadするものではなく、繰り返し差し替えるとassembly分のメモリはプロセス終了まで残る。
+
+Runtimeは同名のロード済み`NetInfo` / `PropInfo`があればそのobjectを更新し、新規の場合だけtemplate prefabをcloneして登録する。表示変更では既設segmentを削除しない。lane構造signatureが変わったときに作り直すのはHostが所有する試験区画だけであり、ユーザーが敷設した道路は削除しない。既設道路に対するlane数変更のゲーム内安全性は未検証である。
+
+Adaptive Roadsを前提に条件値を`namespace + value_json`で保持する。現在Runtimeが適用するnamespaceは`vanilla.lane`、`vanilla.start_node`、`vanilla.end_node`だけである。Adaptive Roads固有namespaceは失わず警告するが、reflection adapterによる反映は未実装・未検証である。

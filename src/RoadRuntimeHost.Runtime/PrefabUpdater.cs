@@ -1,0 +1,587 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.Serialization.Json;
+using System.Reflection;
+using System.Text;
+using ColossalFramework;
+using UnityEngine;
+
+namespace RoadRuntimeHost.Runtime
+{
+    internal sealed class PrefabUpdater
+    {
+        private readonly string _previewPath;
+        private readonly Dictionary<string, PropInfo> _props = new Dictionary<string, PropInfo>();
+        private readonly Dictionary<string, CatalogCondition> _conditions = new Dictionary<string, CatalogCondition>();
+        private readonly HashSet<string> _unsupportedConditionNamespaces = new HashSet<string>();
+
+        public PrefabUpdater(string previewPath)
+        {
+            _previewPath = previewPath;
+        }
+
+        public void ApplyProps(Catalog catalog)
+        {
+            _conditions.Clear();
+            if (catalog != null && catalog.Conditions != null)
+                foreach (CatalogCondition condition in catalog.Conditions) _conditions[condition.ConditionId] = condition;
+            if (catalog == null || catalog.Props == null) return;
+            foreach (CatalogProp definition in catalog.Props)
+            {
+                try { ApplyProp(definition); }
+                catch (Exception error) { Debug.LogException(error); }
+            }
+        }
+
+        public NetInfo ApplyRoad(RoadBundle bundle, CatalogRoad catalogRoad)
+        {
+            NetInfo template = PrefabCollection<NetInfo>.FindLoaded(bundle.TemplateName);
+            if (template == null) throw new InvalidOperationException("Road template is not loaded: " + bundle.TemplateName);
+
+            Dictionary<string, NetInfo> modes = new Dictionary<string, NetInfo>();
+            if (bundle.Modes == null) throw new InvalidDataException("Road bundle has no modes: " + bundle.RoadId);
+            foreach (ModeBundle mode in bundle.Modes)
+            {
+                NetInfo modeTemplate = ModeTemplate(template, mode.Mode);
+                if (modeTemplate == null)
+                {
+                    Debug.LogWarning("RoadRuntimeHost: template has no " + mode.Mode + " mode: " + bundle.TemplateName);
+                    continue;
+                }
+                string name = ModeName(bundle.PrefabName, mode.Mode);
+                NetInfo info = FindOrCloneNet(name, modeTemplate, bundle.RoadId + "." + mode.Mode);
+                ApplyLanes(info, bundle.Lanes, catalogRoad);
+                ApplyGeometry(info, mode.Mode, mode.Entries, catalogRoad);
+                if (catalogRoad != null)
+                {
+                    SetUiCategory(info, catalogRoad.Category);
+                    info.m_UIPriority = catalogRoad.UiPriority;
+                }
+                info.InitializePrefab();
+                modes[mode.Mode] = info;
+            }
+            NetInfo basic;
+            if (!modes.TryGetValue("basic", out basic)) throw new InvalidDataException("Road bundle has no usable basic mode");
+            LinkModes(basic, modes);
+            RefreshExistingInstances(modes.Values);
+            return basic;
+        }
+
+        private void ApplyProp(CatalogProp definition)
+        {
+            PropInfo info = PrefabCollection<PropInfo>.FindLoaded(definition.PrefabName);
+            if (info == null)
+            {
+                if (string.IsNullOrEmpty(definition.TemplateName))
+                {
+                    Debug.LogWarning("RoadRuntimeHost: prop requires template_name before it can be registered: " + definition.PropId);
+                    return;
+                }
+                PropInfo template = PrefabCollection<PropInfo>.FindLoaded(definition.TemplateName);
+                if (template == null)
+                {
+                    Debug.LogWarning("RoadRuntimeHost: prop template is not loaded: " + definition.TemplateName);
+                    return;
+                }
+                GameObject clone = UnityEngine.Object.Instantiate(template.gameObject) as GameObject;
+                clone.name = definition.PrefabName;
+                info = clone.GetComponent<PropInfo>();
+                PrefabCollection<PropInfo>.InitializePrefabs("RoadRuntimeHost." + definition.PropId, info, null);
+                PrefabCollection<PropInfo>.BindPrefabs();
+            }
+            if (!string.IsNullOrEmpty(definition.MeshBundle))
+            {
+                string path = SafePreviewPath(definition.MeshBundle);
+                PropMeshFile meshFile = JsonFiles.Read<PropMeshFile>(path);
+                info.m_mesh = BuildMesh(meshFile.Mesh);
+                info.m_material = BuildMaterial(meshFile.Mesh.Material, info.m_material);
+                info.m_lodMesh = info.m_mesh;
+                info.m_lodMaterial = info.m_material;
+            }
+            if (!string.IsNullOrEmpty(definition.Shader))
+            {
+                if (info.m_material == null) info.m_material = new Material(Shader.Find(definition.Shader));
+                Shader shader = Shader.Find(definition.Shader);
+                if (shader != null) info.m_material.shader = shader;
+            }
+            if (string.Equals(definition.Kind, "DECAL", StringComparison.OrdinalIgnoreCase))
+            {
+                info.m_isDecal = true;
+                info.m_requireHeightMap = true;
+                info.m_createRuining = false;
+            }
+            ApplyTextures(info.m_material, definition.Textures);
+            ApplyMaterialProperties(info.m_material, definition.MaterialProperties);
+            info.InitializePrefab();
+            _props[definition.PropId] = info;
+        }
+
+        private void ApplyLanes(NetInfo info, LaneBundle[] definitions, CatalogRoad catalogRoad)
+        {
+            if (definitions == null) definitions = new LaneBundle[0];
+            Dictionary<string, List<PropPlacement>> placements = new Dictionary<string, List<PropPlacement>>();
+            if (catalogRoad != null && catalogRoad.PropPlacements != null)
+            {
+                foreach (PropPlacement placement in catalogRoad.PropPlacements)
+                {
+                    List<PropPlacement> values;
+                    if (!placements.TryGetValue(placement.LaneId, out values))
+                    {
+                        values = new List<PropPlacement>();
+                        placements.Add(placement.LaneId, values);
+                    }
+                    values.Add(placement);
+                }
+            }
+            NetInfo.Lane[] lanes = new NetInfo.Lane[definitions.Length];
+            for (int index = 0; index != definitions.Length; ++index)
+            {
+                LaneBundle source = definitions[index];
+                NetInfo.Lane lane = new NetInfo.Lane();
+                lane.m_position = source.Position;
+                lane.m_width = source.Width;
+                lane.m_verticalOffset = source.VerticalOffset;
+                lane.m_stopOffset = source.StopOffset;
+                lane.m_speedLimit = source.SpeedLimit;
+                lane.m_direction = ParseDirection(source.Direction);
+                lane.m_finalDirection = lane.m_direction;
+                lane.m_laneType = ParseLaneType(source.LaneType);
+                lane.m_vehicleType = ParseVehicleType(source.VehicleType);
+                lane.m_allowConnect = source.AllowConnect;
+                lane.m_laneProps = ScriptableObject.CreateInstance<NetLaneProps>();
+                lane.m_laneProps.name = info.name + "." + source.LaneId;
+                lane.m_laneProps.m_props = BuildLaneProps(placements, source.LaneId);
+                lanes[index] = lane;
+            }
+            info.m_lanes = lanes;
+            info.m_sortedLanes = new int[lanes.Length];
+            for (int index = 0; index != lanes.Length; ++index) info.m_sortedLanes[index] = index;
+            Array.Sort(info.m_sortedLanes, delegate(int left, int right) { return lanes[left].m_position.CompareTo(lanes[right].m_position); });
+        }
+
+        private NetLaneProps.Prop[] BuildLaneProps(Dictionary<string, List<PropPlacement>> placements, string laneId)
+        {
+            List<PropPlacement> source;
+            if (!placements.TryGetValue(laneId, out source)) return new NetLaneProps.Prop[0];
+            List<NetLaneProps.Prop> result = new List<NetLaneProps.Prop>();
+            foreach (PropPlacement placement in source)
+            {
+                PropInfo prop;
+                if (!_props.TryGetValue(placement.PropId, out prop)) continue;
+                NetLaneProps.Prop value = new NetLaneProps.Prop();
+                value.m_prop = prop;
+                value.m_finalProp = prop;
+                float[] position = placement.Position ?? new float[0];
+                value.m_position = new Vector3(
+                    position.Length > 0 ? position[0] : 0f,
+                    position.Length > 1 ? position[1] : 0f,
+                    position.Length > 2 ? position[2] : 0f);
+                value.m_angle = placement.Angle;
+                value.m_repeatDistance = placement.RepeatDistance;
+                value.m_probability = placement.Probability;
+                ApplyCondition(value, placement.ConditionId);
+                result.Add(value);
+            }
+            return result.ToArray();
+        }
+
+        private void ApplyCondition(NetLaneProps.Prop target, string conditionId)
+        {
+            if (string.IsNullOrEmpty(conditionId)) return;
+            CatalogCondition condition;
+            if (!_conditions.TryGetValue(conditionId, out condition)) return;
+            ApplyConditionValues(target, condition.Required, true);
+            ApplyConditionValues(target, condition.Forbidden, false);
+        }
+
+        private void ApplyConditionValues(NetLaneProps.Prop target, NamedValue[] values, bool required)
+        {
+            if (values == null) return;
+            foreach (NamedValue value in values)
+            {
+                string[] flags = DecodeJsonStrings(value.ValueJson);
+                if (flags.Length == 0) continue;
+                string combined = string.Join(",", flags);
+                if (string.Equals(value.Name, "vanilla.lane", StringComparison.OrdinalIgnoreCase))
+                {
+                    NetLane.Flags parsed = (NetLane.Flags)Enum.Parse(typeof(NetLane.Flags), combined, true);
+                    if (required) target.m_flagsRequired |= parsed; else target.m_flagsForbidden |= parsed;
+                }
+                else if (string.Equals(value.Name, "vanilla.start_node", StringComparison.OrdinalIgnoreCase))
+                {
+                    NetNode.Flags parsed = (NetNode.Flags)Enum.Parse(typeof(NetNode.Flags), combined, true);
+                    if (required) target.m_startFlagsRequired |= parsed; else target.m_startFlagsForbidden |= parsed;
+                }
+                else if (string.Equals(value.Name, "vanilla.end_node", StringComparison.OrdinalIgnoreCase))
+                {
+                    NetNode.Flags parsed = (NetNode.Flags)Enum.Parse(typeof(NetNode.Flags), combined, true);
+                    if (required) target.m_endFlagsRequired |= parsed; else target.m_endFlagsForbidden |= parsed;
+                }
+                else if (_unsupportedConditionNamespaces.Add(value.Name))
+                {
+                    Debug.LogWarning("RoadRuntimeHost preserves but does not yet apply condition namespace: " + value.Name);
+                }
+            }
+        }
+
+        private void ApplyGeometry(NetInfo info, string mode, GeometryEntry[] entries, CatalogRoad catalogRoad)
+        {
+            List<NetInfo.Segment> segments = new List<NetInfo.Segment>();
+            List<NetInfo.Node> nodes = new List<NetInfo.Node>();
+            NetInfo.Segment segmentTemplate = info.m_segments != null && info.m_segments.Length != 0 ? info.m_segments[0] : new NetInfo.Segment();
+            NetInfo.Node nodeTemplate = info.m_nodes != null && info.m_nodes.Length != 0 ? info.m_nodes[0] : new NetInfo.Node();
+            if (entries != null)
+            {
+                foreach (GeometryEntry entry in entries)
+                {
+                    if (entry == null || entry.Mesh == null) continue;
+                    Mesh mesh = BuildMesh(entry.Mesh);
+                    if (string.Equals(entry.Kind, "node", StringComparison.OrdinalIgnoreCase))
+                    {
+                        NetInfo.Node value = CopyNode(nodeTemplate);
+                        value.m_mesh = value.m_nodeMesh = mesh;
+                        value.m_material = value.m_nodeMaterial = BuildMaterial(entry.Mesh.Material, nodeTemplate.m_material);
+                        value.m_lodMesh = mesh;
+                        value.m_lodMaterial = value.m_material;
+                        GeometryBinding binding = FindGeometryBinding(catalogRoad, mode, "node", entry.Mesh.Material != null ? entry.Mesh.Material.Name : null);
+                        if (binding != null)
+                        {
+                            value.m_directConnect = binding.DirectConnect;
+                            ApplyNodeCondition(value, binding.ConditionId);
+                        }
+                        nodes.Add(value);
+                    }
+                    else
+                    {
+                        NetInfo.Segment value = CopySegment(segmentTemplate);
+                        value.m_mesh = value.m_segmentMesh = mesh;
+                        value.m_material = value.m_segmentMaterial = BuildMaterial(entry.Mesh.Material, segmentTemplate.m_material);
+                        value.m_lodMesh = mesh;
+                        value.m_lodMaterial = value.m_material;
+                        GeometryBinding binding = FindGeometryBinding(catalogRoad, mode, "segment", entry.Mesh.Material != null ? entry.Mesh.Material.Name : null);
+                        if (binding != null) ApplySegmentCondition(value, binding.ConditionId);
+                        segments.Add(value);
+                    }
+                }
+            }
+            info.m_segments = segments.ToArray();
+            info.m_nodes = nodes.ToArray();
+        }
+
+        private static GeometryBinding FindGeometryBinding(CatalogRoad road, string mode, string kind, string materialName)
+        {
+            if (road == null || road.GeometryBindings == null) return null;
+            foreach (GeometryBinding binding in road.GeometryBindings)
+            {
+                if (string.Equals(binding.Mode, mode, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(binding.Kind, kind, StringComparison.OrdinalIgnoreCase)
+                    && (string.IsNullOrEmpty(binding.MaterialName) || string.Equals(binding.MaterialName, materialName, StringComparison.Ordinal)))
+                    return binding;
+            }
+            return null;
+        }
+
+        private void ApplySegmentCondition(NetInfo.Segment target, string conditionId)
+        {
+            CatalogCondition condition;
+            if (string.IsNullOrEmpty(conditionId) || !_conditions.TryGetValue(conditionId, out condition)) return;
+            ApplySegmentConditionValues(target, condition.Required, true);
+            ApplySegmentConditionValues(target, condition.Forbidden, false);
+        }
+
+        private void ApplySegmentConditionValues(NetInfo.Segment target, NamedValue[] values, bool required)
+        {
+            if (values == null) return;
+            foreach (NamedValue value in values)
+            {
+                string[] flags = DecodeJsonStrings(value.ValueJson);
+                if (flags.Length == 0) continue;
+                string combined = string.Join(",", flags);
+                if (string.Equals(value.Name, "vanilla.segment.forward", StringComparison.OrdinalIgnoreCase))
+                {
+                    NetSegment.Flags parsed = (NetSegment.Flags)Enum.Parse(typeof(NetSegment.Flags), combined, true);
+                    if (required) target.m_forwardRequired |= parsed; else target.m_forwardForbidden |= parsed;
+                }
+                else if (string.Equals(value.Name, "vanilla.segment.backward", StringComparison.OrdinalIgnoreCase))
+                {
+                    NetSegment.Flags parsed = (NetSegment.Flags)Enum.Parse(typeof(NetSegment.Flags), combined, true);
+                    if (required) target.m_backwardRequired |= parsed; else target.m_backwardForbidden |= parsed;
+                }
+                else if (_unsupportedConditionNamespaces.Add(value.Name))
+                    Debug.LogWarning("RoadRuntimeHost preserves but does not yet apply condition namespace: " + value.Name);
+            }
+        }
+
+        private void ApplyNodeCondition(NetInfo.Node target, string conditionId)
+        {
+            CatalogCondition condition;
+            if (string.IsNullOrEmpty(conditionId) || !_conditions.TryGetValue(conditionId, out condition)) return;
+            ApplyNodeConditionValues(target, condition.Required, true);
+            ApplyNodeConditionValues(target, condition.Forbidden, false);
+        }
+
+        private void ApplyNodeConditionValues(NetInfo.Node target, NamedValue[] values, bool required)
+        {
+            if (values == null) return;
+            foreach (NamedValue value in values)
+            {
+                string[] flags = DecodeJsonStrings(value.ValueJson);
+                if (flags.Length == 0) continue;
+                if (string.Equals(value.Name, "vanilla.node", StringComparison.OrdinalIgnoreCase))
+                {
+                    NetNode.Flags parsed = (NetNode.Flags)Enum.Parse(typeof(NetNode.Flags), string.Join(",", flags), true);
+                    if (required) target.m_flagsRequired |= parsed; else target.m_flagsForbidden |= parsed;
+                }
+                else if (_unsupportedConditionNamespaces.Add(value.Name))
+                    Debug.LogWarning("RoadRuntimeHost preserves but does not yet apply condition namespace: " + value.Name);
+            }
+        }
+
+        private static Mesh BuildMesh(MeshBundle source)
+        {
+            if (source.Vertices == null || source.Vertices.Length % 3 != 0) throw new InvalidDataException("mesh vertices must be xyz triples");
+            int count = source.Vertices.Length / 3;
+            Vector3[] vertices = new Vector3[count];
+            Vector3[] normals = new Vector3[count];
+            Vector2[] uv = new Vector2[count];
+            for (int index = 0; index != count; ++index)
+            {
+                vertices[index] = new Vector3(source.Vertices[index * 3], source.Vertices[index * 3 + 1], source.Vertices[index * 3 + 2]);
+                if (source.Normals != null && source.Normals.Length == source.Vertices.Length)
+                    normals[index] = new Vector3(source.Normals[index * 3], source.Normals[index * 3 + 1], source.Normals[index * 3 + 2]);
+                if (source.Uv != null && source.Uv.Length == count * 2)
+                    uv[index] = new Vector2(source.Uv[index * 2], source.Uv[index * 2 + 1]);
+            }
+            Mesh mesh = new Mesh();
+            mesh.name = source.Name;
+            mesh.vertices = vertices;
+            mesh.uv = uv;
+            mesh.triangles = source.Triangles ?? new int[0];
+            if (source.Normals != null && source.Normals.Length == source.Vertices.Length) mesh.normals = normals;
+            else mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        private Material BuildMaterial(MaterialBundle source, Material fallback)
+        {
+            Shader shader = source != null ? Shader.Find(source.Shader) : null;
+            Material material = fallback != null ? new Material(fallback) : new Material(shader != null ? shader : Shader.Find("Custom/Net/Road"));
+            if (shader != null) material.shader = shader;
+            if (source != null)
+            {
+                material.name = source.Name;
+                if (source.Color != null && source.Color.Length >= 4)
+                    material.color = new Color(source.Color[0], source.Color[1], source.Color[2], source.Color[3]);
+                ApplyTextures(material, source.Textures);
+            }
+            return material;
+        }
+
+        private void ApplyTextures(Material material, NamedValue[] textures)
+        {
+            if (material == null || textures == null) return;
+            foreach (NamedValue texture in textures)
+            {
+                string path = DecodeJsonString(texture.ValueJson);
+                if (!string.IsNullOrEmpty(path) && !Path.IsPathRooted(path)) path = SafePreviewPath(path);
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+                Texture2D image = new Texture2D(2, 2, TextureFormat.ARGB32, true);
+                image.name = Path.GetFileNameWithoutExtension(path);
+                image.LoadImage(File.ReadAllBytes(path));
+                material.SetTexture(texture.Name, image);
+            }
+        }
+
+        private static string DecodeJsonString(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                return new DataContractJsonSerializer(typeof(string)).ReadObject(stream) as string;
+        }
+
+        private static string[] DecodeJsonStrings(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return new string[0];
+            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                return (string[])new DataContractJsonSerializer(typeof(string[])).ReadObject(stream);
+        }
+
+        private static void ApplyMaterialProperties(Material material, NamedValue[] properties)
+        {
+            if (material == null || properties == null) return;
+            foreach (NamedValue property in properties)
+            {
+                string json = property.ValueJson == null ? string.Empty : property.ValueJson.Trim();
+                if (json.StartsWith("[", StringComparison.Ordinal))
+                {
+                    float[] values;
+                    using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                        values = (float[])new DataContractJsonSerializer(typeof(float[])).ReadObject(stream);
+                    if (values.Length == 4) material.SetVector(property.Name, new Vector4(values[0], values[1], values[2], values[3]));
+                    else if (values.Length == 2) material.SetVector(property.Name, new Vector4(values[0], values[1], 0f, 0f));
+                    else throw new InvalidDataException("material vector property must have 2 or 4 values: " + property.Name);
+                }
+                else
+                {
+                    float value;
+                    if (string.Equals(json, "true", StringComparison.OrdinalIgnoreCase)) value = 1f;
+                    else if (string.Equals(json, "false", StringComparison.OrdinalIgnoreCase)) value = 0f;
+                    else value = float.Parse(json, System.Globalization.CultureInfo.InvariantCulture);
+                    material.SetFloat(property.Name, value);
+                }
+            }
+        }
+
+        private static NetInfo FindOrCloneNet(string name, NetInfo template, string collection)
+        {
+            NetInfo existing = PrefabCollection<NetInfo>.FindLoaded(name);
+            if (existing != null) return existing;
+            GameObject clone = UnityEngine.Object.Instantiate(template.gameObject) as GameObject;
+            clone.name = name;
+            NetInfo info = clone.GetComponent<NetInfo>();
+            PrefabCollection<NetInfo>.InitializePrefabs("RoadRuntimeHost." + collection, info, null);
+            PrefabCollection<NetInfo>.BindPrefabs();
+            return info;
+        }
+
+        private string SafePreviewPath(string relative)
+        {
+            if (Path.IsPathRooted(relative) || relative.Contains("..")) throw new InvalidDataException("unsafe preview-relative path: " + relative);
+            string root = Path.GetFullPath(_previewPath) + Path.DirectorySeparatorChar;
+            string path = Path.GetFullPath(Path.Combine(root, relative));
+            if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("path escapes preview root: " + relative);
+            return path;
+        }
+
+        private static string ModeName(string name, string mode)
+        {
+            return string.Equals(mode, "basic", StringComparison.OrdinalIgnoreCase) ? name : name + " [" + mode + "]";
+        }
+
+        private static NetInfo ModeTemplate(NetInfo basic, string mode)
+        {
+            if (string.Equals(mode, "basic", StringComparison.OrdinalIgnoreCase)) return basic;
+            RoadAI ai = basic.m_netAI as RoadAI;
+            if (ai == null) return null;
+            if (string.Equals(mode, "elevated", StringComparison.OrdinalIgnoreCase)) return ai.m_elevatedInfo;
+            if (string.Equals(mode, "bridge", StringComparison.OrdinalIgnoreCase)) return ai.m_bridgeInfo;
+            if (string.Equals(mode, "slope", StringComparison.OrdinalIgnoreCase)) return ai.m_slopeInfo;
+            if (string.Equals(mode, "tunnel", StringComparison.OrdinalIgnoreCase)) return ai.m_tunnelInfo;
+            return null;
+        }
+
+        private static void LinkModes(NetInfo basic, Dictionary<string, NetInfo> modes)
+        {
+            RoadAI ai = basic.m_netAI as RoadAI;
+            if (ai == null) return;
+            NetInfo value;
+            if (modes.TryGetValue("elevated", out value)) ai.m_elevatedInfo = value;
+            if (modes.TryGetValue("bridge", out value)) ai.m_bridgeInfo = value;
+            if (modes.TryGetValue("slope", out value)) ai.m_slopeInfo = value;
+            if (modes.TryGetValue("tunnel", out value)) ai.m_tunnelInfo = value;
+        }
+
+        private static void RefreshExistingInstances(IEnumerable<NetInfo> infos)
+        {
+            List<NetInfo> targets = new List<NetInfo>(infos);
+            SimulationManager.instance.AddAction(delegate
+            {
+                NetManager manager = NetManager.instance;
+                for (ushort id = 1; id < manager.m_segments.m_size; ++id)
+                {
+                    NetInfo info = manager.m_segments.m_buffer[id].Info;
+                    if (targets.Contains(info)) manager.UpdateSegmentRenderer(id, true);
+                }
+                for (ushort id = 1; id < manager.m_nodes.m_size; ++id)
+                {
+                    NetInfo info = manager.m_nodes.m_buffer[id].Info;
+                    if (targets.Contains(info)) manager.UpdateNodeRenderer(id, true);
+                }
+            });
+        }
+
+        private static NetInfo.Direction ParseDirection(string value)
+        {
+            return (NetInfo.Direction)Enum.Parse(typeof(NetInfo.Direction), NormalizeEnum(value), true);
+        }
+
+        private static NetInfo.LaneType ParseLaneType(string value)
+        {
+            return (NetInfo.LaneType)Enum.Parse(typeof(NetInfo.LaneType), NormalizeEnum(value), true);
+        }
+
+        private static VehicleInfo.VehicleType ParseVehicleType(string value)
+        {
+            string normalized = NormalizeEnum(value);
+            if (string.Equals(normalized, "None", StringComparison.OrdinalIgnoreCase)) return VehicleInfo.VehicleType.None;
+            return (VehicleInfo.VehicleType)Enum.Parse(typeof(VehicleInfo.VehicleType), normalized, true);
+        }
+
+        private static string NormalizeEnum(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "None";
+            return value.Replace("_", string.Empty).Replace(" ", string.Empty);
+        }
+
+        private static void SetUiCategory(PrefabInfo info, string category)
+        {
+            FieldInfo field = typeof(PrefabInfo).GetField("m_UICategory", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null) field.SetValue(info, category);
+        }
+
+        private static NetInfo.Segment CopySegment(NetInfo.Segment source)
+        {
+            NetInfo.Segment value = new NetInfo.Segment();
+            value.m_forwardRequired = source.m_forwardRequired;
+            value.m_forwardRequired2 = source.m_forwardRequired2;
+            value.m_forwardForbidden = source.m_forwardForbidden;
+            value.m_forwardForbidden2 = source.m_forwardForbidden2;
+            value.m_backwardRequired = source.m_backwardRequired;
+            value.m_backwardRequired2 = source.m_backwardRequired2;
+            value.m_backwardForbidden = source.m_backwardForbidden;
+            value.m_backwardForbidden2 = source.m_backwardForbidden2;
+            value.m_emptyTransparent = source.m_emptyTransparent;
+            value.m_disableBendNodes = source.m_disableBendNodes;
+            value.m_lodMesh = source.m_lodMesh;
+            value.m_lodMaterial = source.m_lodMaterial;
+            value.m_lodRenderDistance = source.m_lodRenderDistance;
+            value.m_requireSurfaceMaps = source.m_requireSurfaceMaps;
+            value.m_requireHeightMap = source.m_requireHeightMap;
+            value.m_requireWindSpeed = source.m_requireWindSpeed;
+            value.m_preserveUVs = source.m_preserveUVs;
+            value.m_generateTangents = source.m_generateTangents;
+            value.m_layer = source.m_layer;
+            return value;
+        }
+
+        private static NetInfo.Node CopyNode(NetInfo.Node source)
+        {
+            NetInfo.Node value = new NetInfo.Node();
+            value.m_flagsRequired = source.m_flagsRequired;
+            value.m_flagsRequired2 = source.m_flagsRequired2;
+            value.m_flagsForbidden = source.m_flagsForbidden;
+            value.m_flagsForbidden2 = source.m_flagsForbidden2;
+            value.m_connectGroup = source.m_connectGroup;
+            value.m_directConnect = source.m_directConnect;
+            value.m_emptyTransparent = source.m_emptyTransparent;
+            value.m_lodMesh = source.m_lodMesh;
+            value.m_lodMaterial = source.m_lodMaterial;
+            value.m_tagsRequired = source.m_tagsRequired;
+            value.m_tagsForbidden = source.m_tagsForbidden;
+            value.m_forbidAnyTags = source.m_forbidAnyTags;
+            value.m_minSameTags = source.m_minSameTags;
+            value.m_maxSameTags = source.m_maxSameTags;
+            value.m_minOtherTags = source.m_minOtherTags;
+            value.m_maxOtherTags = source.m_maxOtherTags;
+            value.m_lodRenderDistance = source.m_lodRenderDistance;
+            value.m_requireSurfaceMaps = source.m_requireSurfaceMaps;
+            value.m_requireWindSpeed = source.m_requireWindSpeed;
+            value.m_preserveUVs = source.m_preserveUVs;
+            value.m_generateTangents = source.m_generateTangents;
+            value.m_layer = source.m_layer;
+            return value;
+        }
+    }
+}

@@ -57,4 +57,17 @@ Set-Location D:\GitHub\road
 .\scripts\build-road-importer.ps1
 ```
 
+Runtime previewを変更した場合は、catalog、Blender bundle、.NET 3.5 reader、CS1参照build、versioned stagingを別々に確認する。
+
+```powershell
+python -m unittest tests.runtime_catalog_test
+& 'G:\Program Files\Blender\stable\blender-5.1.0-windows-x64\blender-5.1.0-windows-x64\blender.exe' `
+  --background --factory-startup `
+  --python 'D:\GitHub\road\tests\blender_addon_smoke.py'
+.\scripts\stage-runtime-host.ps1 -PreviewPath 'D:\GitHub\road\build\smoke\runtime-preview'
+.\scripts\test-runtime-contract.ps1 -PreviewPath 'D:\GitHub\road\build\smoke\runtime-preview'
+```
+
+`RUNTIME_CONTRACT_OK`はBlenderが出したJSONをRuntime DLLと同じ.NET 3.5 serializerで読めることを証明する。`runtime.current`による差替え、Prefab登録、shader描画、map save再読込、Adaptive Roads条件、接続形状は実ゲーム起動なしでは証明しない。
+
 これらはAsset Editor内の見た目、shader、AO、selector、カーブ接続を証明しない。最終gateには実ゲームimportが必要である。

@@ -297,6 +297,53 @@ assert props.lanes[0].lane_type == "PEDESTRIAN"
 assert props.lanes[1].direction == "BACKWARD"
 assert props.lanes[2].direction == "FORWARD"
 
+runtime_output = ROOT / "build" / "smoke" / "runtime-preview"
+props.runtime_output_dir = str(runtime_output)
+props.runtime_road_id = "smoke-road"
+props.runtime_prefab_name = "Smoke Road"
+assert bpy.ops.cs1_road.export_runtime() == {"FINISHED"}
+manifest = json.loads((runtime_output / "manifest.json").read_text(encoding="utf-8"))
+bundle = json.loads((runtime_output / "roads" / "smoke-road.json").read_text(encoding="utf-8"))
+assert manifest["roads"][0]["revision"] == bundle["revision"]
+assert len(bundle["revision"]) == 64
+assert len(bundle["structural_signature"]) == 64
+mode_entries = {item["mode"]: item["entries"] for item in bundle["modes"]}
+assert set(mode_entries) == {"basic", "elevated", "bridge", "slope", "tunnel"}
+basic_segment = mode_entries["basic"][0]["mesh"]
+assert len(basic_segment["vertices"]) == len(basic_segment["normals"])
+assert len(basic_segment["uv"]) * 3 == len(basic_segment["vertices"]) * 2
+assert len(basic_segment["triangles"]) > 0
+assert basic_segment["material"]["shader"] == "Custom/Net/Road"
+assert min(basic_segment["vertices"][2::3]) == -32.0
+assert max(basic_segment["vertices"][2::3]) == 32.0
+props.runtime_road_id = "smoke-road-two"
+props.runtime_prefab_name = "Smoke Road Two"
+assert bpy.ops.cs1_road.export_runtime() == {"FINISHED"}
+second_bundle = json.loads((runtime_output / "roads" / "smoke-road-two.json").read_text(encoding="utf-8"))
+props.runtime_road_id = "smoke-road"
+props.runtime_prefab_name = "Smoke Road"
+edge_source = bpy.data.objects["ElevatedEdge"]
+bpy.context.view_layer.objects.active = edge_source
+edge_source.select_set(True)
+props.runtime_prop_id = "smoke-decal"
+assert bpy.ops.cs1_road.export_runtime_prop() == {"FINISHED"}
+prop_bundle = json.loads((runtime_output / "props" / "smoke-decal.json").read_text(encoding="utf-8"))
+assert prop_bundle["prop_id"] == "smoke-decal"
+assert prop_bundle["mesh"]["material"]["shader"] == "Custom/Props/Decal/Blend"
+assert len(prop_bundle["mesh"]["triangles"]) > 0
+previous_revision = bundle["revision"]
+props.runtime_auto_export = True
+props.curb_height += 0.01
+assert road_builder._runtime_auto_export_timer() == 1.0
+updated_bundle = json.loads((runtime_output / "roads" / "smoke-road.json").read_text(encoding="utf-8"))
+updated_manifest = json.loads((runtime_output / "manifest.json").read_text(encoding="utf-8"))
+assert updated_bundle["revision"] != previous_revision
+manifest_roads = {item["road_id"]: item for item in updated_manifest["roads"]}
+assert len(manifest_roads) == 2
+assert manifest_roads["smoke-road"]["revision"] == updated_bundle["revision"]
+assert manifest_roads["smoke-road-two"]["revision"] == second_bundle["revision"]
+props.runtime_auto_export = False
+
 panel = type("FakePanel", (), {"layout": FakeLayout()})()
 road_builder.CS1ROAD_PT_main.draw(panel, bpy.context)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 bl_info = {
     "name": "CS1 Road Builder",
     "author": "Local project",
-    "version": (0, 5, 0),
+    "version": (0, 6, 0),
     "blender": (5, 1, 0),
     "location": "3D View > Sidebar > Road",
     "description": "Edit and preview standalone Cities: Skylines 1 road modes",
@@ -26,9 +26,11 @@ from bpy_extras.io_utils import ExportHelper, ImportHelper
 # even on the first reload from an older add-on version.
 from . import domain as _domain
 from . import geometry_plan as _geometry_plan
+from . import runtime_export as _runtime_export
 
 importlib.reload(_domain)
 importlib.reload(_geometry_plan)
+importlib.reload(_runtime_export)
 
 from .domain import (
     MODE_LENGTH,
@@ -39,6 +41,7 @@ from .domain import (
     strip_id,
 )
 from .geometry_plan import plan_main_girders
+from .runtime_export import export_prop_bundle, export_runtime_bundle, geometry_fingerprint, safe_road_id
 
 
 MODE_ITEMS = (
@@ -105,6 +108,8 @@ MODE_COLORS = {
     "slope": (0.18, 0.22, 0.27, 1.0),
     "tunnel": (0.10, 0.12, 0.15, 1.0),
 }
+_AUTO_EXPORT_STATE = {}
+DEFAULT_RUNTIME_OUTPUT = str(Path(__file__).resolve().parents[2] / "build" / "runtime-preview")
 def _enum_value(value: str, available, fallback: str) -> str:
     normalized = value.upper().replace(" ", "_")
     compact = normalized.replace("_", "")
@@ -1004,6 +1009,15 @@ class CS1RoadBuilderProperties(PropertyGroup):
     tunnel_depth: FloatProperty(name="Tunnel depth", default=12.0, min=1.0, max=64.0, unit="LENGTH")
     tunnel_clearance: FloatProperty(name="Tunnel clearance", default=5.0, min=2.0, max=16.0, unit="LENGTH")
     hide_other_modes: BoolProperty(name="Hide other modes", default=True)
+    runtime_road_id: StringProperty(name="Runtime road ID", default="example-road")
+    runtime_prefab_name: StringProperty(name="Runtime prefab name", default="Road Runtime Example")
+    runtime_template_name: StringProperty(name="Template prefab", default="Basic Road")
+    runtime_output_dir: StringProperty(
+        name="Runtime output", default=DEFAULT_RUNTIME_OUTPUT, subtype="DIR_PATH",
+    )
+    runtime_auto_export: BoolProperty(name="Auto export every second", default=False)
+    runtime_prop_id: StringProperty(name="Runtime Prop ID", default="example-decal")
+    runtime_prop_shader: StringProperty(name="Prop shader", default="Custom/Props/Decal/Blend")
 
 
 class CS1ROAD_UL_lanes(UIList):
@@ -1123,6 +1137,157 @@ class CS1ROAD_OT_build_all(Operator):
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         _show_only_mode(active)
+        return {"FINISHED"}
+
+
+def _runtime_lanes(props):
+    return [
+        {
+            "lane_id": lane.lane_id,
+            "position": position,
+            "width": lane.width,
+            "vertical_offset": lane.vertical_offset,
+            "stop_offset": lane.stop_offset,
+            "speed_limit": lane.speed_limit,
+            "direction": lane.direction,
+            "lane_type": lane.lane_type,
+            "vehicle_type": lane.vehicle_type,
+            "allow_connect": lane.allow_connect,
+        }
+        for lane, position in _lane_positions(props)
+    ]
+
+
+def _runtime_mode_objects():
+    result = {}
+    for mode, _, _ in MODE_ITEMS:
+        collection = bpy.data.collections.get(f"CS1_ROAD_{mode}")
+        if collection is None:
+            continue
+        by_part = {
+            obj.get("cs1_road_part"): obj
+            for obj in collection.objects
+            if obj.type == "MESH" and obj.get("cs1_road_mode") == mode
+        }
+        if "segment" in by_part and "node" in by_part:
+            result[mode] = [by_part["segment"], by_part["node"]]
+    return result
+
+
+def _runtime_output_path(props) -> Path:
+    return Path(bpy.path.abspath(props.runtime_output_dir)).resolve()
+
+
+def _export_runtime_scene(scene):
+    props = scene.cs1_road_builder
+    _ensure_lane_ids(props)
+    modes = _runtime_mode_objects()
+    if not modes:
+        raise ValueError("Build at least one road mode before runtime export")
+    return export_runtime_bundle(
+        _runtime_output_path(props),
+        safe_road_id(props.runtime_road_id),
+        props.runtime_prefab_name.strip() or props.road_name,
+        props.runtime_template_name.strip() or "Basic Road",
+        _runtime_lanes(props),
+        modes,
+    )
+
+
+def _authoring_fingerprint(props):
+    lanes = tuple(
+        (
+            lane.lane_id, lane.zone, lane.width, lane.direction, lane.lane_type,
+            lane.vehicle_type, lane.speed_limit, lane.vertical_offset,
+            lane.stop_offset, lane.allow_connect,
+        )
+        for lane in props.lanes
+    )
+    boundaries = tuple(
+        (
+            item.boundary_id, item.role, item.marking_enabled,
+            item.marking_role, item.marking_style,
+        )
+        for item in props.boundaries
+    )
+    edge = props.elevated_edge_mesh
+    edge_fingerprint = geometry_fingerprint([edge]) if edge is not None else ""
+    return repr((
+        props.road_name, lanes, boundaries, props.shoulder_width,
+        props.sidewalk_width, props.curb_height, props.marking_paint_width,
+        props.marking_region_width, props.node_shoulder_bands,
+        props.surface_profile, props.node_transition_target,
+        props.elevated_height, props.bridge_height, props.deck_depth,
+        props.bridge_deck_depth, props.tunnel_depth, props.tunnel_clearance,
+        props.elevated_edge_no_split_group, edge_fingerprint,
+        props.runtime_road_id, props.runtime_prefab_name,
+        props.runtime_template_name, props.runtime_output_dir,
+    ))
+
+
+def _runtime_geometry_fingerprint():
+    objects = [obj for values in _runtime_mode_objects().values() for obj in values]
+    return geometry_fingerprint(objects)
+
+
+def _runtime_auto_export_timer():
+    for scene in bpy.data.scenes:
+        props = getattr(scene, "cs1_road_builder", None)
+        if props is None or not props.runtime_auto_export:
+            continue
+        scene_key = scene.as_pointer()
+        current_authoring = _authoring_fingerprint(props)
+        previous = _AUTO_EXPORT_STATE.get(scene_key)
+        try:
+            if previous is None or previous[0] != current_authoring:
+                for mode, _, _ in MODE_ITEMS:
+                    build_mode(scene, mode)
+            current_geometry = _runtime_geometry_fingerprint()
+            if previous is None or previous != (current_authoring, current_geometry):
+                _export_runtime_scene(scene)
+                _AUTO_EXPORT_STATE[scene_key] = (current_authoring, current_geometry)
+        except (OSError, ValueError, TypeError) as error:
+            print(f"CS1 Road Builder runtime export: {error}")
+    return 1.0
+
+
+class CS1ROAD_OT_export_runtime(Operator):
+    bl_idname, bl_label = "cs1_road.export_runtime", "Build and export runtime bundle"
+
+    def execute(self, context):
+        try:
+            for mode, _, _ in MODE_ITEMS:
+                build_mode(context.scene, mode)
+            payload = _export_runtime_scene(context.scene)
+            _AUTO_EXPORT_STATE[context.scene.as_pointer()] = (
+                _authoring_fingerprint(context.scene.cs1_road_builder),
+                _runtime_geometry_fingerprint(),
+            )
+        except (OSError, ValueError, TypeError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Runtime bundle {payload['revision'][:12]}")
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_export_runtime_prop(Operator):
+    bl_idname, bl_label = "cs1_road.export_runtime_prop", "Export selected Prop/Decal mesh"
+
+    def execute(self, context):
+        props = context.scene.cs1_road_builder
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, "Select one Mesh object to export")
+            return {"CANCELLED"}
+        try:
+            payload = export_prop_bundle(
+                _runtime_output_path(props), props.runtime_prop_id, obj,
+                props.runtime_prop_shader,
+            )
+        except (OSError, ValueError, TypeError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Prop bundle {payload['revision'][:12]}")
         return {"FINISHED"}
 
 
@@ -1410,6 +1575,18 @@ class CS1ROAD_PT_main(Panel):
         row = layout.row(align=True)
         row.operator("cs1_road.import_spec", icon="IMPORT")
         row.operator("cs1_road.export_spec", icon="EXPORT")
+        runtime = layout.box()
+        runtime.label(text="Runtime preview")
+        runtime.prop(props, "runtime_road_id")
+        runtime.prop(props, "runtime_prefab_name")
+        runtime.prop(props, "runtime_template_name")
+        runtime.prop(props, "runtime_output_dir")
+        runtime.prop(props, "runtime_auto_export")
+        runtime.operator("cs1_road.export_runtime", icon="EXPORT")
+        runtime.separator()
+        runtime.prop(props, "runtime_prop_id")
+        runtime.prop(props, "runtime_prop_shader")
+        runtime.operator("cs1_road.export_runtime_prop", icon="MESH_PLANE")
         layout.label(text="Generated objects remain editable meshes.", icon="EDITMODE_HLT")
 
 
@@ -1418,7 +1595,9 @@ CLASSES = (
     CS1ROAD_OT_lane_add, CS1ROAD_OT_lanes_reset, CS1ROAD_OT_lane_remove, CS1ROAD_OT_lane_move,
     CS1ROAD_OT_boundaries_sync,
     CS1ROAD_OT_build_preview, CS1ROAD_OT_build_all, CS1ROAD_OT_show_mode,
-    CS1ROAD_OT_import_spec, CS1ROAD_OT_export_spec, CS1ROAD_PT_main,
+    CS1ROAD_OT_import_spec, CS1ROAD_OT_export_spec, CS1ROAD_OT_export_runtime,
+    CS1ROAD_OT_export_runtime_prop,
+    CS1ROAD_PT_main,
 )
 
 
@@ -1428,11 +1607,16 @@ def register():
     bpy.types.Scene.cs1_road_builder = PointerProperty(type=CS1RoadBuilderProperties)
     if not bpy.app.timers.is_registered(_initialize_scene_lanes):
         bpy.app.timers.register(_initialize_scene_lanes, first_interval=0.0)
+    if not bpy.app.timers.is_registered(_runtime_auto_export_timer):
+        bpy.app.timers.register(_runtime_auto_export_timer, first_interval=1.0, persistent=True)
 
 
 def unregister():
     if bpy.app.timers.is_registered(_initialize_scene_lanes):
         bpy.app.timers.unregister(_initialize_scene_lanes)
+    if bpy.app.timers.is_registered(_runtime_auto_export_timer):
+        bpy.app.timers.unregister(_runtime_auto_export_timer)
+    _AUTO_EXPORT_STATE.clear()
     del bpy.types.Scene.cs1_road_builder
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

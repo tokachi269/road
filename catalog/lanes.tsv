@@ -1,0 +1,3 @@
+road_id	lane_id	order	width	position	direction	lane_type	vehicle_type	speed_limit	allow_connect
+example-road	lane-backward	10	3.0	-1.5	Backward	Vehicle	Car	1.0	true
+example-road	lane-forward	20	3.0	1.5	Forward	Vehicle	Car	1.0	true
