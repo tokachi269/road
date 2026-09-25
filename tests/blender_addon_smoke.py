@@ -16,6 +16,31 @@ road_builder = importlib.import_module("road_builder")
 road_builder.register()
 
 
+def create_elevated_edge_source(name, bottom_x, fence_x):
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    mesh.from_pydata(
+        (
+            (0.0, -32.0, 0.0),
+            (0.0, 32.0, 0.0),
+            (bottom_x, 32.0, -1.0),
+            (bottom_x, -32.0, -1.0),
+            (fence_x, -32.0, 0.0),
+            (fence_x, 32.0, 0.0),
+            (fence_x, 32.0, 1.0),
+            (fence_x, -32.0, 1.0),
+        ),
+        (),
+        ((3, 2, 1, 0), (4, 5, 6, 7)),
+    )
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    group = obj.vertex_groups.new(name="CS1_NO_SPLIT")
+    group.add((4, 5, 6, 7), 1.0, "REPLACE")
+    obj.location = (100.0, 50.0, 25.0)  # staging location is intentionally ignored
+    return obj
+
+
 class FakeLayout:
     """Minimal Blender UILayout stand-in that exercises the panel draw code."""
 
@@ -44,6 +69,9 @@ props.curb_height = 0.2
 props.surface_profile = "DEPRESSED"
 props.node_transition_target = "FLUSH"
 props.node_shoulder_bands = False
+props.elevated_edge_mesh = create_elevated_edge_source(
+    "ElevatedEdge", -0.6, 0.15
+)
 
 result = bpy.ops.cs1_road.build_all()
 assert result == {"FINISHED"}
@@ -156,13 +184,79 @@ elevated_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["elevated_seg
 assert 8.0 in elevated_z and 8.2 in elevated_z, elevated_z
 elevated_segment = bpy.data.objects["elevated_segment"]
 assert elevated_segment["cs1_girder_count"] == 6
-assert elevated_segment["cs1_geometry_groups"] == "surface,deck,fascia,girder"
+assert elevated_segment["cs1_geometry_groups"] == "surface,deck,custom_edge,girder"
 assert len(elevated_segment["cs1_girder_centers"]) == 6
 assert elevated_segment["cs1_girder_spacing"] == 3.8
 assert elevated_segment["cs1_girder_reference_span"] == 35.0
 assert len(elevated_segment.data.materials) == 3
 assert sum(polygon.material_index == 2 for polygon in elevated_segment.data.polygons) > 0
 assert min(elevated_z) < 7.4
+assert elevated_segment["cs1_elevated_edge_source"] == "ElevatedEdge"
+assert elevated_segment["cs1_elevated_left_edge_mirrored"] is True
+
+
+def y_values_at_xz(obj, x, z):
+    return {
+        round(vertex.co.y, 4)
+        for vertex in obj.data.vertices
+        if abs(vertex.co.x - x) < 1e-5 and abs(vertex.co.z - z) < 1e-5
+    }
+
+
+# The structural side face is sliced; the disconnected fence face is not.
+assert len(y_values_at_xz(elevated_segment, -9.9, 7.2)) == 21
+assert len(y_values_at_xz(elevated_segment, 9.9, 7.2)) == 21
+assert y_values_at_xz(elevated_segment, -10.65, 9.2) == {-32.0, 32.0}
+assert y_values_at_xz(elevated_segment, 10.65, 9.2) == {-32.0, 32.0}
+elevated_node = bpy.data.objects["elevated_node"]
+assert len(y_values_at_xz(elevated_node, -9.9, 7.2)) == 9
+
+# Mirroring reverses face order so outward normals remain opposite.
+edge_side_faces = [
+    polygon for polygon in elevated_segment.data.polygons
+    if abs(polygon.center.x) > 9.8
+    and 7.2 - 1e-4 <= polygon.center.z <= 8.2 + 1e-4
+    and abs(polygon.normal.x) > 0.1
+]
+edge_normal_samples = [
+    (tuple(polygon.center), tuple(polygon.normal)) for polygon in edge_side_faces
+]
+assert any(
+    polygon.center.x < 0.0 and polygon.normal.x < 0.0
+    for polygon in edge_side_faces
+), edge_normal_samples
+assert any(
+    polygon.center.x > 0.0 and polygon.normal.x > 0.0
+    for polygon in edge_side_faces
+), edge_normal_samples
+
+# Custom lowest edge replaces the fixed vertical fascia and shares the deck
+# underside vertex, producing one connected mesh.
+assert not y_values_at_xz(elevated_segment, -10.5, 7.2)
+join_vertices = [
+    vertex.index for vertex in elevated_segment.data.vertices
+    if abs(vertex.co.x + 9.9) < 1e-5
+    and abs(vertex.co.y + 32.0) < 1e-5
+    and abs(vertex.co.z - 7.2) < 1e-5
+]
+assert len(join_vertices) == 1, [
+    (
+        index,
+        tuple(elevated_segment.data.vertices[index].co),
+        [polygon.index for polygon in elevated_segment.data.polygons if index in polygon.vertices],
+    )
+    for index in join_vertices
+]
+assert sum(join_vertices[0] in polygon.vertices for polygon in elevated_segment.data.polygons) >= 2
+
+# Only the below-origin portion follows the configured deck depth.
+props.deck_depth = 2.0
+road_builder.build_mode(bpy.context.scene, "elevated")
+depth_scaled = bpy.data.objects["elevated_segment"]
+assert len(y_values_at_xz(depth_scaled, -9.9, 6.2)) == 21
+assert y_values_at_xz(depth_scaled, -10.65, 9.2) == {-32.0, 32.0}
+props.deck_depth = 1.0
+road_builder.build_mode(bpy.context.scene, "elevated")
 tunnel_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["tunnel_segment"].data.vertices}
 assert -12.0 in tunnel_z and -11.8 in tunnel_z and -7.0 in tunnel_z, tunnel_z
 

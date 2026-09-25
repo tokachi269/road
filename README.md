@@ -53,6 +53,7 @@ Blenderを通常起動し、3D Viewで`N`キーを押し、`Road`タブを開き
 - 共有marking styleの線幅、asphalt余白を含むmarking領域幅
 - Ground / Elevated / Bridge / Tunnel Entrance / Tunnel
 - 高架・橋梁の高さと床版厚
+- Elevated左右端へ反転配置するカスタム側面・手すりMesh
 - トンネル深さと建築限界
 - JSONの読み込み・保存
 - 64 m固定のnode、道路中央`X=0`での左右メッシュ分割
@@ -61,6 +62,21 @@ Blenderを通常起動し、3D Viewで`N`キーを押し、`Road`タブを開き
 `Build active mode`または`Build all modes`で専用コレクションへ生成します。生成物は通常のMeshなので、生成後はEdit Mode、Modifier、Materialで直接編集できます。同じモードを再生成すると、そのモードの専用コレクション内だけが置き換わります。
 
 アドオンのPythonを変更した場合、Blenderの再起動は不要です。`F3`で`Reload Scripts`を実行すると`domain.py`と`geometry_plan.py`を含めて再読込されます。コード反映後の形状は自動更新されないため、`Build active mode`または`Build all modes`で再生成します。
+
+### Elevatedのカスタム端部Mesh
+
+Elevatedモードでは`Edge mesh (right basis)`へ1つのMesh Objectを指定します。入力を右端へそのまま配置し、左端はX反転して配置します。
+
+入力Objectは次の規約で作成します。
+
+- 右側用として作り、Mesh Objectの原点を、路面上面と右外端が交わる横断面上の点（local X=0、Z=0）に置く。床版下端は原点から-X側（道路内側）へ作る。左側では自動的にX反転される。
+- 長手方向をY軸とし、カーブ追従させる連続面をlocal Y=-32～+32mまで作る。
+- 路面より上の手すり等はZ>0、床版側面はZ<0へ作る。負のZだけが`Elevated deck depth`に合わせて伸縮する。
+- 最下辺は64mを通る1本の長手辺にする。左は原点から+X側、右は-X側へ入るように作る。垂直側面ならX=0でよい。
+- 長手分割したくない柵等の頂点を`CS1_NO_SPLIT` vertex groupへ入れる。その頂点に触れる面は分割しない。グループ名はUIで変更でき、グループがなければ全ての面を分割する。
+- Objectのlocationは配置に使わない。rotationとscaleは形状へ適用される。
+
+生成時は連続側面をsegmentで20分割、nodeで8分割し、最下辺を床版下面へ溶接します。左側は面の頂点順も反転して法線を維持します。カスタム端部指定中は従来の垂直fasciaを生成せず、道路表面・床版・主桁・左右端部を同じ生成Mesh Objectへまとめます。入力Objectへの参照は`.blend`内の編集状態であり、現行JSON schema v3には保存しません。
 
 各モードは`segment`と`node`の2オブジェクトだけを生成します。歩道・路肩・curbはそれぞれ別プリミティブにせず、各オブジェクト内の道路表面として生成します。Groundの下面・端面・外側面など、通常見えない面は作りません。nodeの中央分割は1オブジェクト内の独立した左右面として保持します。
 

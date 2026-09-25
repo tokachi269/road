@@ -36,6 +36,8 @@ Blender add-onの代表経路は、JSON import、全5 mode生成、UV範囲、64
 
 ElevatedのGeometry Planは、既定4車線preview（床版幅21m）で3.8m間隔・6本・桁高2.5mの主桁、structure material、床版下面より低い主桁下端が生成されることも数値検査する。形状確認用renderは補助確認として次で作る。
 
+カスタムElevated端部の代表経路では、右側基準Mesh 1つを左右へ反転配置し、連続側面がsegment 20/node 8 sliceへ分割されること、`CS1_NO_SPLIT`の柵面が未分割であること、床版厚変更でZ<0だけが追従すること、従来fasciaが消えること、最下辺と床版下面が同じ頂点を共有することをbackground Blenderで検査する。
+
 ```powershell
 & 'G:\Program Files\Blender\stable\blender-5.1.0-windows-x64\blender-5.1.0-windows-x64\blender.exe' `
   --background 'D:\GitHub\road\build\smoke\road-builder-addon-smoke.blend' `
