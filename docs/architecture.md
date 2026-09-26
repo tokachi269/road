@@ -8,7 +8,7 @@
 
 - Laneはstable ID、順序、幅、方向、CS1 lane metadataを所有する。
 - Blenderの断面表は、network lane各行に加えて左右共通の歩道surface幅と路肩幅を`not lane`行として表示する。通常laneは各行で種別・幅・向き・乗り物・速度を直接編集する。歩道lane幅はsurface幅から合計0.50mの余白を引いて導出し、独立入力にしない。歩道の`Both/Pedestrian/None`と通常の高さも導出し、`stop_offset=0`と`allow_connect=true`は通常時の既定値として内部に保持する。いずれも選択行の詳細フォームには出さない。
-- 歩道幅、路肩幅は共有断面値が所有する。通常の車道高低差は道路単位の真偽値から`domain.py`の固定値0.30mを導出し、個別laneやmodeでは編集しない。
+- 歩道幅、路肩幅、分離帯の有無・全幅・路面からの高さは共有断面値が所有する。通常の車道高低差は道路単位の真偽値から`domain.py`の固定値0.30mを導出し、個別laneやmodeでは編集しない。
 - 現在の線設定は、導出されたboundary IDに対応付けている。
 - Blender PropertyGroupは編集adapterであり、別の意味を決めない。
 - RoadImporter XMLはCS1向けcompiled outputであり、編集正本にしない。
@@ -17,7 +17,7 @@
 
 Blender previewのMaterialはmodeや道路名から生成しない。`surface / structure / tunnel`の共通Material datablockをすべのmodeと道路種別で再利用する。Markingはsurface内のface bandであり別Materialにしない。Slopeの非surface部はtunnelを使う。GroundとElevated等のCS1 shader差はMaterialの所有ではなくOutput Entry Planの描画契約であり、共通texture setを参照することと分けて扱う。
 
-現在のschema v3は`lanes`と`layout.strips`へ幅と接続を重複して保存しているため、最終契約ではない。どちらを正本にするかは未決定であり、比較評価は`docs/design-decisions.md`に置く。既存round-tripを壊さずに方針を決めるまでは、この重複へ新機能を追加しない。
+現在のschema v3は`lanes`と`layout.strips`へ幅と接続を重複して保存しているため、最終契約ではない。どちらを正本にするかは未決定であり、比較評価は`docs/design-decisions.md`に置く。分離帯だけは明示要求により`shared_geometry.median`を編集正本、`layout.strip-median`をcompiled topologyとして追加した。同じ幅を持つためimport時に一致を検証し、不一致を黙って採用しない。ほかの新機能を既存の重複へ追加する判断には流用しない。
 
 ## Derived topology
 
@@ -25,6 +25,7 @@ Blender previewのMaterialはmodeや道路名から生成しない。`surface / 
 
 - 車道strip IDはstable lane IDから導出する。
 - Lane間boundary IDは左右のstable lane IDから導出する。
+- 分離帯は最初の対向方向boundaryへ挿入し、直接のlane dividerを左右の`boundary-median-left/right`へ置換する。対向方向boundaryがない道路では分離帯を生成せずvalidation errorにする。
 - Curbとcarriageway edgeは意味上の固定IDを使う。
 - Lane追加時に隣接関係が変わったboundaryだけを置換し、無関係なedge IDを維持する。
 - Boundaryのrole既定値とmarking role既定値はdomain ownerが決める。
@@ -52,6 +53,8 @@ Blender previewのMaterialはmodeや道路名から生成しない。`surface / 
 現在のBlender previewでは、国交省資料に掲載されたJIS A 5373 PCコンポ橋の標準桁間隔2.6/3.2/3.8mから、床版幅に収まり外側余白が標準断面に最も近い偶数本の構成を選ぶ。自由寸法入力は設けない。桁高は確認用支間35mの標準値1.8/2.1/2.5m、矩形近似の幅は標準主桁断面の下フランジ全幅0.70mを使う。
 
 Elevatedの左右端部は、Blender内の右側基準Mesh Object 1つで固定断面fasciaを置換できる。Object原点のX/Zを右路面外角anchorとし、右はそのまま、左はX反転と面頂点順の反転を行って配置する。原点は配置基準であり、Meshの頂点や辺を必ず通す必要はなく、断面のlocal X/Z offsetは保持する。Z<0だけを床版厚へ追従させ、最下面に長手辺が2本ある直方体でも、道路中心側の辺を床版下面の端へweldする。長手方向のsliceはカーブ変形用に必要な通常面だけに入れる。路面高さで全面を一律分割せず、床版内部に埋まる道路中心側面の下部だけを切り取る。また64m両端の入力end capは接続先と重なるため出力しない。`CS1_NO_SPLIT` vertex groupの頂点に触れる面は柵等の剛体部として分割しない。指定時も出力はmodeごとのsegment/node各1 objectのままである。入力Object参照はBlender adapterの編集状態であり、未確定のschema v3へ追加しない。
+
+分離帯は全mode共通のsurface断面である。生成curbを選ぶ場合、左右curb上面と中央上面は別faceにし、中央上面をX=0で分割しない。分離帯下のroad faceは作らず、左右立面の路面側角を2mm下げ、長手端を2mm延長して同一面の重なりによるz-fightingを避ける。生成curbを選ばない場合はBlenderの基準Mesh Object 1つを設定幅・設定高へfitし、segment 20/node 8 sliceへ切る。64m両端のend capは出力せず、`CS1_NO_SPLIT`頂点に触れる面は切らない。基準Meshがない状態はvalidation errorであり、暗黙の箱へ置換しない。
 
 ## UV ownership
 

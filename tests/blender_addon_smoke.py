@@ -343,6 +343,133 @@ for polygon in polygons_of_kind(basic_segment, "marking"):
 assert abs(min(uv.y for uv in marking_uv)) < 1e-6
 assert abs(max(uv.y for uv in marking_uv) - 1.0) < 1e-6
 assert len({round(uv.y, 4) for uv in marking_uv}) == 21
+
+# A generated median replaces the opposing-lane marking and the road surface
+# beneath it.  Its two curb tops and unsplit centre top remain distinct faces.
+props.median_enabled = True
+props.median_width = 1.2
+props.median_height = 0.2
+props.median_with_curb = True
+props.median_curb_width = 0.15
+assert bpy.ops.cs1_road.build_all() == {"FINISHED"}
+for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
+    for part in ("segment", "node"):
+        median_object = bpy.data.objects[f"{mode}_{part}"]
+        assert abs(median_object["cs1_median_width"] - 1.2) < 1e-5
+        assert abs(median_object["cs1_median_height"] - 0.2) < 1e-5
+median_segment = bpy.data.objects["basic_segment"]
+assert abs(median_segment["cs1_median_width"] - 1.2) < 1e-5
+assert abs(median_segment["cs1_median_height"] - 0.2) < 1e-5
+assert median_segment["cs1_median_with_curb"] is True
+assert len(props.boundaries) == 8
+assert {item.boundary_id for item in props.boundaries if item.role == "MEDIAN_EDGE"} == {
+    "boundary-median-left", "boundary-median-right",
+}
+assert len(polygons_of_kind(median_segment, "marking")) == 80
+median_top_faces = [
+    polygon for polygon in median_segment.data.polygons
+    if polygon.normal.z > 0.99 and abs(polygon.center.z + 0.1) < 1e-5
+]
+assert len(median_top_faces) == 60, len(median_top_faces)
+median_centre_faces = [
+    polygon for polygon in median_top_faces if abs(polygon.center.x) < 1e-6
+]
+assert len(median_centre_faces) == 20
+for polygon in median_centre_faces:
+    xs = {round(median_segment.data.vertices[index].co.x, 4) for index in polygon.vertices}
+    assert xs == {-0.45, 0.45}, xs
+assert not any(
+    polygon.normal.z > 0.99
+    and abs(polygon.center.z + 0.3) < 1e-5
+    and abs(polygon.center.x) < 0.59
+    for polygon in median_segment.data.polygons
+), "road surface remained beneath the median"
+median_y = [
+    vertex.co.y for vertex in median_segment.data.vertices
+    if abs(abs(vertex.co.x) - 0.6) < 1e-5
+]
+assert round(min(median_y), 3) == -32.002
+assert round(max(median_y), 3) == 32.002
+assert any(
+    abs(vertex.co.x + 0.6) < 1e-5 and abs(vertex.co.z + 0.302) < 1e-5
+    for vertex in median_segment.data.vertices
+), "median corner was not lowered below the roadway"
+median_walls = [
+    polygon for polygon in median_segment.data.polygons
+    if abs(abs(polygon.center.x) - 0.6) < 1e-5 and abs(polygon.normal.x) > 0.99
+]
+assert any(polygon.center.x < 0.0 and polygon.normal.x < 0.0 for polygon in median_walls)
+assert any(polygon.center.x > 0.0 and polygon.normal.x > 0.0 for polygon in median_walls)
+median_spec_path = ROOT / "build" / "smoke" / "median-road.json"
+assert bpy.ops.cs1_road.export_spec(filepath=str(median_spec_path)) == {"FINISHED"}
+median_spec = json.loads(median_spec_path.read_text(encoding="utf-8"))
+assert median_spec["shared_geometry"]["median"] == {
+    "enabled": True,
+    "width": props.median_width,
+    "height": props.median_height,
+    "with_curb": True,
+    "curb_top_width": props.median_curb_width,
+    "mesh_object": None,
+    "no_split_group": "CS1_NO_SPLIT",
+}
+assert sum(
+    strip["function"] == "MEDIAN" for strip in median_spec["layout"]["strips"]
+) == 1
+assert sum(
+    boundary["role"] == "MEDIAN_EDGE"
+    for boundary in median_spec["layout"]["boundaries"]
+) == 2
+props.median_enabled = False
+assert bpy.ops.cs1_road.import_spec(filepath=str(median_spec_path)) == {"FINISHED"}
+assert props.median_enabled is True
+assert abs(props.median_width - 1.2) < 1e-5
+assert abs(props.median_height - 0.2) < 1e-5
+invalid_median_spec = json.loads(json.dumps(median_spec))
+next(
+    strip for strip in invalid_median_spec["layout"]["strips"]
+    if strip["id"] == "strip-median"
+)["width"] = 1.3
+invalid_median_path = ROOT / "build" / "smoke" / "median-road-invalid.json"
+invalid_median_path.write_text(
+    json.dumps(invalid_median_spec, indent=2), encoding="utf-8"
+)
+try:
+    invalid_result = bpy.ops.cs1_road.import_spec(filepath=str(invalid_median_path))
+except RuntimeError as error:
+    assert "median width and strip-median width disagree" in str(error)
+else:
+    assert invalid_result == {"CANCELLED"}
+
+# Without generated curbs, one supplied mesh is fitted to the configured
+# width/height, sliced longitudinally, and has its hidden end caps removed.
+median_source = create_box_edge_source("MedianSource", -1.0, 1.0)
+props.median_with_curb = False
+props.median_mesh = median_source
+road_builder.build_mode(bpy.context.scene, "basic")
+custom_median = bpy.data.objects["basic_segment"]
+assert custom_median["cs1_median_source"] == "MedianSource"
+custom_top_faces = [
+    polygon for polygon in custom_median.data.polygons
+    if polygon.normal.z > 0.99
+    and abs(polygon.center.z + 0.1) < 1e-5
+    and abs(polygon.center.x) < 1e-6
+]
+assert len(custom_top_faces) == 20, len(custom_top_faces)
+for polygon in custom_top_faces:
+    xs = {round(custom_median.data.vertices[index].co.x, 4) for index in polygon.vertices}
+    assert xs == {-0.6, 0.6}, xs
+assert all(
+    max(custom_median.data.vertices[index].co.y for index in polygon.vertices)
+    - min(custom_median.data.vertices[index].co.y for index in polygon.vertices)
+    > 1e-6
+    for polygon in custom_median.data.polygons
+), "custom median end cap remained"
+props.median_enabled = False
+props.median_with_curb = True
+props.median_mesh = None
+bpy.data.objects.remove(median_source, do_unlink=True)
+assert bpy.ops.cs1_road.build_all() == {"FINISHED"}
+basic_segment = bpy.data.objects["basic_segment"]
 marked_polygon_count = len(basic_segment.data.polygons)
 
 assert len(props.boundaries) == 7
@@ -652,6 +779,10 @@ for panel_type in (
 assert "script.reload" in panel_layout.operator_ids
 assert panel_layout.property_names.count("sidewalk_width") == 2
 assert panel_layout.property_names.count("shoulder_width") == 2
+for median_field in (
+    "median_enabled", "median_width", "median_height", "median_with_curb",
+):
+    assert median_field in panel_layout.property_names
 assert "zone" in panel_layout.property_names
 assert "width" in panel_layout.property_names
 assert "direction" in panel_layout.property_names

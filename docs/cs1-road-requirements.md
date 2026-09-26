@@ -47,6 +47,7 @@ Elevatedサンプルは構造物の可視ディテールが端から張り出す
 - 左右それぞれの路肩幅。
 - 左右それぞれの歩道幅。
 - Curb高さ。
+- 分離帯の有無、全幅、路面からの高さ、生成curbまたは基準Mesh。
 - 路面profile：地面・歩道と同じ高さ、またはcurb高さ分だけ低い状態。
 - 通常segmentの64 m長とnodeの64 m長。
 - Segmentの20分割とnodeの8分割。
@@ -197,7 +198,7 @@ Marking領域の境界pixelは周囲のasphalt tileと同じ色・normal・rough
 
 | 正本 | 所有する値 | 所有しない値 |
 | --- | --- | --- |
-| `strip` | Stable ID、左から右の順序、`SIDEWALK` / `SHOULDER` / `CARRIAGEWAY`、物理幅、surface style | 通行方向、CS1 lane type、線の種類 |
+| `strip` | Stable ID、左から右の順序、`SIDEWALK` / `SHOULDER` / `CARRIAGEWAY` / `MEDIAN`、物理幅、surface style | 通行方向、CS1 lane type、線の種類 |
 | `lane` | Stable ID、使用する`surface_strip_id`、strip内の横範囲、方向、CS1 lane/vehicle type、speed、offset、接続可否 | 路面全体の幅、隣接線の所有権 |
 | `boundary` | Stable ID、左右のstrip ID、`CURB` / `CARRIAGEWAY_EDGE` / `LANE_DIVIDER`、profile、任意のmarking policy | Lane metadata、texture画像そのもの |
 | `marking style` | Stable style ID、paint幅、asphalt余白を含むregion幅、texture tile | 線を置く位置、接続先 |
@@ -216,7 +217,7 @@ Laneとboundaryの配列indexはidentityではない。Lane追加、削除、並
 - Boundaryとmarkingの横位置。
 - Segment/nodeの頂点、face、UV、material slot。
 - 64 m分割後のサンプル位置。
-- Blender object名や現在選択中のUI index。
+- 生成済みpreview object名や現在選択中のUI index。分離帯の`mesh_object`は生成結果ではなくBlender-localな入力Mesh参照として現行v3へ保存するが、他ファイルでも通用するasset identityとは扱わない。
 
 これによりlane幅やstrip順序を変更したとき、古い`position`と新しい幅が食い違う状態を作らない。
 
@@ -233,7 +234,7 @@ Laneとboundaryの配列indexはidentityではない。Lane追加、削除、並
 
 JSON v3は`shared_geometry`、`styles`、`layout.strips`、`layout.boundaries`、`lanes`、`node`、`modes`へ分離した。Blender UIではboundary一覧から線を個別に選択できる。旧v2の`edge_lines` / `lane_lines`は読み込み時に該当boundaryへ展開する互換入力であり、v3では保存しない。
 
-現版の生成器は、車道lane 1本につきcarriageway strip 1本、左右対称の歩道幅・路肩幅、`SOLID_WHITE` styleだけに対応する。V3が表現できてもBlender editorが安全に編集できない左右非対称幅は、黙って丸めずimportを拒否する。複数laneを1 stripへ割り当てる構成、median、線placement、transitionのID対応は次の実装範囲であり、対応済みとは扱わない。
+現版の生成器は、車道lane 1本につきcarriageway strip 1本、左右対称の歩道幅・路肩幅、最初の対向方向boundaryへ置く分離帯、`SOLID_WHITE` styleに対応する。分離帯は全幅・路面からの高さを共有設定とし、生成curb囲いまたは64m基準Meshを選ぶ。生成curbでは左右curb上面と中央上面を別faceにし、中央上面を分割しない。基準Meshは設定幅・高さへfitして長手sliceへ切り、両端capを除く。V3が表現できてもBlender editorが安全に編集できない左右非対称幅は、黙って丸めずimportを拒否する。複数laneを1 stripへ割り当てる構成、線placement、transitionのID対応は次の実装範囲であり、対応済みとは扱わない。
 
 ### Blenderでの提示
 

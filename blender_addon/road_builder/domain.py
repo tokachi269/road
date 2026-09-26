@@ -14,6 +14,8 @@ SEGMENT_SLICES = 20
 NODE_SLICES = 8
 ROADWAY_DEPRESSION = 0.30
 SIDEWALK_LANE_TOTAL_INSET = 0.50
+MEDIAN_END_OVERHANG = 0.002
+MEDIAN_Z_FIGHT_EPSILON = 0.002
 
 
 def roadway_depression(enabled: bool) -> float:
@@ -42,6 +44,21 @@ class LaneLike(Protocol):
     direction: str
 
 
+def median_split_index(lanes: Iterable[LaneLike]) -> int:
+    """Return the first boundary between opposing road-lane directions.
+
+    The returned index is relative to the road-lane sequence and identifies
+    where the median strip is inserted.  A divided road needs traffic on both
+    sides; callers surface the ValueError instead of silently placing a median
+    through an arbitrary lane.
+    """
+    road_lanes = [lane for lane in lanes if lane.zone == "ROAD"]
+    for index, (left, right) in enumerate(zip(road_lanes, road_lanes[1:]), 1):
+        if left.direction != right.direction:
+            return index
+    raise ValueError("Median needs adjacent road lanes with opposing directions")
+
+
 def strip_id(lane: LaneLike) -> str:
     if lane.zone == "LEFT_SIDEWALK":
         return "strip-left-sidewalk"
@@ -51,7 +68,7 @@ def strip_id(lane: LaneLike) -> str:
 
 
 def expected_boundaries(
-    lanes: Iterable[LaneLike], shoulder_width: float
+    lanes: Iterable[LaneLike], shoulder_width: float, median_enabled: bool = False
 ) -> list[tuple[str, str, str, str, str, bool, str]]:
     """Derive stable boundary identities and default marking roles.
 
@@ -101,7 +118,34 @@ def expected_boundaries(
             )
         )
 
-    for left, right in zip(road_lanes, road_lanes[1:]):
+    split_index = median_split_index(road_lanes) if median_enabled else -1
+    for boundary_index, (left, right) in enumerate(
+        zip(road_lanes, road_lanes[1:]), 1
+    ):
+        if boundary_index == split_index:
+            expected.extend(
+                (
+                    (
+                        "boundary-median-left",
+                        "Median left edge",
+                        "MEDIAN_EDGE",
+                        strip_id(left),
+                        "strip-median",
+                        False,
+                        "CENTER_LINE",
+                    ),
+                    (
+                        "boundary-median-right",
+                        "Median right edge",
+                        "MEDIAN_EDGE",
+                        "strip-median",
+                        strip_id(right),
+                        False,
+                        "CENTER_LINE",
+                    ),
+                )
+            )
+            continue
         marking_role = (
             "CENTER_LINE"
             if left.direction != right.direction
@@ -158,11 +202,12 @@ def expected_boundaries(
 
 
 def cross_section_widths(
-    lanes: Iterable[LaneLike], shoulder_width: float, sidewalk_width: float
+    lanes: Iterable[LaneLike], shoulder_width: float, sidewalk_width: float,
+    median_width: float = 0.0,
 ) -> tuple[float, float, float]:
     road_lane_width = max(
         sum(lane.width for lane in lanes if lane.zone == "ROAD"), 0.01
     )
-    roadway_width = road_lane_width + 2.0 * shoulder_width
+    roadway_width = road_lane_width + 2.0 * shoulder_width + max(median_width, 0.0)
     total_width = roadway_width + 2.0 * sidewalk_width
     return roadway_width, total_width, total_width * 0.5

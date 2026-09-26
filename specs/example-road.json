@@ -7,7 +7,16 @@
     "segment_slices": 20,
     "node_slices": 8,
     "curb_height": 0.3,
-    "surface_profile": "DEPRESSED"
+    "surface_profile": "DEPRESSED",
+    "median": {
+      "enabled": false,
+      "width": 1.0,
+      "height": 0.15,
+      "with_curb": true,
+      "curb_top_width": 0.15,
+      "mesh_object": null,
+      "no_split_group": "CS1_NO_SPLIT"
+    }
   },
   "styles": {
     "markings": {

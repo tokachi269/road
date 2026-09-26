@@ -36,6 +36,34 @@ class DomainContractTest(unittest.TestCase):
             self.assertAlmostEqual(total, roadway + 4.0)
             self.assertAlmostEqual(half, total * 0.5)
 
+    def test_median_width_and_boundary_replace_the_opposing_lane_divider(self) -> None:
+        lanes = [
+            road_lane(10, "BACKWARD"),
+            road_lane(20, "BACKWARD"),
+            road_lane(30, "FORWARD"),
+            road_lane(40, "FORWARD"),
+        ]
+        roadway, total, half = domain.cross_section_widths(
+            lanes, 0.5, 2.0, 1.2
+        )
+        self.assertAlmostEqual(roadway, 4 * 3.25 + 1.0 + 1.2)
+        self.assertAlmostEqual(total, roadway + 4.0)
+        self.assertAlmostEqual(half, total * 0.5)
+        self.assertEqual(domain.median_split_index(lanes), 2)
+        boundaries = domain.expected_boundaries(lanes, 0.5, True)
+        ids = [item[0] for item in boundaries]
+        self.assertNotIn("boundary-lane-20-lane-30", ids)
+        self.assertIn("boundary-median-left", ids)
+        self.assertIn("boundary-median-right", ids)
+        median_edges = [item for item in boundaries if item[2] == "MEDIAN_EDGE"]
+        self.assertEqual(len(median_edges), 2)
+        self.assertTrue(all(not item[5] for item in median_edges))
+
+    def test_median_rejects_a_road_without_opposing_lane_boundary(self) -> None:
+        lanes = [road_lane(10, "FORWARD"), road_lane(20, "FORWARD")]
+        with self.assertRaisesRegex(ValueError, "opposing directions"):
+            domain.median_split_index(lanes)
+
     def test_boundary_identity_is_derived_from_adjacent_stable_lane_ids(self) -> None:
         lanes = [
             road_lane(10, "BACKWARD"),

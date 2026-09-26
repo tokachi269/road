@@ -3,7 +3,7 @@ from __future__ import annotations
 bl_info = {
     "name": "CS1 Road Builder",
     "author": "Local project",
-    "version": (0, 6, 0),
+    "version": (0, 7, 0),
     "blender": (5, 1, 0),
     "location": "3D View > Sidebar > Road",
     "description": "Edit and preview standalone Cities: Skylines 1 road modes",
@@ -35,6 +35,8 @@ importlib.reload(_runtime_export)
 
 from .domain import (
     MODE_LENGTH,
+    MEDIAN_END_OVERHANG,
+    MEDIAN_Z_FIGHT_EPSILON,
     NODE_SLICES,
     ROADWAY_DEPRESSION,
     SIDEWALK_LANE_TOTAL_INSET,
@@ -42,6 +44,7 @@ from .domain import (
     cross_section_widths,
     expected_boundaries,
     lane_vertical_offset,
+    median_split_index,
     roadway_depression,
     sidewalk_lane_width,
     strip_id,
@@ -115,6 +118,7 @@ BOUNDARY_ROLE_ITEMS = (
     ("CURB", "Curb", "Boundary between sidewalk and the road body"),
     ("CARRIAGEWAY_EDGE", "Carriageway edge", "Boundary between carriageway and shoulder"),
     ("LANE_DIVIDER", "Lane divider", "Boundary between adjacent carriageway strips"),
+    ("MEDIAN_EDGE", "Median edge", "Boundary between roadway and median"),
 )
 MARKING_ROLE_ITEMS = (
     ("CARRIAGEWAY_EDGE", "Roadside line", "Carriageway edge marking"),
@@ -346,6 +350,12 @@ class _ElevatedEdgePlan:
     mirrored: bool
 
 
+@dataclass(frozen=True)
+class _MedianMeshPlan:
+    polygons: tuple
+    source_name: str
+
+
 def _mesh_object_poll(_self, obj) -> bool:
     return obj is None or obj.type == "MESH"
 
@@ -539,36 +549,242 @@ def _append_elevated_edge(mesh, plan: _ElevatedEdgePlan) -> None:
         mesh.polygon(points, kind="structure", uvs=uvs)
 
 
-def _marking_layout(props) -> tuple[list[float], list[float]]:
+def _prepare_median_mesh(
+    source, width: float, height: float, road_start: float, road_end: float,
+    slices: int, group_name: str,
+) -> _MedianMeshPlan:
+    if source is None or source.type != "MESH":
+        raise ValueError("Median custom mesh must be a Mesh Object")
+
+    no_split_vertices = _group_vertex_indices(source, group_name)
+    selected_faces = {
+        polygon.index for polygon in source.data.polygons
+        if not any(index in no_split_vertices for index in polygon.vertices)
+    }
+    if not selected_faces:
+        raise ValueError(f"{source.name}: no median faces remain for longitudinal slicing")
+
+    basis = source.matrix_world.to_3x3()
+    coordinates = [basis @ vertex.co for vertex in source.data.vertices]
+    x_min = min(value.x for value in coordinates)
+    x_max = max(value.x for value in coordinates)
+    y_min = min(value.y for value in coordinates)
+    y_max = max(value.y for value in coordinates)
+    z_min = min(value.z for value in coordinates)
+    z_max = max(value.z for value in coordinates)
+    if x_max - x_min <= 1e-6 or z_max - z_min <= 1e-6:
+        raise ValueError(f"{source.name}: median mesh needs non-zero local width and height")
+    half_length = MODE_LENGTH * 0.5
+    if abs(y_min + half_length) > 1e-4 or abs(y_max - half_length) > 1e-4:
+        raise ValueError(
+            f"{source.name}: median mesh must span local Y "
+            f"{-half_length:g}..{half_length:g} m (found {y_min:g}..{y_max:g})"
+        )
+
+    working = source.data.copy()
+    target_y_min = -half_length - MEDIAN_END_OVERHANG
+    target_y_max = half_length + MEDIAN_END_OVERHANG
+    for vertex, coordinate in zip(working.vertices, coordinates):
+        x_t = (coordinate.x - x_min) / (x_max - x_min)
+        y_t = (coordinate.y - y_min) / (y_max - y_min)
+        z_t = (coordinate.z - z_min) / (z_max - z_min)
+        x = -width * 0.5 + width * x_t
+        y = target_y_min + (target_y_max - target_y_min) * y_t
+        road_t = min(1.0, max(0.0, (y + half_length) / MODE_LENGTH))
+        road_z = road_start + (road_end - road_start) * road_t
+        z = road_z - MEDIAN_Z_FIGHT_EPSILON + (
+            height + MEDIAN_Z_FIGHT_EPSILON
+        ) * z_t
+        vertex.co = (x, y, z)
+
+    bm = bmesh.new()
+    result_mesh = None
+    try:
+        bm.from_mesh(working)
+        bm.faces.ensure_lookup_table()
+        split_layer = bm.faces.layers.int.new("cs1_curve_split")
+        for face in bm.faces:
+            face[split_layer] = 1 if face.index in selected_faces else 0
+        for index in range(1, slices):
+            plane_y = -half_length + MODE_LENGTH * index / slices
+            split_faces = [
+                face for face in bm.faces
+                if face.is_valid and face[split_layer] == 1
+            ]
+            split_edges = {edge for face in split_faces for edge in face.edges}
+            split_vertices = {vertex for face in split_faces for vertex in face.verts}
+            bmesh.ops.bisect_plane(
+                bm,
+                geom=[*split_vertices, *split_edges, *split_faces],
+                plane_co=(0.0, plane_y, 0.0),
+                plane_no=(0.0, 1.0, 0.0),
+                dist=1e-6,
+                clear_inner=False,
+                clear_outer=False,
+            )
+
+        result_mesh = bpy.data.meshes.new(f"{source.name}_median_work")
+        bm.to_mesh(result_mesh)
+        result_mesh.update()
+        uv_layer = result_mesh.uv_layers.active
+        polygons = []
+        for polygon in result_mesh.polygons:
+            points = tuple(
+                tuple(result_mesh.vertices[index].co) for index in polygon.vertices
+            )
+            if (
+                max(point[1] for point in points) - min(point[1] for point in points)
+                <= 1e-6
+                and abs(abs(points[0][1]) - (half_length + MEDIAN_END_OVERHANG))
+                <= 1e-4
+            ):
+                continue
+            uvs = None
+            if uv_layer is not None:
+                uvs = tuple(
+                    tuple(uv_layer.data[index].uv) for index in polygon.loop_indices
+                )
+            polygons.append((points, uvs))
+        return _MedianMeshPlan(tuple(polygons), source.name)
+    finally:
+        bm.free()
+        bpy.data.meshes.remove(working)
+        if result_mesh is not None:
+            bpy.data.meshes.remove(result_mesh)
+
+
+def _append_median_mesh(mesh, plan: _MedianMeshPlan) -> None:
+    for points, uvs in plan.polygons:
+        mesh.polygon(points, kind="surface", uvs=uvs)
+
+
+def _add_generated_median(
+    mesh, median_range, y_min, y_max, road_start, road_end, height,
+    curb_width, slices,
+) -> None:
+    left, right = median_range
+    width = right - left
+    if curb_width * 2.0 >= width - 1e-8:
+        raise ValueError("Median curb top width must be less than half the median width")
+    inner_left = left + curb_width
+    inner_right = right - curb_width
+    y_min -= MEDIAN_END_OVERHANG
+    y_max += MEDIAN_END_OVERHANG
+    length = y_max - y_min
+    for index in range(slices):
+        t0, t1 = index / slices, (index + 1) / slices
+        ya, yb = y_min + length * t0, y_min + length * t1
+        road_t0 = min(1.0, max(0.0, (ya + MODE_LENGTH * 0.5) / MODE_LENGTH))
+        road_t1 = min(1.0, max(0.0, (yb + MODE_LENGTH * 0.5) / MODE_LENGTH))
+        road_a = road_start + (road_end - road_start) * road_t0
+        road_b = road_start + (road_end - road_start) * road_t1
+        bottom_a, bottom_b = road_a - MEDIAN_Z_FIGHT_EPSILON, road_b - MEDIAN_Z_FIGHT_EPSILON
+        top_a, top_b = road_a + height, road_b + height
+        v0 = index / slices
+        v1 = (index + 1) / slices
+        mesh.quad(
+            (left, ya, top_a), (left, yb, top_b),
+            (left, yb, bottom_b), (left, ya, bottom_a),
+            uvs=((0.0, v0), (0.0, v1), (1.0, v1), (1.0, v0)),
+        )
+        # Curb tops and the centre fill deliberately remain separate faces.
+        mesh.quad(
+            (left, ya, top_a), (inner_left, ya, top_a),
+            (inner_left, yb, top_b), (left, yb, top_b),
+            uvs=((0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)),
+        )
+        if inner_right - inner_left > 1e-8:
+            mesh.quad(
+                (inner_left, ya, top_a), (inner_right, ya, top_a),
+                (inner_right, yb, top_b), (inner_left, yb, top_b),
+                uvs=((0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)),
+            )
+        mesh.quad(
+            (inner_right, ya, top_a), (right, ya, top_a),
+            (right, yb, top_b), (inner_right, yb, top_b),
+            uvs=((0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)),
+        )
+        mesh.quad(
+            (right, ya, bottom_a), (right, yb, bottom_b),
+            (right, yb, top_b), (right, ya, top_a),
+            uvs=((0.0, v0), (0.0, v1), (1.0, v1), (1.0, v0)),
+        )
+
+
+def _add_median_for_profile(
+    mesh, props, median_range, y_min, y_max, road_start, road_end, slices,
+) -> str | None:
+    if median_range is None:
+        return None
+    if props.median_with_curb:
+        _add_generated_median(
+            mesh, median_range, y_min, y_max, road_start, road_end,
+            props.median_height, props.median_curb_width, slices,
+        )
+        return None
+    if props.median_mesh is None:
+        raise ValueError("Median without generated curbs needs a Median mesh")
+    plan = _prepare_median_mesh(
+        props.median_mesh,
+        props.median_width,
+        props.median_height,
+        road_start,
+        road_end,
+        slices,
+        props.median_no_split_group,
+    )
+    _append_median_mesh(mesh, plan)
+    return plan.source_name
+
+
+def _marking_layout(props) -> tuple[list[float], list[float], tuple[float, float] | None]:
     _sync_boundaries(props)
     road_lanes = [lane for lane in props.lanes if lane.zone == "ROAD"]
     lane_width = sum(lane.width for lane in road_lanes)
-    cursor = -lane_width * 0.5
+    median_width = props.median_width if props.median_enabled else 0.0
+    split_index = median_split_index(road_lanes) if props.median_enabled else -1
+    cursor = -(lane_width + median_width) * 0.5
     positions = {}
+    median_range = None
     if road_lanes:
         left_id = "boundary-left-carriageway" if props.shoulder_width > 1e-8 else "boundary-left-curb"
         positions[left_id] = cursor
-    for left, right in zip(road_lanes, road_lanes[1:]):
+    for boundary_index, (left, right) in enumerate(
+        zip(road_lanes, road_lanes[1:]), 1
+    ):
         cursor += left.width
-        positions[f"boundary-{left.lane_id}-{right.lane_id}"] = cursor
+        if boundary_index == split_index:
+            median_left = cursor
+            positions["boundary-median-left"] = median_left
+            cursor += median_width
+            positions["boundary-median-right"] = cursor
+            median_range = (median_left, cursor)
+        else:
+            positions[f"boundary-{left.lane_id}-{right.lane_id}"] = cursor
     if road_lanes:
         right_id = "boundary-right-carriageway" if props.shoulder_width > 1e-8 else "boundary-right-curb"
-        positions[right_id] = lane_width * 0.5
+        positions[right_id] = (lane_width + median_width) * 0.5
     enabled_centers = [positions[item.boundary_id] for item in props.boundaries if item.marking_enabled and item.boundary_id in positions]
     edge_centers = [positions[key] for key in positions if key in {"boundary-left-carriageway", "boundary-left-curb", "boundary-right-carriageway", "boundary-right-curb"}]
-    return enabled_centers, edge_centers
+    return enabled_centers, edge_centers, median_range
 
 
-def _segment_boundaries(road_half, marking_centers, marking_region_width) -> list[float]:
+def _segment_boundaries(
+    road_half, marking_centers, marking_region_width, median_range=None,
+) -> list[float]:
     values = [-road_half, road_half]
+    if median_range is not None:
+        values.extend(median_range)
     half_region = marking_region_width * 0.5
     for center in marking_centers:
         values.extend((max(-road_half, center - half_region), min(road_half, center + half_region)))
     return sorted({round(value, 9) for value in values})
 
 
-def _node_boundaries(props, road_half, edge_centers) -> list[float]:
+def _node_boundaries(props, road_half, edge_centers, median_range=None) -> list[float]:
     values = [-road_half, 0.0, road_half]
+    if median_range is not None:
+        values.extend(median_range)
     if props.node_shoulder_bands:
         values.extend(edge_centers)
     return sorted({round(value, 9) for value in values})
@@ -598,9 +814,16 @@ def _cross_section_uv_row(t, road_half, total_half, road_start, road_end, sidewa
 def _add_road_strips(
     mesh, boundaries, marking_centers, marking_width, road_half, total_half, y_min, y_max,
     road_start, road_end, sidewalk_start, sidewalk_end, split_center, slices,
+    excluded_range=None,
 ) -> None:
     for x_min, x_max in zip(boundaries, boundaries[1:]):
         if x_max - x_min < 1e-8:
+            continue
+        if (
+            excluded_range is not None
+            and x_min >= excluded_range[0] - 1e-8
+            and x_max <= excluded_range[1] + 1e-8
+        ):
             continue
         for index in range(slices):
             t0, t1 = index / slices, (index + 1) / slices
@@ -628,10 +851,12 @@ def _add_road_strips(
 def _add_cross_section_top(
     mesh, boundaries, marking_centers, marking_width, road_half, total_half, y_min, y_max,
     road_start, road_end, sidewalk_start, sidewalk_end, split_center, slices,
+    excluded_range=None,
 ) -> None:
     _add_road_strips(
         mesh, boundaries, marking_centers, marking_width, road_half, total_half, y_min, y_max,
         road_start, road_end, sidewalk_start, sidewalk_end, split_center, slices,
+        excluded_range,
     )
     for index in range(slices):
         t0, t1 = index / slices, (index + 1) / slices
@@ -992,7 +1217,15 @@ def _strip_id(lane) -> str:
 
 
 def _expected_boundaries(props):
-    return expected_boundaries(props.lanes, props.shoulder_width)
+    try:
+        return expected_boundaries(
+            props.lanes, props.shoulder_width, props.median_enabled,
+        )
+    except ValueError:
+        # Lane import and row editing pass through temporary one-direction
+        # states.  Keep the UI list usable there; build/export still validate
+        # the requested median through median_split_index.
+        return expected_boundaries(props.lanes, props.shoulder_width, False)
 
 
 def _sync_boundaries(props, legacy_edge_lines=None, legacy_lane_lines=None) -> None:
@@ -1035,15 +1268,20 @@ def _initialize_scene_lanes():
 
 def _cross_section(props) -> tuple[float, float, float]:
     return cross_section_widths(
-        props.lanes, props.shoulder_width, props.sidewalk_width
+        props.lanes, props.shoulder_width, props.sidewalk_width,
+        props.median_width if props.median_enabled else 0.0,
     )
 
 
 def _lane_positions(props):
     roadway_lanes = [lane for lane in props.lanes if lane.zone == "ROAD"]
-    cursor = -sum(lane.width for lane in roadway_lanes) * 0.5
+    median_width = props.median_width if props.median_enabled else 0.0
+    split_index = median_split_index(roadway_lanes) if props.median_enabled else -1
+    cursor = -(sum(lane.width for lane in roadway_lanes) + median_width) * 0.5
     positions = {}
-    for lane in roadway_lanes:
+    for index, lane in enumerate(roadway_lanes):
+        if index == split_index:
+            cursor += median_width
         positions[lane.as_pointer()] = cursor + lane.width * 0.5
         cursor += lane.width
     roadway_width, _, total_half = _cross_section(props)
@@ -1098,9 +1336,13 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
     structure_material = _structure_material()
     tunnel_material = _tunnel_material()
     road_half = roadway_width * 0.5
-    segment_markings, edge_centers = _marking_layout(props)
-    segment_boundaries = _segment_boundaries(road_half, segment_markings, props.marking_region_width)
-    node_boundaries = _node_boundaries(props, road_half, edge_centers)
+    segment_markings, edge_centers, median_range = _marking_layout(props)
+    segment_boundaries = _segment_boundaries(
+        road_half, segment_markings, props.marking_region_width, median_range,
+    )
+    node_boundaries = _node_boundaries(
+        props, road_half, edge_centers, median_range,
+    )
     node_markings = []
     curb_rise = roadway_depression(props.depress_roadway)
     props.half_width = total_half
@@ -1114,13 +1356,17 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
         # regular node stays level.  Only a flush road needs the preview
         # profile which descends to the shared recessed node surface.
         far_z = segment_z if props.depress_roadway else -ROADWAY_DEPRESSION
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, segment_z, 0.0, 0.0, False, SEGMENT_SLICES)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, far_z, 0.0, 0.0, True, NODE_SLICES)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, segment_z, 0.0, 0.0, False, SEGMENT_SLICES, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, far_z, 0.0, 0.0, True, NODE_SLICES, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, segment_z, segment_z, SEGMENT_SLICES)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, segment_z, far_z, NODE_SLICES)
     elif mode == "elevated":
         road_z, side_z = -curb_rise, 0.0
         girder_layout = plan_main_girders(total_half * 2.0)
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
         if custom_edge_segments is None:
             _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, SEGMENT_SLICES, girder_layout)
             _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, NODE_SLICES)
@@ -1144,22 +1390,28 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
     elif mode == "bridge":
         road_z, side_z = -curb_rise, 0.0
         girder_layout = plan_main_girders(total_half * 2.0)
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
         _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, SEGMENT_SLICES, girder_layout)
         _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, NODE_SLICES)
     elif mode == "slope":
         road_start = road_end = -curb_rise
         side_start = side_end = 0.0
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_start, road_end, side_start, side_end, False, SEGMENT_SLICES)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_end, road_end, side_end, side_end, True, NODE_SLICES)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_start, road_end, side_start, side_end, False, SEGMENT_SLICES, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_end, road_end, side_end, side_end, True, NODE_SLICES, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_start, road_end, SEGMENT_SLICES)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_end, road_end, NODE_SLICES)
         _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_start, side_end, props.deck_depth, SEGMENT_SLICES)
         _add_deck_structure(node_mesh, total_half, y_min, y_max, side_end, side_end, props.deck_depth, NODE_SLICES)
     else:
         road_z = -curb_rise
         side_z, roof_z = 0.0, road_z + props.tunnel_clearance
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
         _add_tunnel_envelope(segment_mesh, total_half, y_min, y_max, side_z, roof_z, SEGMENT_SLICES)
         _add_tunnel_envelope(node_mesh, total_half, y_min, y_max, side_z, roof_z, NODE_SLICES)
 
@@ -1190,6 +1442,13 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
         obj["cs1_local_length"] = MODE_LENGTH
         obj["cs1_longitudinal_slices"] = SEGMENT_SLICES if part == "segment" else NODE_SLICES
     node["cs1_center_split"] = True
+    if props.median_enabled:
+        for obj in (segment, node):
+            obj["cs1_median_width"] = props.median_width
+            obj["cs1_median_height"] = props.median_height
+            obj["cs1_median_with_curb"] = props.median_with_curb
+            if props.median_mesh is not None and not props.median_with_curb:
+                obj["cs1_median_source"] = props.median_mesh.name
     if girder_layout is not None:
         segment["cs1_geometry_groups"] = (
             "surface,deck,custom_edge,girder"
@@ -1281,6 +1540,32 @@ class CS1RoadBuilderProperties(PropertyGroup):
     sidewalk_width: FloatProperty(
         name="Sidewalk width", default=2.5, min=0.0, max=16.0,
         unit="LENGTH", update=_on_sidewalk_width_update,
+    )
+    median_enabled: BoolProperty(
+        name="Median", default=False, update=_on_cross_section_update,
+    )
+    median_width: FloatProperty(
+        name="Median width", default=1.0, min=0.1, max=32.0,
+        unit="LENGTH", update=_on_cross_section_update,
+    )
+    median_height: FloatProperty(
+        name="Height above roadway", default=0.15, min=0.01, max=4.0,
+        unit="LENGTH", update=_on_geometry_update,
+    )
+    median_with_curb: BoolProperty(
+        name="Generated curb surround", default=True,
+        update=_on_geometry_update,
+    )
+    median_curb_width: FloatProperty(
+        name="Curb top width", default=0.15, min=0.01, max=2.0,
+        unit="LENGTH", update=_on_geometry_update,
+    )
+    median_mesh: PointerProperty(
+        name="Median mesh", type=bpy.types.Object,
+        poll=_mesh_object_poll, update=_on_geometry_update,
+    )
+    median_no_split_group: StringProperty(
+        name="No-split group", default="CS1_NO_SPLIT", update=_on_geometry_update,
     )
     depress_roadway: BoolProperty(
         name=f"Lower roadway {ROADWAY_DEPRESSION:.2f} m", default=True,
@@ -1586,10 +1871,15 @@ def _authoring_fingerprint(props):
     )
     edge = props.elevated_edge_mesh
     edge_fingerprint = geometry_fingerprint([edge]) if edge is not None else ""
+    median = props.median_mesh
+    median_fingerprint = geometry_fingerprint([median]) if median is not None else ""
     return repr((
         props.road_name, lanes, boundaries, props.shoulder_width,
         props.sidewalk_width, props.depress_roadway, props.marking_paint_width,
         props.marking_region_width, props.node_shoulder_bands,
+        props.median_enabled, props.median_width, props.median_height,
+        props.median_with_curb, props.median_curb_width,
+        props.median_no_split_group, median_fingerprint,
         props.elevated_height, props.bridge_height, props.deck_depth,
         props.bridge_deck_depth, props.tunnel_depth, props.tunnel_clearance,
         props.elevated_edge_no_split_group, edge_fingerprint,
@@ -1685,7 +1975,14 @@ def _layout_strips(props):
     strips = [{"id": "strip-left-sidewalk", "function": "SIDEWALK", "width": props.sidewalk_width, "surface_style": "SIDEWALK"}]
     if props.shoulder_width > 1e-8:
         strips.append({"id": "strip-left-shoulder", "function": "SHOULDER", "width": props.shoulder_width, "surface_style": "ASPHALT"})
-    for lane in (item for item in props.lanes if item.zone == "ROAD"):
+    road_lanes = [item for item in props.lanes if item.zone == "ROAD"]
+    split_index = median_split_index(road_lanes) if props.median_enabled else -1
+    for index, lane in enumerate(road_lanes):
+        if index == split_index:
+            strips.append({
+                "id": "strip-median", "function": "MEDIAN",
+                "width": props.median_width, "surface_style": "MEDIAN",
+            })
         strips.append({"id": _strip_id(lane), "function": "CARRIAGEWAY", "width": lane.width, "surface_style": "ASPHALT"})
     if props.shoulder_width > 1e-8:
         strips.append({"id": "strip-right-shoulder", "function": "SHOULDER", "width": props.shoulder_width, "surface_style": "ASPHALT"})
@@ -1729,7 +2026,13 @@ def _export_layout(props):
         boundaries.append({
             "id": item.boundary_id, "role": item.role,
             "left_strip_id": item.left_strip_id, "right_strip_id": item.right_strip_id,
-            "profile_id": "CURB" if item.role == "CURB" else "FLAT",
+            "profile_id": (
+                "CURB"
+                if item.role == "CURB" or (
+                    item.role == "MEDIAN_EDGE" and props.median_with_curb
+                )
+                else "CUSTOM" if item.role == "MEDIAN_EDGE" else "FLAT"
+            ),
             "marking": marking,
         })
     total_width = sum(strip["width"] for strip in strips)
@@ -1748,6 +2051,22 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
         cross = data.get("shared_geometry", data.get("cross_section", {}))
         profile = str(cross.get("surface_profile", "DEPRESSED")).upper()
         props.depress_roadway = bool(cross.get("depress_roadway", profile == "DEPRESSED"))
+        median_present = "median" in cross
+        median = cross.get("median", {})
+        props.median_enabled = bool(median.get("enabled", props.median_enabled))
+        props.median_width = float(median.get("width", props.median_width))
+        props.median_height = float(median.get("height", props.median_height))
+        props.median_with_curb = bool(
+            median.get("with_curb", props.median_with_curb)
+        )
+        props.median_curb_width = float(
+            median.get("curb_top_width", props.median_curb_width)
+        )
+        props.median_no_split_group = str(
+            median.get("no_split_group", props.median_no_split_group)
+        )
+        median_mesh_name = str(median.get("mesh_object", "")).strip()
+        props.median_mesh = bpy.data.objects.get(median_mesh_name) if median_mesh_name else None
         legacy_markings = data.get("markings", {})
         if schema_version >= 3:
             layout = data.get("layout", {})
@@ -1760,6 +2079,31 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
                 self.report({"ERROR"}, "Current Blender editor supports symmetric sidewalk and shoulder widths only")
                 return {"CANCELLED"}
             props.sidewalk_width, props.shoulder_width = left_sidewalk, left_shoulder
+            has_median_strip = "strip-median" in strips
+            if median_present and props.median_enabled != has_median_strip:
+                self.report(
+                    {"ERROR"},
+                    "shared_geometry.median enabled state and strip-median disagree",
+                )
+                return {"CANCELLED"}
+            if has_median_strip:
+                strip_median_width = float(
+                    strips["strip-median"].get("width", props.median_width)
+                )
+                if (
+                    median_present
+                    and abs(strip_median_width - props.median_width) > 1e-6
+                ):
+                    self.report(
+                        {"ERROR"},
+                        "shared_geometry.median width and strip-median width disagree",
+                    )
+                    return {"CANCELLED"}
+                if not median_present:
+                    props.median_enabled = True
+                    props.median_width = strip_median_width
+            elif not median_present:
+                props.median_enabled = False
             marking_styles = data.get("styles", {}).get("markings", {})
             solid = marking_styles.get("SOLID_WHITE", {})
             props.marking_paint_width = solid.get("paint_width", props.marking_paint_width)
@@ -1823,6 +2167,15 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
                 "segment_slices": SEGMENT_SLICES, "node_slices": NODE_SLICES,
                 "curb_height": ROADWAY_DEPRESSION,
                 "surface_profile": "DEPRESSED" if props.depress_roadway else "FLUSH",
+                "median": {
+                    "enabled": props.median_enabled,
+                    "width": props.median_width,
+                    "height": props.median_height,
+                    "with_curb": props.median_with_curb,
+                    "curb_top_width": props.median_curb_width,
+                    "mesh_object": props.median_mesh.name if props.median_mesh else None,
+                    "no_split_group": props.median_no_split_group,
+                },
             },
             "styles": {"markings": {"SOLID_WHITE": {
                 "paint_width": props.marking_paint_width,
@@ -1896,8 +2249,8 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
         header = _cross_section_table_cells(box)
         header[0].label(text="Element / lane")
         header[1].label(text="Width")
-        header[2].label(text="Direction")
-        header[3].label(text="Traffic")
+        header[2].label(text="Direction / height")
+        header[3].label(text="Traffic / curb")
         header[4].label(text="Speed")
         indexed_lanes = list(enumerate(props.lanes))
         left_lanes = [(index, lane) for index, lane in indexed_lanes if lane.zone == "LEFT_SIDEWALK"]
@@ -1911,8 +2264,27 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
             empty_left[1].prop(props, "sidewalk_width", text="")
             empty_left[3].label(text="Not lane")
         _draw_shoulder_table_row(box, props, "L")
-        for index, lane in road_lanes:
+        try:
+            median_after = median_split_index([lane for _, lane in road_lanes])
+        except ValueError:
+            median_after = -1
+        for road_index, (index, lane) in enumerate(road_lanes, 1):
             _draw_lane_table_row(box, props, lane, index)
+            if road_index == median_after:
+                median_row = _cross_section_table_cells(box)
+                median_row[0].prop(props, "median_enabled", text="Median")
+                width_cell = median_row[1]
+                width_cell.enabled = props.median_enabled
+                width_cell.prop(props, "median_width", text="")
+                height_cell = median_row[2]
+                height_cell.enabled = props.median_enabled
+                height_cell.prop(props, "median_height", text="")
+                type_cell = median_row[3]
+                type_cell.enabled = props.median_enabled
+                type_cell.prop(props, "median_with_curb", text="Curb")
+                median_row[4].label(
+                    text="Generated" if props.median_with_curb else "Mesh"
+                )
         _draw_shoulder_table_row(box, props, "R")
         for index, lane in right_lanes:
             _draw_lane_table_row(box, props, lane, index)
@@ -1923,6 +2295,16 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
             empty_right[3].label(text="Not lane")
         box.operator("cs1_road.lane_add", text="Add network lane", icon="ADD")
         box.label(text=f"Pedestrian lane fits inside sidewalk (-{SIDEWALK_LANE_TOTAL_INSET:.2f} m)")
+        if props.median_enabled:
+            median_box = box.box()
+            if props.median_with_curb:
+                median_box.prop(props, "median_curb_width")
+                median_box.label(text="Curb tops and centre top use separate faces")
+            else:
+                median_box.prop(props, "median_mesh")
+                median_box.prop(props, "median_no_split_group")
+                median_box.label(text="Mesh is fitted to the configured width and height")
+                median_box.label(text="Local Y must span -32..32 m")
         counts = {key: sum(lane.direction == key for lane in props.lanes) for key in ("FORWARD", "BACKWARD", "BOTH")}
         roadway_width, total_width, _ = _cross_section(props)
         box.label(text=(
