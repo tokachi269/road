@@ -6,7 +6,7 @@
     "node_length": 64.0,
     "segment_slices": 20,
     "node_slices": 8,
-    "curb_height": 0.15,
+    "curb_height": 0.3,
     "surface_profile": "DEPRESSED"
   },
   "styles": {
@@ -40,13 +40,13 @@
     "length": 64.0,
     "center_split": true,
     "shoulder_bands": false,
-    "transition_target": "FLUSH"
+    "transition_target": null
   },
   "lanes": [
-    {"id": "lane-left-sidewalk", "name": "Left sidewalk", "zone": "LEFT_SIDEWALK", "surface_strip_id": "strip-left-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "speed_limit": 0.1, "vertical_offset": 0.15, "stop_offset": 0.0, "allow_connect": true},
+    {"id": "lane-left-sidewalk", "name": "Left sidewalk", "zone": "LEFT_SIDEWALK", "surface_strip_id": "strip-left-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "speed_limit": 0.1, "vertical_offset": 0.3, "stop_offset": 0.0, "allow_connect": true},
     {"id": "lane-backward-1", "name": "Backward 1", "zone": "ROAD", "surface_strip_id": "strip-lane-backward-1", "lateral_start": 0.0, "lateral_end": 3.0, "direction": "BACKWARD", "lane_type": "VEHICLE", "vehicle_type": "CAR", "speed_limit": 1.0, "vertical_offset": 0.0, "stop_offset": 0.0, "allow_connect": true},
     {"id": "lane-forward-1", "name": "Forward 1", "zone": "ROAD", "surface_strip_id": "strip-lane-forward-1", "lateral_start": 0.0, "lateral_end": 3.0, "direction": "FORWARD", "lane_type": "VEHICLE", "vehicle_type": "CAR", "speed_limit": 1.0, "vertical_offset": 0.0, "stop_offset": 0.0, "allow_connect": true},
-    {"id": "lane-right-sidewalk", "name": "Right sidewalk", "zone": "RIGHT_SIDEWALK", "surface_strip_id": "strip-right-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "speed_limit": 0.1, "vertical_offset": 0.15, "stop_offset": 0.0, "allow_connect": true}
+    {"id": "lane-right-sidewalk", "name": "Right sidewalk", "zone": "RIGHT_SIDEWALK", "surface_strip_id": "strip-right-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "speed_limit": 0.1, "vertical_offset": 0.3, "stop_offset": 0.0, "allow_connect": true}
   ],
   "modes": {
     "basic": {"shader": "Custom/Net/Road"},

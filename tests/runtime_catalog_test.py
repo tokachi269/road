@@ -16,7 +16,7 @@ class RuntimeCatalogTest(unittest.TestCase):
         self.assertEqual("example-road", catalog["roads"][0]["road_id"])
         self.assertEqual(1, catalog["roads"][0]["ui_priority"])
         self.assertEqual(4, len(catalog["roads"][0]["lanes"]))
-        self.assertEqual(0.15, catalog["roads"][0]["lanes"][0]["vertical_offset"])
+        self.assertEqual(0.3, catalog["roads"][0]["lanes"][0]["vertical_offset"])
         self.assertEqual(0.0, catalog["roads"][0]["lanes"][0]["stop_offset"])
         self.assertEqual(64, len(catalog["roads"][0]["structural_signature"]))
         self.assertEqual(64, len(catalog["revision"]))

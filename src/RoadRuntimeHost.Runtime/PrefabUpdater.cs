@@ -402,8 +402,19 @@ namespace RoadRuntimeHost.Runtime
                 if (source.Color != null && source.Color.Length >= 4)
                     material.color = new Color(source.Color[0], source.Color[1], source.Color[2], source.Color[3]);
                 ApplyTextures(material, source.Textures);
+                ApplyMainTextureScale(material, source.MainTextureScale);
             }
             return material;
+        }
+
+        private static void ApplyMainTextureScale(Material material, float[] scale)
+        {
+            if (material == null || scale == null) return;
+            if (scale.Length != 2 || scale[0] <= 0f || scale[1] <= 0f
+                || float.IsNaN(scale[0]) || float.IsNaN(scale[1])
+                || float.IsInfinity(scale[0]) || float.IsInfinity(scale[1]))
+                throw new InvalidDataException("main_texture_scale must contain two finite positive values");
+            material.mainTextureScale = new Vector2(scale[0], scale[1]);
         }
 
         private void ApplyTextures(Material material, NamedValue[] textures)

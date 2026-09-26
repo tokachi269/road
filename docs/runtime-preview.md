@@ -6,6 +6,8 @@ Asset Editorを往復せず、Blenderで作った道路・Prop・Decal meshと�
 
 Runtimeで断面からmeshを生成しない。道路meshの正本はBlenderの生成後meshであり、手編集した頂点、法線、UVもそのままbundleへ入る。Runtimeが自動生成するgeometryはない。接続試験では、そのmeshを使うnetwork node/segmentの配置だけを生成する。
 
+道路meshの各material bundleは`main_texture_scale = [1, 0.5]`を持つ。RuntimeHostはこれをUnity Materialの`mainTextureScale`へ設定する。長手周期の変更はmaterial scaleまたは既存faceのV範囲で行い、周期だけのためにmesh entryを追加しない。
+
 ## ファイル
 
 `catalog/*.tsv`はExcel、LibreOffice、表計算ソフトで編集できる。列名は固定し、行順だけに意味を持たせない。

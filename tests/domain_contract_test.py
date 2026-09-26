@@ -87,6 +87,18 @@ class DomainContractTest(unittest.TestCase):
         self.assertEqual(domain.SEGMENT_SLICES, 20)
         self.assertEqual(domain.NODE_SLICES, 8)
 
+    def test_depression_and_lane_offsets_have_one_domain_owner(self) -> None:
+        self.assertEqual(domain.ROADWAY_DEPRESSION, 0.30)
+        self.assertEqual(domain.roadway_depression(True), 0.30)
+        self.assertEqual(domain.roadway_depression(False), 0.0)
+        self.assertEqual(domain.lane_vertical_offset("LEFT_SIDEWALK", True), 0.30)
+        self.assertEqual(domain.lane_vertical_offset("RIGHT_SIDEWALK", False), 0.0)
+        self.assertEqual(domain.lane_vertical_offset("ROAD", True), 0.0)
+        self.assertEqual(domain.SIDEWALK_LANE_TOTAL_INSET, 0.50)
+        self.assertAlmostEqual(domain.sidewalk_lane_width(2.5), 2.0)
+        self.assertAlmostEqual(domain.sidewalk_lane_width(3.0), 2.5)
+        self.assertAlmostEqual(domain.sidewalk_lane_width(3.0, 2), 1.25)
+
 
 if __name__ == "__main__":
     unittest.main()

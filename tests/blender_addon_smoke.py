@@ -41,17 +41,39 @@ def create_elevated_edge_source(name, bottom_x, fence_x):
     return obj
 
 
-def create_centered_unsplit_edge_source(name):
+def create_unsplit_edge_source(name, local_x=0.0000015):
     mesh = bpy.data.meshes.new(f"{name}_mesh")
     mesh.from_pydata(
         (
-            (0.0000015, -32.0, 0.75),
-            (0.0000015, 32.0, 0.75),
-            (0.0000015, 32.0, -0.75),
-            (0.0000015, -32.0, -0.75),
+            (local_x, -32.0, 0.75),
+            (local_x, 32.0, 0.75),
+            (local_x, 32.0, -0.75),
+            (local_x, -32.0, -0.75),
         ),
         (),
         ((0, 1, 2, 3),),
+    )
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
+def create_box_edge_source(name, x_min=-0.4, x_max=0.4):
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    mesh.from_pydata(
+        (
+            (x_min, -32.0, -0.75), (x_max, -32.0, -0.75),
+            (x_max, 32.0, -0.75), (x_min, 32.0, -0.75),
+            (x_min, -32.0, 0.75), (x_max, -32.0, 0.75),
+            (x_max, 32.0, 0.75), (x_min, 32.0, 0.75),
+        ),
+        (),
+        (
+            (0, 3, 2, 1), (4, 5, 6, 7),
+            (0, 1, 5, 4), (1, 2, 6, 5),
+            (2, 3, 7, 6), (3, 0, 4, 7),
+        ),
     )
     mesh.update()
     obj = bpy.data.objects.new(name, mesh)
@@ -66,9 +88,14 @@ class FakeLayout:
 
     def __init__(self):
         self.operator_ids = []
+        self.property_names = []
 
     def operator(self, operator_id, *args, **kwargs):
         self.operator_ids.append(operator_id)
+        return self
+
+    def prop(self, data, property_name, *args, **kwargs):
+        self.property_names.append(property_name)
         return self
 
     def __getattr__(self, name):
@@ -81,21 +108,91 @@ props = bpy.context.scene.cs1_road_builder
 props.lanes.clear()
 road_builder._add_default_lanes(props)
 default_lane_offsets = {lane.lane_id: lane.vertical_offset for lane in props.lanes}
-assert default_lane_offsets["lane-left-sidewalk"] == props.curb_height
-assert default_lane_offsets["lane-right-sidewalk"] == props.curb_height
+assert abs(default_lane_offsets["lane-left-sidewalk"] - road_builder.ROADWAY_DEPRESSION) < 1e-6
+assert abs(default_lane_offsets["lane-right-sidewalk"] - road_builder.ROADWAY_DEPRESSION) < 1e-6
 assert default_lane_offsets["lane-backward-1"] == 0.0
 assert default_lane_offsets["lane-forward-1"] == 0.0
-centered_edge = create_centered_unsplit_edge_source("CenteredUnsplitEdge")
+assert abs(props.lanes[0].width - 2.0) < 1e-6
+assert abs(props.lanes[3].width - 2.0) < 1e-6
+props.sidewalk_width = 3.0
+assert abs(props.lanes[0].width - 2.5) < 1e-6
+assert abs(props.lanes[3].width - 2.5) < 1e-6
+props.sidewalk_width = 2.5
+assert not road_builder._LIVE_PREVIEW_PENDING
+props.depress_roadway = False
+road_builder._sync_lane_derived_values(props)
+assert all(lane.vertical_offset == 0.0 for lane in props.lanes)
+props.depress_roadway = True
+road_builder._sync_lane_derived_values(props)
+left_sidewalk = props.lanes[0]
+left_sidewalk.zone = "ROAD"
+left_sidewalk.direction = "FORWARD"
+left_sidewalk.lane_type = "VEHICLE"
+left_sidewalk.vehicle_type = "CAR"
+left_sidewalk.zone = "LEFT_SIDEWALK"
+road_builder._sync_lane_derived_values(props)
+assert left_sidewalk.direction == "BOTH"
+assert left_sidewalk.lane_type == "PEDESTRIAN"
+assert left_sidewalk.vehicle_type == "NONE"
+centered_edge = create_unsplit_edge_source("CenteredUnsplitEdge")
 centered_plan = road_builder._prepare_elevated_edge_mesh(
     centered_edge, "right", 10.5, 8.0, 1.0,
     road_builder.SEGMENT_SLICES, "CS1_NO_SPLIT",
 )
-assert len(centered_plan.polygons) == 40, len(centered_plan.polygons)
+assert len(centered_plan.polygons) == 20, len(centered_plan.polygons)
 assert any(
     abs(point[0] - 10.5) < 1e-8 and abs(point[2] - 8.0) < 1e-8
     for polygon, _uvs in centered_plan.polygons for point in polygon
-), "origin-crossing face was not split at the road corner"
+), "deck interface was not clipped at the road surface"
+assert all(
+    min(point[2] for point in polygon) >= 8.0 - 1e-8
+    for polygon, _uvs in centered_plan.polygons
+), "buried connector face remained below the road surface"
 bpy.data.objects.remove(centered_edge, do_unlink=True)
+
+offset_edge = create_unsplit_edge_source("OffsetUnsplitEdge", 0.375)
+offset_plan = road_builder._prepare_elevated_edge_mesh(
+    offset_edge, "right", 10.5, 8.0, 1.0,
+    road_builder.SEGMENT_SLICES, "CS1_NO_SPLIT",
+)
+mirrored_offset_plan = road_builder._prepare_elevated_edge_mesh(
+    offset_edge, "left", -10.5, 8.0, 1.0,
+    road_builder.SEGMENT_SLICES, "CS1_NO_SPLIT",
+)
+assert abs(offset_plan.connector_x - 10.875) < 1e-8, offset_plan.connector_x
+assert abs(mirrored_offset_plan.connector_x + 10.875) < 1e-8, mirrored_offset_plan.connector_x
+assert any(
+    abs(point[0] - 10.875) < 1e-8 and abs(point[2] - 8.0) < 1e-8
+    for polygon, _uvs in offset_plan.polygons for point in polygon
+), "local mesh offset from the placement origin was not preserved"
+bpy.data.objects.remove(offset_edge, do_unlink=True)
+
+box_edge = create_box_edge_source("BoxEdge")
+right_box_plan = road_builder._prepare_elevated_edge_mesh(
+    box_edge, "right", 10.5, 8.0, 1.0,
+    road_builder.SEGMENT_SLICES, "CS1_NO_SPLIT",
+)
+left_box_plan = road_builder._prepare_elevated_edge_mesh(
+    box_edge, "left", -10.5, 8.0, 1.0,
+    road_builder.SEGMENT_SLICES, "CS1_NO_SPLIT",
+)
+assert abs(right_box_plan.connector_x - 10.1) < 1e-8, right_box_plan.connector_x
+assert abs(left_box_plan.connector_x + 10.1) < 1e-8, left_box_plan.connector_x
+assert len(right_box_plan.polygons) == 80, len(right_box_plan.polygons)
+assert all(
+    max(point[1] for point in polygon) - min(point[1] for point in polygon) > 1e-6
+    for polygon, _uvs in right_box_plan.polygons
+), "hidden 64 m end cap remained in the custom edge"
+assert not any(
+    all(abs(point[0] - 10.1) < 1e-8 for point in polygon)
+    and min(point[2] for point in polygon) < 8.0 - 1e-8
+    for polygon, _uvs in right_box_plan.polygons
+), "buried road-centre-side face remained in the custom edge"
+assert not any(
+    abs(point[0] - 10.9) < 1e-8 and abs(point[2] - 8.0) < 1e-8
+    for polygon, _uvs in right_box_plan.polygons for point in polygon
+), "unnecessary surface-height loop was added to the exposed outer face"
+bpy.data.objects.remove(box_edge, do_unlink=True)
 
 props.road_name = "Addon Smoke Road"
 props.lanes.clear()
@@ -109,9 +206,7 @@ for index, direction in enumerate(("BACKWARD", "BACKWARD", "FORWARD", "FORWARD")
     lane.vehicle_type = "CAR"
 props.shoulder_width = 1.0
 props.sidewalk_width = 3.0
-props.curb_height = 0.2
-props.surface_profile = "DEPRESSED"
-props.node_transition_target = "FLUSH"
+props.depress_roadway = True
 props.node_shoulder_bands = False
 props.elevated_edge_mesh = create_elevated_edge_source(
     "ElevatedEdge", -0.6, 0.15
@@ -123,6 +218,8 @@ assert result == {"FINISHED"}
 for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
     collection = bpy.data.collections.get(f"CS1_ROAD_{mode}")
     assert collection is not None, mode
+    assert collection.hide_viewport is False, mode
+    assert collection.hide_render is False, mode
     assert len(collection.objects) == 2, (mode, [obj.name for obj in collection.objects])
     assert collection.objects.get(f"{mode}_segment") is not None, mode
     assert collection.objects.get(f"{mode}_node") is not None, mode
@@ -132,6 +229,24 @@ for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
             assert -1e-6 <= uv.x <= 1.0 + 1e-6, (obj.name, uv[:])
             assert -1e-6 <= uv.y <= 1.0 + 1e-6, (obj.name, uv[:])
 
+shared_surface = bpy.data.materials[road_builder.SHARED_SURFACE_MATERIAL]
+shared_structure = bpy.data.materials[road_builder.SHARED_STRUCTURE_MATERIAL]
+shared_tunnel = bpy.data.materials[road_builder.SHARED_TUNNEL_MATERIAL]
+for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
+    segment = bpy.data.objects[f"{mode}_segment"]
+    node = bpy.data.objects[f"{mode}_node"]
+    assert segment.data.materials[0] == shared_surface, mode
+    assert node.data.materials[0] == shared_surface, mode
+    if mode in {"elevated", "bridge"}:
+        assert segment.data.materials[1] == shared_structure, mode
+        assert node.data.materials[1] == shared_structure, mode
+    elif mode in {"slope", "tunnel"}:
+        assert segment.data.materials[1] == shared_tunnel, mode
+        assert node.data.materials[1] == shared_tunnel, mode
+    else:
+        assert len(segment.data.materials) == 1, mode
+        assert len(node.data.materials) == 1, mode
+
 for mode_index, mode in enumerate(("basic", "elevated", "bridge", "slope", "tunnel")):
     for part in ("segment", "node"):
         obj = bpy.data.objects[f"{mode}_{part}"]
@@ -139,8 +254,7 @@ for mode_index, mode in enumerate(("basic", "elevated", "bridge", "slope", "tunn
         assert obj.location.z == mode_index * 16.0, (obj.name, obj.location[:])
         roadway_faces = [
             polygon for polygon in obj.data.polygons
-            if polygon.material_index in ({0, 1} if part == "segment" else {0})
-            and abs(polygon.center.x) < 6.5 - 1e-5
+            if abs(polygon.center.x) < 6.5 - 1e-5
             and polygon.normal.z > 0.9
         ]
         assert roadway_faces, obj.name
@@ -148,21 +262,27 @@ for mode_index, mode in enumerate(("basic", "elevated", "bridge", "slope", "tunn
             round(obj.data.vertices[index].co.z, 6)
             for polygon in roadway_faces for index in polygon.vertices
         }
-        if mode == "basic" and part == "node":
-            assert min(roadway_z) == -0.2 and max(roadway_z) == 0.0, (obj.name, roadway_z)
-        else:
-            assert roadway_z == {-0.2}, (obj.name, roadway_z)
+        assert roadway_z == {-0.3}, (obj.name, roadway_z)
 
 left_node = bpy.data.objects["basic_node"]
 node_top_z = sorted({round(vertex.co.z, 4) for vertex in left_node.data.vertices})
-assert -0.2 in node_top_z and 0.0 in node_top_z, node_top_z
+assert -0.3 in node_top_z and 0.0 in node_top_z, node_top_z
 assert left_node["cs1_center_split"] is True
 assert left_node.location.y == 32.0
 
 basic_segment = bpy.data.objects["basic_segment"]
 assert len(basic_segment.data.uv_layers) == 1
-assert sum(polygon.material_index == 1 for polygon in basic_segment.data.polygons) == 100
-assert sum(polygon.material_index == 1 for polygon in left_node.data.polygons) == 0
+def polygons_of_kind(obj, kind):
+    attribute = obj.data.attributes["cs1_face_kind"]
+    value = road_builder.FACE_KIND_VALUES[kind]
+    return [
+        polygon for polygon in obj.data.polygons
+        if attribute.data[polygon.index].value == value
+    ]
+
+
+assert len(polygons_of_kind(basic_segment, "marking")) == 100
+assert len(polygons_of_kind(left_node, "marking")) == 0
 assert len(left_node.data.materials) == 1
 assert basic_segment.location.y == -32.0
 assert basic_segment["cs1_longitudinal_slices"] == 20
@@ -197,8 +317,8 @@ def uvs_at_coordinate(obj, coordinate):
 
 
 left_curb_top_uv = uvs_at_coordinate(basic_segment, (-7.5, -32.0, 0.0))
-left_curb_bottom_uv = uvs_at_coordinate(basic_segment, (-7.5, -32.0, -0.2))
-right_curb_bottom_uv = uvs_at_coordinate(basic_segment, (7.5, -32.0, -0.2))
+left_curb_bottom_uv = uvs_at_coordinate(basic_segment, (-7.5, -32.0, -0.3))
+right_curb_bottom_uv = uvs_at_coordinate(basic_segment, (7.5, -32.0, -0.3))
 right_curb_top_uv = uvs_at_coordinate(basic_segment, (7.5, -32.0, 0.0))
 assert len(left_curb_top_uv) == len(left_curb_bottom_uv) == 1
 assert len(right_curb_top_uv) == len(right_curb_bottom_uv) == 1
@@ -206,7 +326,7 @@ left_top_u = next(iter(left_curb_top_uv))[0]
 left_bottom_u = next(iter(left_curb_bottom_uv))[0]
 right_bottom_u = next(iter(right_curb_bottom_uv))[0]
 right_top_u = next(iter(right_curb_top_uv))[0]
-expected_curb_uv_width = 0.2 / 21.4
+expected_curb_uv_width = 0.3 / 21.6
 assert abs((left_bottom_u - left_top_u) - expected_curb_uv_width) < 1e-5
 assert abs((right_top_u - right_bottom_u) - expected_curb_uv_width) < 1e-5
 
@@ -215,7 +335,7 @@ for uv in (loop.uv for loop in uv_layer.data):
     assert -1e-6 <= uv.x <= 1.0 + 1e-6, uv[:]
     assert -1e-6 <= uv.y <= 1.0 + 1e-6, uv[:]
 marking_uv = []
-for polygon in (item for item in basic_segment.data.polygons if item.material_index == 1):
+for polygon in polygons_of_kind(basic_segment, "marking"):
     face_uv = [uv_layer.data[index].uv for index in polygon.loop_indices]
     marking_uv.extend(face_uv)
     assert abs(min(uv.x for uv in face_uv)) < 1e-6
@@ -233,7 +353,7 @@ for boundary in props.boundaries:
 road_builder.build_mode(bpy.context.scene, "basic")
 unmarked_segment = bpy.data.objects["basic_segment"]
 assert len(unmarked_segment.data.polygons) < marked_polygon_count
-assert sum(polygon.material_index == 1 for polygon in unmarked_segment.data.polygons) == 0
+assert len(polygons_of_kind(unmarked_segment, "marking")) == 0
 for boundary in props.boundaries:
     boundary.marking_enabled = saved_marking_states[boundary.boundary_id]
 road_builder.build_mode(bpy.context.scene, "basic")
@@ -245,16 +365,31 @@ assert -6.5 in shouldered_node_x and 6.5 in shouldered_node_x, shouldered_node_x
 props.node_shoulder_bands = False
 road_builder.build_mode(bpy.context.scene, "basic")
 
+# A recessed road uses its regular level node.  Only a flush road owns the
+# preview node which descends to the recessed node surface.
+props.depress_roadway = False
+road_builder.build_mode(bpy.context.scene, "basic")
+flush_segment_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["basic_segment"].data.vertices}
+flush_transition_node_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["basic_node"].data.vertices}
+assert flush_segment_z == {0.0}, flush_segment_z
+assert -0.3 in flush_transition_node_z and 0.0 in flush_transition_node_z, flush_transition_node_z
+props.depress_roadway = True
+road_builder.build_mode(bpy.context.scene, "basic")
+depressed_segment_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["basic_segment"].data.vertices}
+depressed_node_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["basic_node"].data.vertices}
+assert depressed_segment_z == {-0.3, 0.0}, depressed_segment_z
+assert depressed_node_z == {-0.3, 0.0}, depressed_node_z
+
 elevated_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["elevated_segment"].data.vertices}
-assert -0.2 in elevated_z and 0.0 in elevated_z, elevated_z
+assert -0.3 in elevated_z and 0.0 in elevated_z, elevated_z
 elevated_segment = bpy.data.objects["elevated_segment"]
 assert elevated_segment["cs1_girder_count"] == 6
 assert elevated_segment["cs1_geometry_groups"] == "surface,deck,custom_edge,girder"
 assert len(elevated_segment["cs1_girder_centers"]) == 6
 assert elevated_segment["cs1_girder_spacing"] == 3.8
 assert elevated_segment["cs1_girder_reference_span"] == 35.0
-assert len(elevated_segment.data.materials) == 3
-assert sum(polygon.material_index == 2 for polygon in elevated_segment.data.polygons) > 0
+assert len(elevated_segment.data.materials) == 2
+assert sum(polygon.material_index == 1 for polygon in elevated_segment.data.polygons) > 0
 assert min(elevated_z) < -0.6
 assert elevated_segment["cs1_elevated_edge_source"] == "ElevatedEdge"
 assert elevated_segment["cs1_elevated_left_edge_mirrored"] is True
@@ -323,7 +458,7 @@ assert y_values_at_xz(depth_scaled, -10.65, 1.0) == {-32.0, 32.0}
 props.deck_depth = 1.0
 road_builder.build_mode(bpy.context.scene, "elevated")
 tunnel_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["tunnel_segment"].data.vertices}
-assert -0.2 in tunnel_z and 0.0 in tunnel_z and 4.8 in tunnel_z, tunnel_z
+assert -0.3 in tunnel_z and 0.0 in tunnel_z and 4.7 in tunnel_z, tunnel_z
 
 left_edge_boundary = next(item for item in props.boundaries if item.boundary_id == "boundary-left-carriageway")
 left_edge_boundary.marking_enabled = False
@@ -376,11 +511,35 @@ assert len(bundle["revision"]) == 64
 assert len(bundle["structural_signature"]) == 64
 mode_entries = {item["mode"]: item["entries"] for item in bundle["modes"]}
 assert set(mode_entries) == {"basic", "elevated", "bridge", "slope", "tunnel"}
+expected_materials = {
+    "basic": [road_builder.SHARED_SURFACE_MATERIAL] * 2,
+    "elevated": [
+        road_builder.SHARED_SURFACE_MATERIAL,
+        road_builder.SHARED_STRUCTURE_MATERIAL,
+    ] * 2,
+    "bridge": [
+        road_builder.SHARED_SURFACE_MATERIAL,
+        road_builder.SHARED_STRUCTURE_MATERIAL,
+    ] * 2,
+    "slope": [
+        road_builder.SHARED_SURFACE_MATERIAL,
+        road_builder.SHARED_TUNNEL_MATERIAL,
+    ] * 2,
+    "tunnel": [
+        road_builder.SHARED_SURFACE_MATERIAL,
+        road_builder.SHARED_TUNNEL_MATERIAL,
+    ] * 2,
+}
 for mode, entries in mode_entries.items():
+    assert [entry["mesh"]["material"]["name"] for entry in entries] == expected_materials[mode]
+    assert all(
+        entry["mesh"]["material"]["main_texture_scale"] == [1.0, 0.5]
+        for entry in entries
+    ), mode
     surface = entries[0]["mesh"]
     surface_indices = set(surface["triangles"])
     exported_heights = [surface["vertices"][index * 3 + 1] for index in surface_indices]
-    assert round(min(exported_heights), 6) == round(-props.curb_height, 6), mode
+    assert round(min(exported_heights), 6) == -road_builder.ROADWAY_DEPRESSION, mode
     assert round(max(exported_heights), 6) == 0.0, mode
 basic_segment = mode_entries["basic"][0]["mesh"]
 assert len(basic_segment["vertices"]) == len(basic_segment["normals"])
@@ -433,21 +592,82 @@ assert prop_bundle["mesh"]["material"]["shader"] == "Custom/Props/Decal/Blend"
 assert len(prop_bundle["mesh"]["triangles"]) > 0
 previous_revision = bundle["revision"]
 props.runtime_auto_export = True
-props.curb_height += 0.01
+props.depress_roadway = False
 assert road_builder._runtime_auto_export_timer() == 1.0
 updated_bundle = json.loads((runtime_output / "roads" / "smoke-road.json").read_text(encoding="utf-8"))
 updated_manifest = json.loads((runtime_output / "manifest.json").read_text(encoding="utf-8"))
 assert updated_bundle["revision"] != previous_revision
+assert all(lane["vertical_offset"] == 0.0 for lane in updated_bundle["lanes"])
+for mode in updated_bundle["modes"]:
+    surface = mode["entries"][0]["mesh"]
+    surface_indices = set(surface["triangles"])
+    surface_heights = [surface["vertices"][index * 3 + 1] for index in surface_indices]
+    assert round(min(surface_heights), 6) == 0.0, mode["mode"]
+    assert round(max(surface_heights), 6) == 0.0, mode["mode"]
 manifest_roads = {item["road_id"]: item for item in updated_manifest["roads"]}
 assert len(manifest_roads) == 2
 assert manifest_roads["smoke-road"]["revision"] == updated_bundle["revision"]
 assert manifest_roads["smoke-road-two"]["revision"] == second_bundle["revision"]
 props.runtime_auto_export = False
 
+# Geometry controls throttle the selected mode and settle other generated modes.
+basic_before = bpy.data.objects["basic_segment"]
+half_width_before = max(vertex.co.x for vertex in basic_before.data.vertices)
+props.shoulder_width = 1.1
+scene_key = bpy.context.scene.as_pointer()
+first_due = road_builder._LIVE_PREVIEW_PENDING[scene_key]["live_due"]
+props.shoulder_width = 1.2
+assert len(road_builder._LIVE_PREVIEW_PENDING) == 1
+pending = road_builder._LIVE_PREVIEW_PENDING[scene_key]
+assert pending["live_due"] == first_due
+assert pending["active_mode"] == "basic"
+assert set(pending["modes"]) == {"basic", "elevated", "bridge", "slope", "tunnel"}
+pending["live_due"] = 0.0
+pending["settle_due"] = float("inf")
+live_result = road_builder._live_preview_timer()
+assert live_result is not None
+half_width_after = max(vertex.co.x for vertex in bpy.data.objects["basic_segment"].data.vertices)
+assert half_width_after > half_width_before
+pending = road_builder._LIVE_PREVIEW_PENDING[scene_key]
+assert pending["dirty"] is False
+pending["settle_due"] = 0.0
+assert road_builder._live_preview_timer() is None
+props.shoulder_width = 1.0
+road_builder._LIVE_PREVIEW_PENDING.clear()
+
 panel_layout = FakeLayout()
 panel = type("FakePanel", (), {"layout": panel_layout})()
 road_builder.CS1ROAD_PT_main.draw(panel, bpy.context)
+assert panel_layout.property_names.count("mode") == 1
+for panel_type in (
+    road_builder.CS1ROAD_PT_shared,
+    road_builder.CS1ROAD_PT_cross_section,
+    road_builder.CS1ROAD_PT_markings,
+    road_builder.CS1ROAD_PT_mode,
+    road_builder.CS1ROAD_PT_files,
+    road_builder.CS1ROAD_PT_runtime,
+    road_builder.CS1ROAD_PT_development,
+):
+    panel_type.draw(panel, bpy.context)
 assert "script.reload" in panel_layout.operator_ids
+assert panel_layout.property_names.count("sidewalk_width") == 2
+assert panel_layout.property_names.count("shoulder_width") == 2
+assert "zone" in panel_layout.property_names
+assert "width" in panel_layout.property_names
+assert "direction" in panel_layout.property_names
+assert "vehicle_type" in panel_layout.property_names
+assert "speed_limit" in panel_layout.property_names
+for hidden_field in ("lane_type", "vertical_offset", "stop_offset", "allow_connect", "node_shoulder_bands"):
+    assert hidden_field not in panel_layout.property_names
+assert "node_transition_target" not in panel_layout.property_names
+for panel_type in (
+    road_builder.CS1ROAD_PT_markings,
+    road_builder.CS1ROAD_PT_mode,
+    road_builder.CS1ROAD_PT_files,
+    road_builder.CS1ROAD_PT_runtime,
+    road_builder.CS1ROAD_PT_development,
+):
+    assert "DEFAULT_CLOSED" in panel_type.bl_options
 
 # Match Blender's Reload Scripts lifecycle. The package must refresh its
 # child modules and register cleanly again without restarting Blender.

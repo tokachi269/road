@@ -89,7 +89,7 @@ Elevatedサンプルは構造物の可視ディテールが端から張り出す
 
 | モード | Mesh previewの責務 | Importer・runtimeの責務 |
 | --- | --- | --- |
-| Ground (`basic`) | 路面、歩道、見えるcurb立面、必要に応じた64 m node profile transition。 | Terrain clipping/flattening、pavement生成、corner offset、traffic light、intersection node selector。 |
+| Ground (`basic`) | 路面、歩道、見えるcurb立面。凹み道路の通常nodeは路面高-0.3 mを維持し、平らな道路側だけ必要に応じて0 mから-0.3 mへ下る64 m node profileを持つ。 | Terrain clipping/flattening、pavement生成、corner offset、traffic light、intersection node selector。 |
 | Elevated | 指定高さにある開放型deckの上面・下面・fascia。 | Elevated AI、pillar定義とoffset、elevation cost。 |
 | Bridge | 指定高さ・厚さにある開放型deckの上面・下面・fascia。 | Bridge AI、bridge pillar、lower-terrain、twist、bendingの挙動。 |
 | Tunnel Entrance（内部キーは`slope`） | Ground高さとTunnel高さを結ぶ64 mの長手方向transition。 | Slope AIおよびforward/invert mesh selector。CSURの実装から、特に非対称道路では上り・下りmeshをforward/invert flagで選択することが確認できる。 |
@@ -163,7 +163,7 @@ Marking領域幅は次で決める。
 - 左右揺れを大きくする劣化線：marking領域40～50 cm。
 - 二重線・斜線帯：実際の線群の外幅に左右それぞれ10～15 cm以上のasphalt余白を加える。
 
-Marking領域の境界pixelは周囲のasphalt tileと同じ色・normal・roughnessへ収束させ、面の継ぎ目を見せない。剥離形状と線の揺れはtile内のmaskで表現する。Marking領域は線中心で二分せず、両端だけを持つ1枚のface帯にする。帯の横UVは0～1、長手UVはsegment全体で0～1とし、線中心はtexture内で表現する。
+Marking領域の境界pixelは周囲のasphalt tileと同じ色・normal・roughnessへ収束させ、面の継ぎ目を見せない。剥離形状と線の揺れはtile内のmaskで表現する。Marking領域は線中心で二分せず、両端だけを持つ1枚のface帯にする。帯の横UVは0～1を使い、線中心はtexture内で表現する。長手方向はNetwork materialのV scale `0.5`を基準に2反復相当とし、情報量が不足する場合は同じ面のV範囲を広げる。周期変更のためにmarkingを別meshへ分離しない。
 
 歩道・curb・路面の通常surfaceは別々に上面投影しない。横断面に沿った累積距離をUへ使うため、歩道とcurb上端、curb下端と路面の共有辺は同じUV座標になる。curb高さ分のUV幅を必ず確保し、立面textureが線へ潰れないようにする。Ground node transitionのようにcurb高さが長手方向で変化する場合は、その位置の断面実長からUを計算し、接続を維持したまま立面幅を連続的に縮める。
 
@@ -251,9 +251,9 @@ JSON v3は`shared_geometry`、`styles`、`layout.strips`、`layout.boundaries`�
 3. `tunnel`：Tunnel壁、天井、portal。
 4. `node`：交差点asphalt、横断歩道、stop lineなど、node固有のUVが必要な場合だけ使用。
 
-各atlasは全車線数・全道路variantで再利用する。最初は1024×1024を基準とし、Blender・ゲーム内確認で不足したatlasだけ解像度を上げる。LODには小さい共通atlasを用意する。Diffuseは必須とし、alpha・normal・specular等は表現上必要なatlasだけ追加する。
+各atlasは全車線数・全道路variantで再利用する。最初は1024×1024を基準とし、Network materialのV scaleは`0.5`、長手方向は16 m周期を2反復した32 mとして扱う。破線は6 m塗装＋10 m空白を制作基準とする。これにより縦横とも32 px/mになる。解像感が不足する場合は、まず同一mesh上のV使用範囲を広げ、それでも不足したatlasだけ解像度を上げる。LODには小さい共通atlasを用意する。Diffuseは必須とし、alpha・normal・specular等は表現上必要なatlasだけ追加する。
 
-Blenderで編集するsegment/nodeはそれぞれ1個のmesh objectを維持する。ただしCS1の1個のsegment mesh entryは基本的に1material・1shaderとして扱われるため、エクスポート時だけshader単位へ分ける。原則として路面系と構造物系の最大2系統とし、白線、curb、側溝ごとのrender meshやdraw callは増やさない。
+Blenderで編集するsegment/nodeはそれぞれ1個のmesh objectを維持する。ただしCS1の1個のsegment mesh entryは基本的に1material・1shaderとして扱われるため、エクスポート時だけshader単位へ分ける。Material分類は共通の`surface / structure / tunnel`とし、1 modeの出力はsurfaceと対応する非surfaceの最大2系統にする。Slopeの非surfaceはtunnelへ含め、白線、curb、側溝ごとのrender meshやdraw callは増やさない。
 
 RoadImporterの現在の`optLevel = 0`では、同じsource atlasを使ってもtextureは各CRPへ格納される。これは外部loaderへ依存しない代わりに、CRP間でruntime textureを完全共有できない。
 

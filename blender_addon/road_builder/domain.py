@@ -12,6 +12,26 @@ from typing import Iterable, Protocol
 MODE_LENGTH = 64.0
 SEGMENT_SLICES = 20
 NODE_SLICES = 8
+ROADWAY_DEPRESSION = 0.30
+SIDEWALK_LANE_TOTAL_INSET = 0.50
+
+
+def roadway_depression(enabled: bool) -> float:
+    """Return the single standard carriageway depression used by the prototype."""
+    return ROADWAY_DEPRESSION if enabled else 0.0
+
+
+def lane_vertical_offset(zone: str, roadway_is_depressed: bool) -> float:
+    """Derive the CS1 lane height from lane zone and the road-level switch."""
+    if zone in {"LEFT_SIDEWALK", "RIGHT_SIDEWALK"}:
+        return roadway_depression(roadway_is_depressed)
+    return 0.0
+
+
+def sidewalk_lane_width(surface_width: float, lane_count: int = 1) -> float:
+    """Fit pedestrian network lanes inside the sidewalk surface."""
+    usable_width = max(surface_width - SIDEWALK_LANE_TOTAL_INSET, 0.05)
+    return usable_width / max(lane_count, 1)
 
 
 class LaneLike(Protocol):

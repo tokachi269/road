@@ -66,6 +66,7 @@ namespace RoadRuntimeHost.Runtime
         public float[] Color;
         public NamedValue[] Textures;
         public NamedValue[] MaterialProperties;
+        public float[] MainTextureScale;
     }
     internal sealed class Catalog
     {

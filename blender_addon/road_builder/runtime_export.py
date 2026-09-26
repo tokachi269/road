@@ -11,6 +11,7 @@ import bpy
 
 
 BUNDLE_SCHEMA_VERSION = 1
+NETWORK_MAIN_TEXTURE_SCALE = (1.0, 0.5)
 SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -94,6 +95,7 @@ def serialize_mesh_object(obj: bpy.types.Object, shader: str) -> dict:
             "shader": shader,
             "color": list(material.diffuse_color) if material is not None else [1.0, 1.0, 1.0, 1.0],
             "textures": [],
+            "main_texture_scale": list(NETWORK_MAIN_TEXTURE_SCALE),
         })
     return {
         "name": obj.name,

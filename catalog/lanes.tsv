@@ -1,5 +1,5 @@
 road_id	lane_id	order	width	position	vertical_offset	stop_offset	direction	lane_type	vehicle_type	speed_limit	allow_connect
-example-road	lane-left-sidewalk	10	2.0	-5.0	0.15	0.0	Both	Pedestrian	None	0.1	true
+example-road	lane-left-sidewalk	10	2.0	-5.0	0.3	0.0	Both	Pedestrian	None	0.1	true
 example-road	lane-backward-1	20	3.0	-1.5	0.0	0.0	Backward	Vehicle	Car	1.0	true
 example-road	lane-forward-1	30	3.0	1.5	0.0	0.0	Forward	Vehicle	Car	1.0	true
-example-road	lane-right-sidewalk	40	2.0	4.5	0.15	0.0	Both	Pedestrian	None	0.1	true
+example-road	lane-right-sidewalk	40	2.0	4.5	0.3	0.0	Both	Pedestrian	None	0.1	true
