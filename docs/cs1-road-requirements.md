@@ -22,7 +22,7 @@
 | メッシュの単位 | 本プロジェクトの決定 | 各モードにつき、segmentを1個のBlenderメッシュオブジェクト、nodeを1個のBlenderメッシュオブジェクトとして生成する。CS1のselector別メッシュとLODはエクスポート時に生成し、previewをプリミティブの集合にはしない。 |
 | 不可視面 | 本プロジェクトの決定 | Groundは路面上面、歩道上面、露出するcurb立面だけを持つ。ElevatedとBridgeは見える下面と外側fasciaを追加するが、長手方向の端面は作らない。Tunnelは路面と内向きの壁・天井を持つ。 |
 | Node中央分割 | ユーザー要件に基づく本プロジェクトの決定 | 1個のBlenderオブジェクトを維持したまま、X=0の路面頂点を共有しない左右のvertex islandにする。左右を独立したトポロジーとして扱え、プリミティブオブジェクトへ分解する必要はない。 |
-| UV map | サンプル確認済み・Blender preview実装済み | 確認したすべてのCSURサンプルFBXにUV layerが1個ある。生成surfaceは歩道、curb上面・壁・車道側下面、路肩、各lane、線を`textures/dimensions.json`の共通atlas regionへ割り当てる。生成structureは床版下面、mode別fascia、主桁側面・下面、生成tunnelは壁・天井を各familyのregionへ割り当てる。curb立面を上面投影で潰さず、左右は同じregionを反転利用する。64 mの長手方向は0～1で生成し、Blender Material側でVを2倍して2048px内の16m周期を反復表示する。線の中央に余分な辺は置かない。指定meshの入力UVは保持する。最終FBX/CRPで同じtexture scaleが復元されることは未検証。 |
+| UV map | サンプル確認済み・Blender preview実装済み | 確認したすべてのCSURサンプルFBXにUV layerが1個ある。通常道路端は歩道上面、curb壁、既存路面の3面を維持し、texture区分のためにcurb上面・下面の細いfaceを追加しない。生成structureは床版下面、mode別fascia、主桁側面・下面、生成tunnelは壁・天井を各familyのregionへ割り当てる。curb立面を上面投影で潰さず、左右は同じregionを反転利用する。64 mの長手方向は0～1で生成し、Blender Material側でVを2倍して2048px内の16m周期を反復表示する。線の中央に余分な辺は置かない。指定meshの入力UVは保持する。最終FBX/CRPで同じtexture scaleが復元されることは未検証。 |
 | LOD | サンプル確認済み・未実装 | 参照したすべてのsegment/node FBXに対応する`_lod.FBX`がある。LODの生成とエクスポートが完了するまでgame-readyとは扱わない。 |
 | Normal | Importer・エクスポート要件 | 可視面は意図した頂点順序で生成する。隣接するsegment/nodeが覆う端面は省略する。Blender上でnormalとback-face visibilityを検証する。 |
 
@@ -166,7 +166,7 @@ Marking領域幅は次で決める。
 
 Marking領域の境界pixelは周囲のasphalt tileと同じ色・normal・roughnessへ収束させ、面の継ぎ目を見せない。剥離形状と線の揺れはtile内のmaskで表現する。Marking領域は線中心で二分せず、両端だけを持つ1枚のface帯にする。帯の横UVは、atlas全体では各線の26 px content region、線素材内ではその全幅を使い、線中心はtexture内で表現する。32 px slot全幅は使用しない。長手方向はNetwork materialのV scale `0.5`を基準に2反復相当とし、情報量が不足する場合は同じ面のV範囲を広げる。周期変更のためにmarkingを別meshへ分離しない。
 
-歩道・curb・路面の通常surfaceは別々に上面投影しない。接続されたmeshのface semanticに応じて、歩道、curb上面、curb壁、curb下面、路肩、laneの連続配置regionを使う。共有する形状頂点をUV境界のために分離せず、face loop UVだけを切り替える。curb立面には専用のUV幅を必ず確保し、上面投影で潰さない。Ground node transitionのようにcurb高さが長手方向で変化する場合も、同じcurb壁regionを使いながら形状だけを連続的に変える。
+通常道路端は歩道上面1枚、curb壁、既存路面faceの3面とする。`curb.upper`と`curb.lower`はtexture制作上の素材区分であり、その幅に合わせた専用faceや横断辺を追加しない。歩道上面は`sidewalk.default`と`curb.upper`の定義px幅を合計したUV幅を持ち、内側共有辺を`curb.wall`上端へ一致させる。壁に接する最外側路面は`curb.lower`と接しているasphalt regionの定義px幅を合計し、外側共有辺を`curb.wall`下端へ一致させる。形状幅がtexture制作幅と異なる場合は、この合成UV幅を1枚のfaceへスケールする。共有する形状頂点をUV境界のために分離せず、curb立面を上面投影で潰さない。Ground node transitionのようにcurb高さが長手方向で変化する場合も同じ規則を使う。生成curb付き分離帯は別仕様で、curb上面と中央上面を分ける。
 
 この方式では、路側線の有無を次のように変更できる。
 

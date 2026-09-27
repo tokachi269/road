@@ -27,6 +27,27 @@ class TextureLayoutTest(unittest.TestCase):
             ((wall["x_px"] + wall["width_px"]) // 2) / 1024,
         )
 
+    def test_curb_adjacent_faces_use_combined_texture_widths(self):
+        sidewalk = self.regions["sidewalk.default"]
+        upper = self.regions["curb.upper"]
+        wall = self.regions["curb.wall"]
+        lower = self.regions["curb.lower"]
+        shoulder = self.regions["shoulder.default"]
+        lane = self.regions["lane.default"]
+
+        sidewalk_start = wall["x_px"] - sidewalk["width_px"] - upper["width_px"]
+        shoulder_end = (
+            wall["x_px"] + wall["width_px"]
+            + lower["width_px"] + shoulder["width_px"]
+        )
+        lane_end = (
+            wall["x_px"] + wall["width_px"]
+            + lower["width_px"] + lane["width_px"]
+        )
+        self.assertEqual(sidewalk_start, 224)
+        self.assertEqual(shoulder_end, 448)
+        self.assertEqual(lane_end, 608)
+
     def test_line_band_keeps_internal_alpha_margin_in_a_32px_slot(self):
         dashed = self.regions["line.dashed.white"]
         self.assertEqual((dashed["x_px"], dashed["width_px"]), (2022, 26))

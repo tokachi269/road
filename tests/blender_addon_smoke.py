@@ -255,6 +255,8 @@ assert tunnel_image_nodes[0].image.filepath.endswith("tunnel_base_2048.png")
 surface_regions = {
     "lane.default", "shoulder.default", "sidewalk.default",
     "curb.upper", "curb.wall", "curb.lower",
+    "sidewalk.default+curb.upper",
+    "curb.lower+shoulder.default", "curb.lower+lane.default",
     "line.solid.white", "line.dashed.white",
 }
 structure_regions = {
@@ -275,18 +277,18 @@ def assert_exact_uv_regions(obj, allow_authored=False):
         if region_name == "authored":
             assert allow_authored, (obj.name, polygon.index)
             continue
-        if region_name in surface_regions:
-            atlas_name = "surface"
+        atlas_name, u_min, u_max = road_builder._uv_region_bounds(region_name)
+        if atlas_name == "surface":
+            assert region_name in surface_regions
             assert polygon.material_index == 0, (obj.name, polygon.index, region_name)
-        elif region_name in structure_regions:
-            atlas_name = "structure"
+        elif atlas_name == "structure":
+            assert region_name in structure_regions
             assert polygon.material_index == 1, (obj.name, polygon.index, region_name)
-        elif region_name in tunnel_regions:
-            atlas_name = "tunnel"
+        elif atlas_name == "tunnel":
+            assert region_name in tunnel_regions
             assert polygon.material_index == 1, (obj.name, polygon.index, region_name)
         else:
             raise AssertionError((obj.name, polygon.index, region_name))
-        u_min, u_max, _ = road_builder._atlas_texture_region(atlas_name, region_name)
         face_u = [uv_layer.data[index].uv.x for index in polygon.loop_indices]
         assert min(face_u) >= u_min - 1e-6, (
             obj.name, polygon.index, region_name, min(face_u), u_min,
@@ -317,8 +319,9 @@ for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
     initial_regions[(mode, "node")] = assert_exact_uv_regions(node)
 
 assert initial_regions[("basic", "segment")] == {
-    "lane.default", "shoulder.default", "sidewalk.default",
-    "curb.upper", "curb.wall", "curb.lower", "line.solid.white",
+    "lane.default", "curb.lower+shoulder.default",
+    "sidewalk.default+curb.upper",
+    "curb.wall", "line.solid.white",
 }
 assert "line.solid.white" not in initial_regions[("basic", "node")]
 assert {"deck.underside", "elevated.fascia", "girder.bottom", "girder.side"} <= initial_regions[("elevated", "segment")]
@@ -414,42 +417,53 @@ for marking_center in (-6.5, -3.25, 0.0, 3.25, 6.5):
     assert round(marking_center + 0.2, 4) in segment_x
 node_x = {round(vertex.co.x, 4) for vertex in left_node.data.vertices}
 assert node_x == {
-    -10.5, -7.6, -7.5, -7.25, -6.5, -3.25,
+    -10.5, -7.5, -6.5, -3.25,
     0.0,
-    3.25, 6.5, 7.25, 7.5, 7.6, 10.5,
+    3.25, 6.5, 7.5, 10.5,
 }, node_x
+assert not ({-7.6, -7.25, 7.25, 7.6} & node_x), node_x
 
 
-def uvs_at_coordinate(obj, coordinate):
+wall_u_min, wall_u_max, _ = road_builder._texture_region("curb.wall")
+curb_wall_faces = [
+    polygon for polygon in basic_segment.data.polygons
+    if abs(abs(polygon.center.x) - 7.5) < 1e-6
+    and abs(polygon.normal.x) > 0.99
+]
+assert len(curb_wall_faces) == 40
+wall_uv_layer = basic_segment.data.uv_layers["RoadUV"]
+for polygon in curb_wall_faces:
+    face_u = [
+        wall_uv_layer.data[index].uv.x for index in polygon.loop_indices
+    ]
+    assert abs(min(face_u) - wall_u_min) < 1e-6
+    assert abs(max(face_u) - wall_u_max) < 1e-6
+
+
+def u_values_at_coordinate(obj, coordinate):
     vertex_indices = {
         vertex.index for vertex in obj.data.vertices
         if all(abs(vertex.co[index] - coordinate[index]) < 1e-6 for index in range(3))
     }
-    layer = obj.data.uv_layers[0]
+    layer = obj.data.uv_layers["RoadUV"]
     return {
-        (round(layer.data[loop.index].uv.x, 6), round(layer.data[loop.index].uv.y, 6))
+        round(layer.data[loop.index].uv.x, 6)
         for loop in obj.data.loops if loop.vertex_index in vertex_indices
     }
 
 
-left_curb_top_uv = uvs_at_coordinate(basic_segment, (-7.5, -32.0, 0.0))
-left_curb_bottom_uv = uvs_at_coordinate(basic_segment, (-7.5, -32.0, -0.3))
-right_curb_bottom_uv = uvs_at_coordinate(basic_segment, (7.5, -32.0, -0.3))
-right_curb_top_uv = uvs_at_coordinate(basic_segment, (7.5, -32.0, 0.0))
-assert len(left_curb_top_uv) == len(left_curb_bottom_uv) == 1
-assert len(right_curb_top_uv) == len(right_curb_bottom_uv) == 1
-left_top_u = next(iter(left_curb_top_uv))[0]
-left_bottom_u = next(iter(left_curb_bottom_uv))[0]
-right_bottom_u = next(iter(right_curb_bottom_uv))[0]
-right_top_u = next(iter(right_curb_top_uv))[0]
-wall_u_min, wall_u_max, _ = road_builder._texture_region("curb.wall")
-expected_curb_uv_width = wall_u_max - wall_u_min
-assert abs(abs(left_bottom_u - left_top_u) - expected_curb_uv_width) < 1e-5
-assert abs(abs(right_top_u - right_bottom_u) - expected_curb_uv_width) < 1e-5
-assert abs(left_top_u - wall_u_min) < 1e-5
-assert abs(left_bottom_u - wall_u_max) < 1e-5
-assert abs(right_top_u - wall_u_min) < 1e-5
-assert abs(right_bottom_u - wall_u_max) < 1e-5
+assert u_values_at_coordinate(basic_segment, (-7.5, -32.0, 0.0)) == {
+    round(wall_u_min, 6)
+}
+assert u_values_at_coordinate(basic_segment, (7.5, -32.0, 0.0)) == {
+    round(wall_u_min, 6)
+}
+assert u_values_at_coordinate(basic_segment, (-7.5, -32.0, -0.3)) == {
+    round(wall_u_max, 6)
+}
+assert u_values_at_coordinate(basic_segment, (7.5, -32.0, -0.3)) == {
+    round(wall_u_max, 6)
+}
 
 uv_layer = basic_segment.data.uv_layers[0]
 for uv in (loop.uv for loop in uv_layer.data):
@@ -467,10 +481,10 @@ assert abs(max(uv.y for uv in marking_uv) - 1.0) < 1e-6
 assert len({round(uv.y, 4) for uv in marking_uv}) == 21
 
 surface_region_ids = (
-    "lane.default", "shoulder.default", "sidewalk.default",
-    "curb.upper", "curb.wall", "curb.lower",
+    "lane.default", "curb.lower+shoulder.default",
+    "sidewalk.default+curb.upper", "curb.wall",
 )
-surface_u_ranges = [road_builder._texture_region(item)[:2] for item in surface_region_ids]
+surface_u_ranges = [road_builder._uv_region_bounds(item)[1:] for item in surface_region_ids]
 for polygon in polygons_of_kind(basic_segment, "surface"):
     face_u = [uv_layer.data[index].uv.x for index in polygon.loop_indices]
     assert any(
@@ -481,7 +495,7 @@ node_uv_x = {
     round(loop.uv.x, 6) for loop in left_node.data.uv_layers[0].data
 }
 for region_id in surface_region_ids:
-    u_min, u_max, _ = road_builder._texture_region(region_id)
+    _atlas_name, u_min, u_max = road_builder._uv_region_bounds(region_id)
     assert round(u_min, 6) in node_uv_x, (region_id, u_min, sorted(node_uv_x))
     assert round(u_max, 6) in node_uv_x, (region_id, u_max, sorted(node_uv_x))
 

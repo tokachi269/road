@@ -142,6 +142,8 @@ UV_REGION_NAMES = (
     "authored",
     "lane.default", "shoulder.default", "sidewalk.default",
     "curb.upper", "curb.wall", "curb.lower",
+    "sidewalk.default+curb.upper",
+    "curb.lower+shoulder.default", "curb.lower+lane.default",
     "line.solid.white", "line.dashed.white",
     "deck.underside", "elevated.fascia", "bridge.fascia",
     "girder.bottom", "girder.side",
@@ -233,6 +235,50 @@ def _atlas_texture_region(
 
 def _texture_region(region_id: str) -> tuple[float, float, float]:
     return _atlas_texture_region("surface", region_id)
+
+
+def _combined_surface_region(
+    anchor: float, region_ids: tuple[str, ...], direction: int,
+) -> tuple[float, float]:
+    width = sum(
+        _texture_region(region_id)[1] - _texture_region(region_id)[0]
+        for region_id in region_ids
+    )
+    other = anchor + direction * width
+    return min(anchor, other), max(anchor, other)
+
+
+def _uv_region_bounds(region_id: str) -> tuple[str, float, float]:
+    wall_u_min, wall_u_max, _ = _texture_region("curb.wall")
+    combined = {
+        "sidewalk.default+curb.upper": (
+            "surface",
+            *_combined_surface_region(
+                wall_u_min, ("sidewalk.default", "curb.upper"), -1,
+            ),
+        ),
+        "curb.lower+shoulder.default": (
+            "surface",
+            *_combined_surface_region(
+                wall_u_max, ("curb.lower", "shoulder.default"), 1,
+            ),
+        ),
+        "curb.lower+lane.default": (
+            "surface",
+            *_combined_surface_region(
+                wall_u_max, ("curb.lower", "lane.default"), 1,
+            ),
+        ),
+    }
+    if region_id in combined:
+        return combined[region_id]
+    for atlas_name in ("surface", "structure", "tunnel"):
+        try:
+            u_min, u_max, _ = _atlas_texture_region(atlas_name, region_id)
+        except ValueError:
+            continue
+        return atlas_name, u_min, u_max
+    raise ValueError(f"Unknown UV region: {region_id}")
 
 
 def _surface_atlas_image(force_reload: bool = False) -> bpy.types.Image:
@@ -926,6 +972,8 @@ class _RoadUVSpan:
     x_max: float
     region_id: str
     reverse: bool = False
+    u_range: tuple[float, float] | None = None
+    uv_region_id: str | None = None
 
 
 def _road_uv_spans(props, road_half) -> tuple[_RoadUVSpan, ...]:
@@ -937,34 +985,43 @@ def _road_uv_spans(props, road_half) -> tuple[_RoadUVSpan, ...]:
     lane_right = (lane_width + median_width) * 0.5
     spans = []
 
-    _, _, curb_lower_width = _texture_region("curb.lower")
-    curb_lower_width = min(curb_lower_width, road_half)
-    interior_left = -road_half + curb_lower_width
-    interior_right = road_half - curb_lower_width
-    spans.extend((
-        _RoadUVSpan(-road_half, interior_left, "curb.lower"),
-        _RoadUVSpan(interior_right, road_half, "curb.lower", True),
-    ))
-
-    if lane_left > interior_left + 1e-8:
-        spans.append(_RoadUVSpan(interior_left, lane_left, "shoulder.default"))
+    if lane_left > -road_half + 1e-8:
+        spans.append(_RoadUVSpan(-road_half, lane_left, "shoulder.default"))
     cursor = lane_left
     for lane_index, lane in enumerate(road_lanes):
         if lane_index == split_index:
             cursor += median_width
         lane_end = cursor + lane.width
-        clipped_left = max(cursor, interior_left)
-        clipped_right = min(lane_end, interior_right)
+        clipped_left = max(cursor, -road_half)
+        clipped_right = min(lane_end, road_half)
         if clipped_right > clipped_left + 1e-8:
             spans.append(_RoadUVSpan(clipped_left, clipped_right, "lane.default"))
         cursor = lane_end
-    if interior_right > lane_right + 1e-8:
-        spans.append(_RoadUVSpan(lane_right, interior_right, "shoulder.default", True))
+    if road_half > lane_right + 1e-8:
+        spans.append(_RoadUVSpan(lane_right, road_half, "shoulder.default", True))
+
+    wall_u_max = _texture_region("curb.wall")[1]
+    for index, span in enumerate(spans):
+        touches_left_curb = abs(span.x_min + road_half) < 1e-8
+        touches_right_curb = abs(span.x_max - road_half) < 1e-8
+        if not touches_left_curb and not touches_right_curb:
+            continue
+        composite_id = f"curb.lower+{span.region_id}"
+        _atlas_name, u_min, u_max = _uv_region_bounds(composite_id)
+        if abs(u_min - wall_u_max) > 1e-8:
+            raise ValueError(f"{composite_id} does not meet curb.wall")
+        spans[index] = _RoadUVSpan(
+            span.x_min, span.x_max, span.region_id, span.reverse,
+            (u_min, u_max), composite_id,
+        )
     return tuple(spans)
 
 
 def _span_u(span: _RoadUVSpan, x: float) -> float:
-    u_min, u_max, _ = _texture_region(span.region_id)
+    if span.u_range is None:
+        u_min, u_max, _ = _texture_region(span.region_id)
+    else:
+        u_min, u_max = span.u_range
     ratio = (x - span.x_min) / max(span.x_max - span.x_min, 1e-8)
     ratio = min(1.0, max(0.0, ratio))
     if span.reverse:
@@ -1081,7 +1138,10 @@ def _add_road_strips(
             mesh.quad(
                 (x_min, ya, za), (x_max, ya, za),
                 (x_max, yb, zb), (x_min, yb, zb),
-                seams, kind, uvs, region_id if marking is not None else span.region_id,
+                seams, kind, uvs,
+                region_id if marking is not None else (
+                    span.uv_region_id or span.region_id
+                ),
             )
 
 
@@ -1095,57 +1155,35 @@ def _add_cross_section_top(
         road_start, road_end, sidewalk_start, sidewalk_end, split_center, slices,
         uv_spans, excluded_range,
     )
-    sidewalk_u_min, sidewalk_u_max, _ = _texture_region("sidewalk.default")
-    upper_u_min, upper_u_max, upper_width = _texture_region("curb.upper")
     wall_u_min, wall_u_max, _ = _texture_region("curb.wall")
-    sidewalk_width = total_half - road_half
-    upper_width = min(upper_width, sidewalk_width)
+    _atlas_name, sidewalk_u_min, sidewalk_u_max = _uv_region_bounds(
+        "sidewalk.default+curb.upper"
+    )
+    if abs(sidewalk_u_max - wall_u_min) > 1e-8:
+        raise ValueError("sidewalk and curb.upper UV do not meet curb.wall")
     for index in range(slices):
         t0, t1 = index / slices, (index + 1) / slices
         ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
         row0 = _cross_section_uv_row(t0, road_half, total_half, road_start, road_end, sidewalk_start, sidewalk_end)
         row1 = _cross_section_uv_row(t1, road_half, total_half, road_start, road_end, sidewalk_start, sidewalk_end)
-        left_upper_outer = -road_half - upper_width
-        right_upper_outer = road_half + upper_width
-        if left_upper_outer > -total_half + 1e-8:
-            mesh.quad(
-                (-total_half, ya, row0["sidewalk_z"]),
-                (left_upper_outer, ya, row0["sidewalk_z"]),
-                (left_upper_outer, yb, row1["sidewalk_z"]),
-                (-total_half, yb, row1["sidewalk_z"]),
-                uvs=((sidewalk_u_min, t0), (sidewalk_u_max, t0),
-                     (sidewalk_u_max, t1), (sidewalk_u_min, t1)),
-                uv_region="sidewalk.default",
-            )
-        if upper_width > 1e-8:
-            mesh.quad(
-                (left_upper_outer, ya, row0["sidewalk_z"]),
-                (-road_half, ya, row0["sidewalk_z"]),
-                (-road_half, yb, row1["sidewalk_z"]),
-                (left_upper_outer, yb, row1["sidewalk_z"]),
-                uvs=((upper_u_min, t0), (upper_u_max, t0),
-                     (upper_u_max, t1), (upper_u_min, t1)),
-                uv_region="curb.upper",
-            )
-            mesh.quad(
-                (road_half, ya, row0["sidewalk_z"]),
-                (right_upper_outer, ya, row0["sidewalk_z"]),
-                (right_upper_outer, yb, row1["sidewalk_z"]),
-                (road_half, yb, row1["sidewalk_z"]),
-                uvs=((upper_u_max, t0), (upper_u_min, t0),
-                     (upper_u_min, t1), (upper_u_max, t1)),
-                uv_region="curb.upper",
-            )
-        if total_half > right_upper_outer + 1e-8:
-            mesh.quad(
-                (right_upper_outer, ya, row0["sidewalk_z"]),
-                (total_half, ya, row0["sidewalk_z"]),
-                (total_half, yb, row1["sidewalk_z"]),
-                (right_upper_outer, yb, row1["sidewalk_z"]),
-                uvs=((sidewalk_u_max, t0), (sidewalk_u_min, t0),
-                     (sidewalk_u_min, t1), (sidewalk_u_max, t1)),
-                uv_region="sidewalk.default",
-            )
+        mesh.quad(
+            (-total_half, ya, row0["sidewalk_z"]),
+            (-road_half, ya, row0["sidewalk_z"]),
+            (-road_half, yb, row1["sidewalk_z"]),
+            (-total_half, yb, row1["sidewalk_z"]),
+            uvs=((sidewalk_u_min, t0), (sidewalk_u_max, t0),
+                 (sidewalk_u_max, t1), (sidewalk_u_min, t1)),
+            uv_region="sidewalk.default+curb.upper",
+        )
+        mesh.quad(
+            (road_half, ya, row0["sidewalk_z"]),
+            (total_half, ya, row0["sidewalk_z"]),
+            (total_half, yb, row1["sidewalk_z"]),
+            (road_half, yb, row1["sidewalk_z"]),
+            uvs=((sidewalk_u_max, t0), (sidewalk_u_min, t0),
+                 (sidewalk_u_min, t1), (sidewalk_u_max, t1)),
+            uv_region="sidewalk.default+curb.upper",
+        )
         if row0["road_z"] != row0["sidewalk_z"] or row1["road_z"] != row1["sidewalk_z"]:
             mesh.quad(
                 (-road_half, ya, row0["road_z"]), (-road_half, yb, row1["road_z"]),
