@@ -127,18 +127,52 @@ MARKING_ROLE_ITEMS = (
 )
 MARKING_STYLE_ITEMS = (
     ("SOLID_WHITE", "Solid white", "Shared solid white marking style"),
+    ("DASHED_WHITE", "Dashed white", "Shared dashed white marking style"),
 )
+MARKING_TEXTURE_REGIONS = {
+    "SOLID_WHITE": "line.solid.white",
+    "DASHED_WHITE": "line.dashed.white",
+}
 SHARED_SURFACE_MATERIAL = "CS1 Road Shared Surface"
 SHARED_STRUCTURE_MATERIAL = "CS1 Road Shared Structure"
 SHARED_TUNNEL_MATERIAL = "CS1 Road Shared Tunnel"
 SHARED_SURFACE_COLOR = (0.12, 0.14, 0.16, 1.0)
 FACE_KIND_VALUES = {"surface": 0, "marking": 1, "structure": 2}
+UV_REGION_NAMES = (
+    "authored",
+    "lane.default", "shoulder.default", "sidewalk.default",
+    "curb.upper", "curb.wall", "curb.lower",
+    "line.solid.white", "line.dashed.white",
+    "deck.underside", "elevated.fascia", "bridge.fascia",
+    "girder.bottom", "girder.side",
+    "tunnel.roof", "tunnel.wall",
+)
+UV_REGION_VALUES = {name: index for index, name in enumerate(UV_REGION_NAMES)}
 _AUTO_EXPORT_STATE = {}
 _LIVE_PREVIEW_PENDING = {}
 _LIVE_PREVIEW_DELAY = 0.15
 _LIVE_PREVIEW_SETTLE_DELAY = 0.60
 _LIVE_PREVIEW_REBUILDING = False
 DEFAULT_RUNTIME_OUTPUT = str(Path(__file__).resolve().parents[2] / "build" / "runtime-preview")
+DEFAULT_SURFACE_ATLAS = (
+    Path(__file__).resolve().parents[2]
+    / "textures"
+    / "road.psd"
+)
+DEFAULT_TEXTURE_LAYOUT = (
+    Path(__file__).resolve().parents[2]
+    / "textures"
+    / "dimensions.json"
+)
+DEFAULT_STRUCTURE_ATLAS = (
+    Path(__file__).resolve().parents[2]
+    / "textures" / "atlas_bases" / "structure_base_2048.png"
+)
+DEFAULT_TUNNEL_ATLAS = (
+    Path(__file__).resolve().parents[2]
+    / "textures" / "atlas_bases" / "tunnel_base_2048.png"
+)
+_TEXTURE_LAYOUT_CACHE = None
 def _enum_value(value: str, available, fallback: str) -> str:
     normalized = value.upper().replace(" ", "_")
     compact = normalized.replace("_", "")
@@ -166,7 +200,90 @@ def _clear_collection(collection: bpy.types.Collection) -> None:
         bpy.data.objects.remove(obj, do_unlink=True)
 
 
-def _material(paint_width: float, region_width: float) -> bpy.types.Material:
+def _texture_layout_manifest() -> dict:
+    global _TEXTURE_LAYOUT_CACHE
+    mtime_ns = DEFAULT_TEXTURE_LAYOUT.stat().st_mtime_ns
+    if (
+        _TEXTURE_LAYOUT_CACHE is None
+        or _TEXTURE_LAYOUT_CACHE[0] != mtime_ns
+    ):
+        _TEXTURE_LAYOUT_CACHE = (
+            mtime_ns,
+            json.loads(DEFAULT_TEXTURE_LAYOUT.read_text(encoding="utf-8")),
+        )
+    return _TEXTURE_LAYOUT_CACHE[1]
+
+
+def _atlas_texture_region(
+    atlas_name: str, region_id: str,
+) -> tuple[float, float, float]:
+    manifest = _texture_layout_manifest()
+    atlas_width = float(manifest["atlas_width_px"])
+    layers = {item["file"]: item for item in manifest["layers"]}
+    for slot in manifest["atlas_layout"][atlas_name]["slots"]:
+        for region in slot["regions"]:
+            if region["id"] == region_id:
+                start = float(region["x_px"])
+                end = start + float(region["width_px"])
+                return start / atlas_width, end / atlas_width, float(
+                    layers[region["file"]]["meters"]
+                )
+    raise ValueError(f"Unknown {atlas_name} texture region: {region_id}")
+
+
+def _texture_region(region_id: str) -> tuple[float, float, float]:
+    return _atlas_texture_region("surface", region_id)
+
+
+def _surface_atlas_image(force_reload: bool = False) -> bpy.types.Image:
+    if not DEFAULT_SURFACE_ATLAS.is_file():
+        raise FileNotFoundError(f"Surface atlas does not exist: {DEFAULT_SURFACE_ATLAS}")
+    image = bpy.data.images.load(str(DEFAULT_SURFACE_ATLAS), check_existing=True)
+    mtime_ns = DEFAULT_SURFACE_ATLAS.stat().st_mtime_ns
+    mtime_key = str(mtime_ns)
+    if force_reload or image.get("cs1_source_mtime_ns") != mtime_key:
+        image.reload()
+        image["cs1_source_mtime_ns"] = mtime_key
+    return image
+
+
+def _image_texture_material(
+    name: str, image_path: Path, fallback_color, force_reload: bool = False,
+) -> bpy.types.Material:
+    if not image_path.is_file():
+        raise FileNotFoundError(f"Texture atlas does not exist: {image_path}")
+    image = bpy.data.images.load(str(image_path), check_existing=True)
+    mtime_key = str(image_path.stat().st_mtime_ns)
+    if force_reload or image.get("cs1_source_mtime_ns") != mtime_key:
+        image.reload()
+        image["cs1_source_mtime_ns"] = mtime_key
+    material = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    material.diffuse_color = fallback_color
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputMaterial")
+    shader = nodes.new("ShaderNodeBsdfPrincipled")
+    uv_map = nodes.new("ShaderNodeUVMap")
+    uv_map.uv_map = "RoadUV"
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.inputs["Scale"].default_value = (1.0, 2.0, 1.0)
+    texture = nodes.new("ShaderNodeTexImage")
+    texture.image = image
+    texture.extension = "REPEAT"
+    links.new(uv_map.outputs["UV"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+    links.new(texture.outputs["Color"], shader.inputs["Base Color"])
+    links.new(shader.outputs[0], output.inputs[0])
+    return material
+
+
+def _material(
+    paint_width: float,
+    region_width: float,
+    force_texture_reload: bool = False,
+) -> bpy.types.Material:
     material = (
         bpy.data.materials.get(SHARED_SURFACE_MATERIAL)
         or bpy.data.materials.new(SHARED_SURFACE_MATERIAL)
@@ -178,61 +295,39 @@ def _material(paint_width: float, region_width: float) -> bpy.types.Material:
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
     shader = nodes.new("ShaderNodeBsdfPrincipled")
-    texcoord = nodes.new("ShaderNodeTexCoord")
-    separate = nodes.new("ShaderNodeSeparateXYZ")
-    low = nodes.new("ShaderNodeMath")
-    high = nodes.new("ShaderNodeMath")
-    mask = nodes.new("ShaderNodeMath")
-    kind = nodes.new("ShaderNodeAttribute")
-    kind.attribute_name = "cs1_face_kind"
-    is_marking = nodes.new("ShaderNodeMath")
-    is_marking.operation = "COMPARE"
-    is_marking.inputs[1].default_value = FACE_KIND_VALUES["marking"]
-    is_marking.inputs[2].default_value = 0.1
-    visible_mask = nodes.new("ShaderNodeMath")
-    visible_mask.operation = "MULTIPLY"
-    mix = nodes.new("ShaderNodeMixRGB")
-    low.operation, high.operation, mask.operation = "GREATER_THAN", "LESS_THAN", "MULTIPLY"
-    half_ratio = min(0.49, paint_width / max(region_width, 0.001) * 0.5)
-    low.inputs[1].default_value = 0.5 - half_ratio
-    high.inputs[1].default_value = 0.5 + half_ratio
-    mix.blend_type = "MIX"
-    mix.inputs[1].default_value = SHARED_SURFACE_COLOR
-    mix.inputs[2].default_value = (0.92, 0.92, 0.88, 1.0)
-    links.new(texcoord.outputs["UV"], separate.inputs[0])
-    links.new(separate.outputs["X"], low.inputs[0])
-    links.new(separate.outputs["X"], high.inputs[0])
-    links.new(low.outputs[0], mask.inputs[0])
-    links.new(high.outputs[0], mask.inputs[1])
-    links.new(kind.outputs["Fac"], is_marking.inputs[0])
-    links.new(mask.outputs[0], visible_mask.inputs[0])
-    links.new(is_marking.outputs[0], visible_mask.inputs[1])
-    links.new(visible_mask.outputs[0], mix.inputs[0])
-    links.new(mix.outputs[0], shader.inputs["Base Color"])
+    uv_map = nodes.new("ShaderNodeUVMap")
+    uv_map.uv_map = "RoadUV"
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.inputs["Scale"].default_value = (1.0, 2.0, 1.0)
+    texture = nodes.new("ShaderNodeTexImage")
+    texture.image = _surface_atlas_image(force_texture_reload)
+    texture.extension = "REPEAT"
+    links.new(uv_map.outputs["UV"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+    links.new(texture.outputs["Color"], shader.inputs["Base Color"])
     links.new(shader.outputs[0], output.inputs[0])
     return material
 
 
 def _structure_material() -> bpy.types.Material:
-    material = (
-        bpy.data.materials.get(SHARED_STRUCTURE_MATERIAL)
-        or bpy.data.materials.new(SHARED_STRUCTURE_MATERIAL)
+    return _image_texture_material(
+        SHARED_STRUCTURE_MATERIAL,
+        DEFAULT_STRUCTURE_ATLAS,
+        (0.34, 0.36, 0.38, 1.0),
     )
-    material.diffuse_color = (0.34, 0.36, 0.38, 1.0)
-    return material
 
 
 def _tunnel_material() -> bpy.types.Material:
-    material = (
-        bpy.data.materials.get(SHARED_TUNNEL_MATERIAL)
-        or bpy.data.materials.new(SHARED_TUNNEL_MATERIAL)
+    return _image_texture_material(
+        SHARED_TUNNEL_MATERIAL,
+        DEFAULT_TUNNEL_ATLAS,
+        (0.20, 0.22, 0.24, 1.0),
     )
-    material.diffuse_color = (0.20, 0.22, 0.24, 1.0)
-    return material
 
 
 def _mesh_object(
-    collection, name, vertices, faces, face_kinds, face_uvs, materials,
+    collection, name, vertices, faces, face_kinds, face_uvs, face_uv_regions,
+    materials,
     material_indices=None,
 ) -> bpy.types.Object:
     mesh = bpy.data.meshes.new(f"{name}_mesh")
@@ -242,40 +337,26 @@ def _mesh_object(
     kind_attribute = mesh.attributes.new(
         name="cs1_face_kind", type="INT", domain="FACE",
     )
-    mesh_y_min = min(vertex.co.y for vertex in mesh.vertices)
-    mesh_y_max = max(vertex.co.y for vertex in mesh.vertices)
-    for polygon, kind, explicit_uvs in zip(mesh.polygons, face_kinds, face_uvs):
+    region_attribute = mesh.attributes.new(
+        name="cs1_uv_region", type="INT", domain="FACE",
+    )
+    for polygon, kind, explicit_uvs, uv_region in zip(
+        mesh.polygons, face_kinds, face_uvs, face_uv_regions,
+    ):
         polygon.material_index = (material_indices or {}).get(kind, 0)
         kind_attribute.data[polygon.index].value = FACE_KIND_VALUES.get(kind, 0)
-        if explicit_uvs is not None:
-            for loop_index, uv in zip(polygon.loop_indices, explicit_uvs):
-                uv_layer.data[loop_index].uv = uv
-            continue
-        coordinates = [mesh.vertices[index].co for index in polygon.vertices]
-        ranges = {
-            "x": (min(value.x for value in coordinates), max(value.x for value in coordinates)),
-            "y": (min(value.y for value in coordinates), max(value.y for value in coordinates)),
-            "z": (min(value.z for value in coordinates), max(value.z for value in coordinates)),
-        }
-        if ranges["x"][1] - ranges["x"][0] > 1e-8 and ranges["y"][1] - ranges["y"][0] > 1e-8:
-            axes = ("x", "y")
-        elif ranges["y"][1] - ranges["y"][0] > 1e-8:
-            axes = ("y", "z")
-        else:
-            axes = ("x", "z")
-        for loop_index in polygon.loop_indices:
-            coordinate = mesh.vertices[mesh.loops[loop_index].vertex_index].co
-            first, second = axes
-            if axes == ("x", "y"):
-                u = (coordinate.x - ranges["x"][0]) / max(ranges["x"][1] - ranges["x"][0], 1e-8)
-                v = (coordinate.y - mesh_y_min) / max(mesh_y_max - mesh_y_min, 1e-8)
-            elif axes == ("y", "z"):
-                u = (coordinate.y - mesh_y_min) / max(mesh_y_max - mesh_y_min, 1e-8)
-                v = (coordinate.z - ranges["z"][0]) / max(ranges["z"][1] - ranges["z"][0], 1e-8)
-            else:
-                u = (getattr(coordinate, first) - ranges[first][0]) / max(ranges[first][1] - ranges[first][0], 1e-8)
-                v = (getattr(coordinate, second) - ranges[second][0]) / max(ranges[second][1] - ranges[second][0], 1e-8)
-            uv_layer.data[loop_index].uv = (u, v)
+        if explicit_uvs is None:
+            raise ValueError(f"{name}: face {polygon.index} has no explicit UV")
+        if len(explicit_uvs) != len(polygon.loop_indices):
+            raise ValueError(f"{name}: face {polygon.index} UV loop count disagrees")
+        try:
+            region_attribute.data[polygon.index].value = UV_REGION_VALUES[uv_region]
+        except KeyError as error:
+            raise ValueError(
+                f"{name}: face {polygon.index} has unknown UV region {uv_region!r}"
+            ) from error
+        for loop_index, uv in zip(polygon.loop_indices, explicit_uvs):
+            uv_layer.data[loop_index].uv = uv
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
     for material in materials:
@@ -291,6 +372,7 @@ class _SurfaceMesh:
         self.faces = []
         self.face_kinds = []
         self.face_uvs = []
+        self.face_uv_regions = []
         self._vertex_map = {}
 
     def _vertex(self, coordinate, seam="") -> int:
@@ -300,7 +382,10 @@ class _SurfaceMesh:
             self.vertices.append(tuple(coordinate))
         return self._vertex_map[key]
 
-    def polygon(self, points, seams=None, kind="surface", uvs=None) -> None:
+    def polygon(
+        self, points, seams=None, kind="surface", uvs=None,
+        uv_region=None,
+    ) -> None:
         if len(points) < 3:
             return
         if seams is None:
@@ -308,24 +393,35 @@ class _SurfaceMesh:
         self.faces.append(tuple(self._vertex(point, seam) for point, seam in zip(points, seams)))
         self.face_kinds.append(kind)
         self.face_uvs.append(tuple(uvs) if uvs is not None else None)
+        self.face_uv_regions.append(uv_region)
 
-    def quad(self, a, b, c, d, seams=("", "", "", ""), kind="surface", uvs=None) -> None:
-        self.polygon((a, b, c, d), seams, kind, uvs)
+    def quad(
+        self, a, b, c, d, seams=("", "", "", ""), kind="surface",
+        uvs=None, uv_region=None,
+    ) -> None:
+        self.polygon((a, b, c, d), seams, kind, uvs, uv_region)
 
     def horizontal_strip(
         self, x_min, x_max, y_min, y_max, start_z, end_z,
-        slices=1, flip=False, kind="surface",
+        slices=1, flip=False, kind="surface", u_range=None, uv_region=None,
     ) -> None:
         for index in range(slices):
             t0, t1 = index / slices, (index + 1) / slices
             ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
             za, zb = start_z + (end_z - start_z) * t0, start_z + (end_z - start_z) * t1
             points = ((x_min, ya, za), (x_max, ya, za), (x_max, yb, zb), (x_min, yb, zb))
-            self.quad(*tuple(reversed(points)) if flip else points, kind=kind)
+            uvs = None
+            if u_range is not None:
+                u_min, u_max = u_range
+                uvs = ((u_min, t0), (u_max, t0), (u_max, t1), (u_min, t1))
+            if flip:
+                points = tuple(reversed(points))
+                uvs = tuple(reversed(uvs)) if uvs is not None else None
+            self.quad(*points, kind=kind, uvs=uvs, uv_region=uv_region)
 
     def vertical_strip(
         self, x, y_min, y_max, start_bottom, end_bottom, start_top, end_top,
-        flip=False, slices=1, kind="surface",
+        flip=False, slices=1, kind="surface", u_range=None, uv_region=None,
     ) -> None:
         for index in range(slices):
             t0, t1 = index / slices, (index + 1) / slices
@@ -333,12 +429,19 @@ class _SurfaceMesh:
             ba, bb = start_bottom + (end_bottom - start_bottom) * t0, start_bottom + (end_bottom - start_bottom) * t1
             ta, tb = start_top + (end_top - start_top) * t0, start_top + (end_top - start_top) * t1
             points = ((x, ya, ba), (x, yb, bb), (x, yb, tb), (x, ya, ta))
-            self.quad(*tuple(reversed(points)) if flip else points, kind=kind)
+            uvs = None
+            if u_range is not None:
+                u_min, u_max = u_range
+                uvs = ((u_min, t0), (u_min, t1), (u_max, t1), (u_max, t0))
+            if flip:
+                points = tuple(reversed(points))
+                uvs = tuple(reversed(uvs)) if uvs is not None else None
+            self.quad(*points, kind=kind, uvs=uvs, uv_region=uv_region)
 
     def create(self, collection, name, materials, material_indices=None) -> bpy.types.Object:
         return _mesh_object(
             collection, name, self.vertices, self.faces, self.face_kinds,
-            self.face_uvs, materials, material_indices,
+            self.face_uvs, self.face_uv_regions, materials, material_indices,
         )
 
 
@@ -545,8 +648,15 @@ def _prepare_elevated_edge_mesh(
 
 
 def _append_elevated_edge(mesh, plan: _ElevatedEdgePlan) -> None:
+    u_range = _atlas_texture_region("structure", "elevated.fascia")[:2]
     for points, uvs in plan.polygons:
-        mesh.polygon(points, kind="structure", uvs=uvs)
+        uv_region = "authored"
+        if uvs is None:
+            uvs = _polygon_region_uvs(points, u_range)
+            uv_region = "elevated.fascia"
+        mesh.polygon(
+            points, kind="structure", uvs=uvs, uv_region=uv_region,
+        )
 
 
 def _prepare_median_mesh(
@@ -654,14 +764,39 @@ def _prepare_median_mesh(
 
 
 def _append_median_mesh(mesh, plan: _MedianMeshPlan) -> None:
+    u_range = _texture_region("sidewalk.default")[:2]
     for points, uvs in plan.polygons:
-        mesh.polygon(points, kind="surface", uvs=uvs)
+        uv_region = "authored"
+        if uvs is None:
+            uvs = _polygon_region_uvs(points, u_range)
+            uv_region = "sidewalk.default"
+        mesh.polygon(points, kind="surface", uvs=uvs, uv_region=uv_region)
+
+
+def _polygon_region_uvs(points, u_range):
+    u_min, u_max = u_range
+    x_values = [point[0] for point in points]
+    z_values = [point[2] for point in points]
+    use_z = max(z_values) - min(z_values) >= max(x_values) - min(x_values)
+    cross_values = z_values if use_z else x_values
+    cross_min, cross_max = min(cross_values), max(cross_values)
+    cross_size = max(cross_max - cross_min, 1e-8)
+    result = []
+    for point, cross_value in zip(points, cross_values):
+        ratio = (cross_value - cross_min) / cross_size
+        u = u_min + (u_max - u_min) * ratio
+        v = min(1.0, max(0.0, (point[1] + MODE_LENGTH * 0.5) / MODE_LENGTH))
+        result.append((u, v))
+    return tuple(result)
 
 
 def _add_generated_median(
     mesh, median_range, y_min, y_max, road_start, road_end, height,
     curb_width, slices,
 ) -> None:
+    wall_u_min, wall_u_max, _ = _texture_region("curb.wall")
+    upper_u_min, upper_u_max, _ = _texture_region("curb.upper")
+    sidewalk_u_min, sidewalk_u_max, _ = _texture_region("sidewalk.default")
     left, right = median_range
     width = right - left
     if curb_width * 2.0 >= width - 1e-8:
@@ -685,29 +820,39 @@ def _add_generated_median(
         mesh.quad(
             (left, ya, top_a), (left, yb, top_b),
             (left, yb, bottom_b), (left, ya, bottom_a),
-            uvs=((0.0, v0), (0.0, v1), (1.0, v1), (1.0, v0)),
+            uvs=((wall_u_max, v0), (wall_u_max, v1),
+                 (wall_u_min, v1), (wall_u_min, v0)),
+            uv_region="curb.wall",
         )
         # Curb tops and the centre fill deliberately remain separate faces.
         mesh.quad(
             (left, ya, top_a), (inner_left, ya, top_a),
             (inner_left, yb, top_b), (left, yb, top_b),
-            uvs=((0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)),
+            uvs=((upper_u_min, v0), (upper_u_max, v0),
+                 (upper_u_max, v1), (upper_u_min, v1)),
+            uv_region="curb.upper",
         )
         if inner_right - inner_left > 1e-8:
             mesh.quad(
                 (inner_left, ya, top_a), (inner_right, ya, top_a),
                 (inner_right, yb, top_b), (inner_left, yb, top_b),
-                uvs=((0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)),
+                uvs=((sidewalk_u_min, v0), (sidewalk_u_max, v0),
+                     (sidewalk_u_max, v1), (sidewalk_u_min, v1)),
+                uv_region="sidewalk.default",
             )
         mesh.quad(
             (inner_right, ya, top_a), (right, ya, top_a),
             (right, yb, top_b), (inner_right, yb, top_b),
-            uvs=((0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)),
+            uvs=((upper_u_max, v0), (upper_u_min, v0),
+                 (upper_u_min, v1), (upper_u_max, v1)),
+            uv_region="curb.upper",
         )
         mesh.quad(
             (right, ya, bottom_a), (right, yb, bottom_b),
             (right, yb, top_b), (right, ya, top_a),
-            uvs=((0.0, v0), (0.0, v1), (1.0, v1), (1.0, v0)),
+            uvs=((wall_u_min, v0), (wall_u_min, v1),
+                 (wall_u_max, v1), (wall_u_max, v0)),
+            uv_region="curb.wall",
         )
 
 
@@ -737,7 +882,9 @@ def _add_median_for_profile(
     return plan.source_name
 
 
-def _marking_layout(props) -> tuple[list[float], list[float], tuple[float, float] | None]:
+def _marking_layout(
+    props,
+) -> tuple[list[tuple[float, str]], list[float], tuple[float, float] | None]:
     _sync_boundaries(props)
     road_lanes = [lane for lane in props.lanes if lane.zone == "ROAD"]
     lane_width = sum(lane.width for lane in road_lanes)
@@ -764,25 +911,109 @@ def _marking_layout(props) -> tuple[list[float], list[float], tuple[float, float
     if road_lanes:
         right_id = "boundary-right-carriageway" if props.shoulder_width > 1e-8 else "boundary-right-curb"
         positions[right_id] = (lane_width + median_width) * 0.5
-    enabled_centers = [positions[item.boundary_id] for item in props.boundaries if item.marking_enabled and item.boundary_id in positions]
+    enabled_markings = [
+        (positions[item.boundary_id], item.marking_style)
+        for item in props.boundaries
+        if item.marking_enabled and item.boundary_id in positions
+    ]
     edge_centers = [positions[key] for key in positions if key in {"boundary-left-carriageway", "boundary-left-curb", "boundary-right-carriageway", "boundary-right-curb"}]
-    return enabled_centers, edge_centers, median_range
+    return enabled_markings, edge_centers, median_range
+
+
+@dataclass(frozen=True)
+class _RoadUVSpan:
+    x_min: float
+    x_max: float
+    region_id: str
+    reverse: bool = False
+
+
+def _road_uv_spans(props, road_half) -> tuple[_RoadUVSpan, ...]:
+    road_lanes = [lane for lane in props.lanes if lane.zone == "ROAD"]
+    median_width = props.median_width if props.median_enabled else 0.0
+    split_index = median_split_index(road_lanes) if props.median_enabled else -1
+    lane_width = sum(lane.width for lane in road_lanes)
+    lane_left = -(lane_width + median_width) * 0.5
+    lane_right = (lane_width + median_width) * 0.5
+    spans = []
+
+    _, _, curb_lower_width = _texture_region("curb.lower")
+    curb_lower_width = min(curb_lower_width, road_half)
+    interior_left = -road_half + curb_lower_width
+    interior_right = road_half - curb_lower_width
+    spans.extend((
+        _RoadUVSpan(-road_half, interior_left, "curb.lower"),
+        _RoadUVSpan(interior_right, road_half, "curb.lower", True),
+    ))
+
+    if lane_left > interior_left + 1e-8:
+        spans.append(_RoadUVSpan(interior_left, lane_left, "shoulder.default"))
+    cursor = lane_left
+    for lane_index, lane in enumerate(road_lanes):
+        if lane_index == split_index:
+            cursor += median_width
+        lane_end = cursor + lane.width
+        clipped_left = max(cursor, interior_left)
+        clipped_right = min(lane_end, interior_right)
+        if clipped_right > clipped_left + 1e-8:
+            spans.append(_RoadUVSpan(clipped_left, clipped_right, "lane.default"))
+        cursor = lane_end
+    if interior_right > lane_right + 1e-8:
+        spans.append(_RoadUVSpan(lane_right, interior_right, "shoulder.default", True))
+    return tuple(spans)
+
+
+def _span_u(span: _RoadUVSpan, x: float) -> float:
+    u_min, u_max, _ = _texture_region(span.region_id)
+    ratio = (x - span.x_min) / max(span.x_max - span.x_min, 1e-8)
+    ratio = min(1.0, max(0.0, ratio))
+    if span.reverse:
+        ratio = 1.0 - ratio
+    return u_min + (u_max - u_min) * ratio
+
+
+def _road_span_at(spans, x: float) -> _RoadUVSpan:
+    for span in spans:
+        if span.x_min - 1e-8 <= x <= span.x_max + 1e-8:
+            return span
+    raise ValueError(f"Road surface X={x} has no UV region")
+
+
+def _surface_texture_boundaries(spans) -> list[float]:
+    return sorted({
+        round(value, 9)
+        for span in spans
+        for value in (span.x_min, span.x_max)
+    })
 
 
 def _segment_boundaries(
-    road_half, marking_centers, marking_region_width, median_range=None,
+    road_half, markings, marking_region_width, texture_boundaries,
+    median_range=None,
 ) -> list[float]:
-    values = [-road_half, road_half]
+    half_region = marking_region_width * 0.5
+    values = [
+        -road_half,
+        road_half,
+        *(
+            boundary for boundary in texture_boundaries
+            if not any(
+                abs(boundary - center) < half_region - 1e-8
+                for center, _style in markings
+            )
+        ),
+    ]
     if median_range is not None:
         values.extend(median_range)
-    half_region = marking_region_width * 0.5
-    for center in marking_centers:
+    for center, _style in markings:
         values.extend((max(-road_half, center - half_region), min(road_half, center + half_region)))
     return sorted({round(value, 9) for value in values})
 
 
-def _node_boundaries(props, road_half, edge_centers, median_range=None) -> list[float]:
-    values = [-road_half, 0.0, road_half]
+def _node_boundaries(
+    props, road_half, edge_centers, texture_boundaries, median_range=None,
+) -> list[float]:
+    values = [-road_half, 0.0, road_half, *texture_boundaries]
     if median_range is not None:
         values.extend(median_range)
     if props.node_shoulder_bands:
@@ -793,28 +1024,16 @@ def _node_boundaries(props, road_half, edge_centers, median_range=None) -> list[
 def _cross_section_uv_row(t, road_half, total_half, road_start, road_end, sidewalk_start, sidewalk_end):
     road_z = road_start + (road_end - road_start) * t
     sidewalk_z = sidewalk_start + (sidewalk_end - sidewalk_start) * t
-    sidewalk_width = total_half - road_half
-    rise = abs(sidewalk_z - road_z)
-    unfolded_width = 2.0 * sidewalk_width + 2.0 * rise + 2.0 * road_half
-    left_top = sidewalk_width / unfolded_width
-    left_bottom = (sidewalk_width + rise) / unfolded_width
-    right_bottom = (sidewalk_width + rise + 2.0 * road_half) / unfolded_width
-    right_top = (sidewalk_width + 2.0 * rise + 2.0 * road_half) / unfolded_width
     return {
         "road_z": road_z,
         "sidewalk_z": sidewalk_z,
-        "left_top": left_top,
-        "left_bottom": left_bottom,
-        "right_bottom": right_bottom,
-        "right_top": right_top,
-        "road_u": lambda x: (sidewalk_width + rise + x + road_half) / unfolded_width,
     }
 
 
 def _add_road_strips(
-    mesh, boundaries, marking_centers, marking_width, road_half, total_half, y_min, y_max,
+    mesh, boundaries, markings, marking_width, road_half, total_half, y_min, y_max,
     road_start, road_end, sidewalk_start, sidewalk_end, split_center, slices,
-    excluded_range=None,
+    uv_spans, excluded_range=None,
 ) -> None:
     for x_min, x_max in zip(boundaries, boundaries[1:]):
         if x_max - x_min < 1e-8:
@@ -837,75 +1056,136 @@ def _add_road_strips(
             if split_center and abs(x_min) < 1e-8:
                 seams[0] = seams[3] = "center_right"
             midpoint = (x_min + x_max) * 0.5
-            kind = "marking" if any(abs(midpoint - center) <= marking_width * 0.5 + 1e-8 for center in marking_centers) else "surface"
-            if kind == "marking":
-                uvs = ((0.0, t0), (1.0, t0), (1.0, t1), (0.0, t1))
-            else:
+            marking = next((
+                (center, style) for center, style in markings
+                if abs(midpoint - center) <= marking_width * 0.5 + 1e-8
+            ), None)
+            kind = "marking" if marking is not None else "surface"
+            if marking is not None:
+                style = marking[1]
+                try:
+                    region_id = MARKING_TEXTURE_REGIONS[style]
+                except KeyError as error:
+                    raise ValueError(f"No texture region for marking style: {style}") from error
+                line_u_min, line_u_max, _ = _texture_region(region_id)
                 uvs = (
-                    (row0["road_u"](x_min), t0), (row0["road_u"](x_max), t0),
-                    (row1["road_u"](x_max), t1), (row1["road_u"](x_min), t1),
+                    (line_u_min, t0), (line_u_max, t0),
+                    (line_u_max, t1), (line_u_min, t1),
                 )
-            mesh.quad((x_min, ya, za), (x_max, ya, za), (x_max, yb, zb), (x_min, yb, zb), seams, kind, uvs)
+            else:
+                span = _road_span_at(uv_spans, midpoint)
+                uvs = (
+                    (_span_u(span, x_min), t0), (_span_u(span, x_max), t0),
+                    (_span_u(span, x_max), t1), (_span_u(span, x_min), t1),
+                )
+            mesh.quad(
+                (x_min, ya, za), (x_max, ya, za),
+                (x_max, yb, zb), (x_min, yb, zb),
+                seams, kind, uvs, region_id if marking is not None else span.region_id,
+            )
 
 
 def _add_cross_section_top(
-    mesh, boundaries, marking_centers, marking_width, road_half, total_half, y_min, y_max,
+    mesh, boundaries, markings, marking_width, road_half, total_half, y_min, y_max,
     road_start, road_end, sidewalk_start, sidewalk_end, split_center, slices,
-    excluded_range=None,
+    uv_spans, excluded_range=None,
 ) -> None:
     _add_road_strips(
-        mesh, boundaries, marking_centers, marking_width, road_half, total_half, y_min, y_max,
+        mesh, boundaries, markings, marking_width, road_half, total_half, y_min, y_max,
         road_start, road_end, sidewalk_start, sidewalk_end, split_center, slices,
-        excluded_range,
+        uv_spans, excluded_range,
     )
+    sidewalk_u_min, sidewalk_u_max, _ = _texture_region("sidewalk.default")
+    upper_u_min, upper_u_max, upper_width = _texture_region("curb.upper")
+    wall_u_min, wall_u_max, _ = _texture_region("curb.wall")
+    sidewalk_width = total_half - road_half
+    upper_width = min(upper_width, sidewalk_width)
     for index in range(slices):
         t0, t1 = index / slices, (index + 1) / slices
         ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
         row0 = _cross_section_uv_row(t0, road_half, total_half, road_start, road_end, sidewalk_start, sidewalk_end)
         row1 = _cross_section_uv_row(t1, road_half, total_half, road_start, road_end, sidewalk_start, sidewalk_end)
-        mesh.quad(
-            (-total_half, ya, row0["sidewalk_z"]), (-road_half, ya, row0["sidewalk_z"]),
-            (-road_half, yb, row1["sidewalk_z"]), (-total_half, yb, row1["sidewalk_z"]),
-            uvs=((0.0, t0), (row0["left_top"], t0), (row1["left_top"], t1), (0.0, t1)),
-        )
-        mesh.quad(
-            (road_half, ya, row0["sidewalk_z"]), (total_half, ya, row0["sidewalk_z"]),
-            (total_half, yb, row1["sidewalk_z"]), (road_half, yb, row1["sidewalk_z"]),
-            uvs=((row0["right_top"], t0), (1.0, t0), (1.0, t1), (row1["right_top"], t1)),
-        )
+        left_upper_outer = -road_half - upper_width
+        right_upper_outer = road_half + upper_width
+        if left_upper_outer > -total_half + 1e-8:
+            mesh.quad(
+                (-total_half, ya, row0["sidewalk_z"]),
+                (left_upper_outer, ya, row0["sidewalk_z"]),
+                (left_upper_outer, yb, row1["sidewalk_z"]),
+                (-total_half, yb, row1["sidewalk_z"]),
+                uvs=((sidewalk_u_min, t0), (sidewalk_u_max, t0),
+                     (sidewalk_u_max, t1), (sidewalk_u_min, t1)),
+                uv_region="sidewalk.default",
+            )
+        if upper_width > 1e-8:
+            mesh.quad(
+                (left_upper_outer, ya, row0["sidewalk_z"]),
+                (-road_half, ya, row0["sidewalk_z"]),
+                (-road_half, yb, row1["sidewalk_z"]),
+                (left_upper_outer, yb, row1["sidewalk_z"]),
+                uvs=((upper_u_min, t0), (upper_u_max, t0),
+                     (upper_u_max, t1), (upper_u_min, t1)),
+                uv_region="curb.upper",
+            )
+            mesh.quad(
+                (road_half, ya, row0["sidewalk_z"]),
+                (right_upper_outer, ya, row0["sidewalk_z"]),
+                (right_upper_outer, yb, row1["sidewalk_z"]),
+                (road_half, yb, row1["sidewalk_z"]),
+                uvs=((upper_u_max, t0), (upper_u_min, t0),
+                     (upper_u_min, t1), (upper_u_max, t1)),
+                uv_region="curb.upper",
+            )
+        if total_half > right_upper_outer + 1e-8:
+            mesh.quad(
+                (right_upper_outer, ya, row0["sidewalk_z"]),
+                (total_half, ya, row0["sidewalk_z"]),
+                (total_half, yb, row1["sidewalk_z"]),
+                (right_upper_outer, yb, row1["sidewalk_z"]),
+                uvs=((sidewalk_u_max, t0), (sidewalk_u_min, t0),
+                     (sidewalk_u_min, t1), (sidewalk_u_max, t1)),
+                uv_region="sidewalk.default",
+            )
         if row0["road_z"] != row0["sidewalk_z"] or row1["road_z"] != row1["sidewalk_z"]:
             mesh.quad(
                 (-road_half, ya, row0["road_z"]), (-road_half, yb, row1["road_z"]),
                 (-road_half, yb, row1["sidewalk_z"]), (-road_half, ya, row0["sidewalk_z"]),
                 uvs=(
-                    (row0["left_bottom"], t0), (row1["left_bottom"], t1),
-                    (row1["left_top"], t1), (row0["left_top"], t0),
+                    (wall_u_max, t0), (wall_u_max, t1),
+                    (wall_u_min, t1), (wall_u_min, t0),
                 ),
+                uv_region="curb.wall",
             )
             mesh.quad(
                 (road_half, ya, row0["sidewalk_z"]), (road_half, yb, row1["sidewalk_z"]),
                 (road_half, yb, row1["road_z"]), (road_half, ya, row0["road_z"]),
                 uvs=(
-                    (row0["right_top"], t0), (row1["right_top"], t1),
-                    (row1["right_bottom"], t1), (row0["right_bottom"], t0),
+                    (wall_u_min, t0), (wall_u_min, t1),
+                    (wall_u_max, t1), (wall_u_max, t0),
                 ),
+                uv_region="curb.wall",
             )
 
 
 def _add_structure_bottom_region(
     mesh, x_min, x_max, half_width, y_min, y_max, start_z, end_z, slices,
+    atlas_name, region_id,
 ) -> None:
+    region_u_min, region_u_max, _ = _atlas_texture_region(atlas_name, region_id)
     for index in range(slices):
         t0, t1 = index / slices, (index + 1) / slices
         ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
         za, zb = start_z + (end_z - start_z) * t0, start_z + (end_z - start_z) * t1
-        u0 = (x_min + half_width) / (2.0 * half_width)
-        u1 = (x_max + half_width) / (2.0 * half_width)
+        ratio0 = (x_min + half_width) / (2.0 * half_width)
+        ratio1 = (x_max + half_width) / (2.0 * half_width)
+        u0 = region_u_min + (region_u_max - region_u_min) * ratio0
+        u1 = region_u_min + (region_u_max - region_u_min) * ratio1
         mesh.quad(
             (x_min, yb, zb), (x_max, yb, zb),
             (x_max, ya, za), (x_min, ya, za),
             kind="structure",
             uvs=((u0, t1), (u1, t1), (u1, t0), (u0, t0)),
+            uv_region=region_id,
         )
 
 
@@ -923,16 +1203,11 @@ def _girder_profile(layout, center_x, top_z):
 def _add_open_profile_extrusion(
     mesh, start_profile, end_profile, y_min, y_max, slices,
 ) -> None:
-    edge_lengths = [
-        ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
-        for a, b in zip(start_profile, start_profile[1:])
-    ]
-    perimeter = max(sum(edge_lengths), 1e-8)
-    u_values = [0.0]
-    for length in edge_lengths:
-        u_values.append(u_values[-1] + length / perimeter)
-
     for edge_index in range(len(start_profile) - 1):
+        region_id = "girder.bottom" if edge_index == 1 else "girder.side"
+        u0, u1, _ = _atlas_texture_region("structure", region_id)
+        if edge_index == 2:
+            u0, u1 = u1, u0
         for slice_index in range(slices):
             t0, t1 = slice_index / slices, (slice_index + 1) / slices
             ya = y_min + (y_max - y_min) * t0
@@ -943,11 +1218,11 @@ def _add_open_profile_extrusion(
             a1 = (start_a[0], yb, start_a[1] + (end_a[1] - start_a[1]) * t1)
             b1 = (start_b[0], yb, start_b[1] + (end_b[1] - start_b[1]) * t1)
             b0 = (start_b[0], ya, start_b[1] + (end_b[1] - start_b[1]) * t0)
-            u0, u1 = u_values[edge_index], u_values[edge_index + 1]
             mesh.quad(
                 a0, a1, b1, b0,
                 kind="structure",
                 uvs=((u0, t0), (u0, t1), (u1, t1), (u1, t0)),
+                uv_region=region_id,
             )
 
 
@@ -955,6 +1230,8 @@ def _add_deck_structure(
     mesh, half_width, y_min, y_max, start_z, end_z, depth, slices,
     girder_layout=None, bottom_left=None, bottom_right=None,
     include_left_fascia=True, include_right_fascia=True,
+    atlas_name="structure", underside_region="deck.underside",
+    fascia_region="elevated.fascia",
 ) -> None:
     underside_start = start_z - depth
     underside_end = end_z - depth
@@ -982,23 +1259,28 @@ def _add_deck_structure(
             _add_structure_bottom_region(
                 mesh, cursor, cutout_start, half_width, y_min, y_max,
                 underside_start, underside_end, slices,
+                atlas_name, underside_region,
             )
         cursor = max(cursor, cutout_end)
     if cursor < bottom_right - 1e-8:
         _add_structure_bottom_region(
             mesh, cursor, bottom_right, half_width, y_min, y_max,
             underside_start, underside_end, slices,
+            atlas_name, underside_region,
         )
 
+    fascia_u = _atlas_texture_region(atlas_name, fascia_region)[:2]
     if include_left_fascia:
         mesh.vertical_strip(
             -half_width, y_min, y_max, underside_start, underside_end,
             start_z, end_z, flip=True, slices=slices, kind="structure",
+            u_range=fascia_u, uv_region=fascia_region,
         )
     if include_right_fascia:
         mesh.vertical_strip(
             half_width, y_min, y_max, underside_start, underside_end,
             start_z, end_z, slices=slices, kind="structure",
+            u_range=fascia_u, uv_region=fascia_region,
         )
 
     if girder_layout is not None:
@@ -1014,9 +1296,11 @@ def _add_deck_structure(
 
 
 def _add_tunnel_envelope(mesh, half_width, y_min, y_max, side_z, roof_z, slices) -> None:
-    mesh.vertical_strip(-half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, slices=slices, kind="structure")
-    mesh.vertical_strip(half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, flip=True, slices=slices, kind="structure")
-    mesh.horizontal_strip(-half_width, half_width, y_min, y_max, roof_z, roof_z, slices, flip=True, kind="structure")
+    wall_u = _atlas_texture_region("tunnel", "tunnel.wall")[:2]
+    roof_u = _atlas_texture_region("tunnel", "tunnel.roof")[:2]
+    mesh.vertical_strip(-half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, slices=slices, kind="structure", u_range=wall_u, uv_region="tunnel.wall")
+    mesh.vertical_strip(half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, flip=True, slices=slices, kind="structure", u_range=wall_u, uv_region="tunnel.wall")
+    mesh.horizontal_strip(-half_width, half_width, y_min, y_max, roof_z, roof_z, slices, flip=True, kind="structure", u_range=roof_u, uv_region="tunnel.roof")
 
 
 def _add_default_lanes(props) -> None:
@@ -1337,11 +1621,14 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
     tunnel_material = _tunnel_material()
     road_half = roadway_width * 0.5
     segment_markings, edge_centers, median_range = _marking_layout(props)
+    road_uv_spans = _road_uv_spans(props, road_half)
+    texture_boundaries = _surface_texture_boundaries(road_uv_spans)
     segment_boundaries = _segment_boundaries(
-        road_half, segment_markings, props.marking_region_width, median_range,
+        road_half, segment_markings, props.marking_region_width,
+        texture_boundaries, median_range,
     )
     node_boundaries = _node_boundaries(
-        props, road_half, edge_centers, median_range,
+        props, road_half, edge_centers, texture_boundaries, median_range,
     )
     node_markings = []
     curb_rise = roadway_depression(props.depress_roadway)
@@ -1356,15 +1643,15 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
         # regular node stays level.  Only a flush road needs the preview
         # profile which descends to the shared recessed node surface.
         far_z = segment_z if props.depress_roadway else -ROADWAY_DEPRESSION
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, segment_z, 0.0, 0.0, False, SEGMENT_SLICES, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, far_z, 0.0, 0.0, True, NODE_SLICES, median_range)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, segment_z, 0.0, 0.0, False, SEGMENT_SLICES, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, far_z, 0.0, 0.0, True, NODE_SLICES, road_uv_spans, median_range)
         _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, segment_z, segment_z, SEGMENT_SLICES)
         _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, segment_z, far_z, NODE_SLICES)
     elif mode == "elevated":
         road_z, side_z = -curb_rise, 0.0
         girder_layout = plan_main_girders(total_half * 2.0)
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, median_range)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, road_uv_spans, median_range)
         _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
         _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
         if custom_edge_segments is None:
@@ -1390,26 +1677,26 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
     elif mode == "bridge":
         road_z, side_z = -curb_rise, 0.0
         girder_layout = plan_main_girders(total_half * 2.0)
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, median_range)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, road_uv_spans, median_range)
         _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
         _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
-        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, SEGMENT_SLICES, girder_layout)
-        _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, NODE_SLICES)
+        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, SEGMENT_SLICES, girder_layout, fascia_region="bridge.fascia")
+        _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, NODE_SLICES, fascia_region="bridge.fascia")
     elif mode == "slope":
         road_start = road_end = -curb_rise
         side_start = side_end = 0.0
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_start, road_end, side_start, side_end, False, SEGMENT_SLICES, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_end, road_end, side_end, side_end, True, NODE_SLICES, median_range)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_start, road_end, side_start, side_end, False, SEGMENT_SLICES, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_end, road_end, side_end, side_end, True, NODE_SLICES, road_uv_spans, median_range)
         _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_start, road_end, SEGMENT_SLICES)
         _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_end, road_end, NODE_SLICES)
-        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_start, side_end, props.deck_depth, SEGMENT_SLICES)
-        _add_deck_structure(node_mesh, total_half, y_min, y_max, side_end, side_end, props.deck_depth, NODE_SLICES)
+        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_start, side_end, props.deck_depth, SEGMENT_SLICES, atlas_name="tunnel", underside_region="tunnel.roof", fascia_region="tunnel.wall")
+        _add_deck_structure(node_mesh, total_half, y_min, y_max, side_end, side_end, props.deck_depth, NODE_SLICES, atlas_name="tunnel", underside_region="tunnel.roof", fascia_region="tunnel.wall")
     else:
         road_z = -curb_rise
         side_z, roof_z = 0.0, road_z + props.tunnel_clearance
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, median_range)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, road_uv_spans, median_range)
         _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
         _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
         _add_tunnel_envelope(segment_mesh, total_half, y_min, y_max, side_z, roof_z, SEGMENT_SLICES)
@@ -1792,6 +2079,20 @@ class CS1ROAD_OT_build_all(Operator):
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         _show_all_modes()
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_reload_surface_texture(Operator):
+    bl_idname = "cs1_road.reload_surface_texture"
+    bl_label = "Reload road.psd"
+    bl_description = "Reload road.psd used by generated road surface materials"
+
+    def execute(self, context):
+        try:
+            _material(0.15, 0.4, force_texture_reload=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
         return {"FINISHED"}
 
 
@@ -2402,6 +2703,12 @@ class CS1ROAD_PT_development(_CS1RoadChildPanel, Panel):
 
     def draw(self, context):
         development = self.layout
+        development.operator(
+            "cs1_road.reload_surface_texture",
+            text="Reload road.psd on generated roads",
+            icon="TEXTURE",
+        )
+        development.label(text="Generated surface Material uses textures/road.psd.")
         development.operator("script.reload", text="Reload Scripts", icon="FILE_REFRESH")
         development.label(text="Rebuild generated meshes after reloading.", icon="INFO")
         development.label(text="Generated objects remain editable meshes.", icon="EDITMODE_HLT")
@@ -2411,7 +2718,7 @@ CLASSES = (
     CS1RoadLane, CS1RoadBoundary, CS1RoadBuilderProperties, CS1ROAD_UL_boundaries,
     CS1ROAD_OT_lane_add, CS1ROAD_OT_lanes_reset, CS1ROAD_OT_lane_remove, CS1ROAD_OT_lane_move,
     CS1ROAD_OT_boundaries_sync,
-    CS1ROAD_OT_build_preview, CS1ROAD_OT_build_all,
+    CS1ROAD_OT_build_preview, CS1ROAD_OT_build_all, CS1ROAD_OT_reload_surface_texture,
     CS1ROAD_OT_import_spec, CS1ROAD_OT_export_spec, CS1ROAD_OT_export_runtime,
     CS1ROAD_OT_export_runtime_prop,
     CS1ROAD_PT_main, CS1ROAD_PT_shared, CS1ROAD_PT_cross_section,

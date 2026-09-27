@@ -232,6 +232,73 @@ for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
 shared_surface = bpy.data.materials[road_builder.SHARED_SURFACE_MATERIAL]
 shared_structure = bpy.data.materials[road_builder.SHARED_STRUCTURE_MATERIAL]
 shared_tunnel = bpy.data.materials[road_builder.SHARED_TUNNEL_MATERIAL]
+for material in (shared_surface, shared_structure, shared_tunnel):
+    mapping_nodes = [node for node in material.node_tree.nodes if node.type == "MAPPING"]
+    assert len(mapping_nodes) == 1, material.name
+    assert tuple(mapping_nodes[0].inputs["Scale"].default_value) == (1.0, 2.0, 1.0)
+surface_image_nodes = [
+    node for node in shared_surface.node_tree.nodes if node.type == "TEX_IMAGE"
+]
+assert len(surface_image_nodes) == 1
+assert tuple(surface_image_nodes[0].image.size) == (2048, 2048)
+assert surface_image_nodes[0].image.filepath.endswith("road.psd")
+structure_image_nodes = [
+    node for node in shared_structure.node_tree.nodes if node.type == "TEX_IMAGE"
+]
+tunnel_image_nodes = [
+    node for node in shared_tunnel.node_tree.nodes if node.type == "TEX_IMAGE"
+]
+assert len(structure_image_nodes) == len(tunnel_image_nodes) == 1
+assert structure_image_nodes[0].image.filepath.endswith("structure_base_2048.png")
+assert tunnel_image_nodes[0].image.filepath.endswith("tunnel_base_2048.png")
+
+surface_regions = {
+    "lane.default", "shoulder.default", "sidewalk.default",
+    "curb.upper", "curb.wall", "curb.lower",
+    "line.solid.white", "line.dashed.white",
+}
+structure_regions = {
+    "deck.underside", "elevated.fascia", "bridge.fascia",
+    "girder.bottom", "girder.side",
+}
+tunnel_regions = {"tunnel.roof", "tunnel.wall"}
+
+
+def assert_exact_uv_regions(obj, allow_authored=False):
+    region_attribute = obj.data.attributes["cs1_uv_region"]
+    uv_layer = obj.data.uv_layers["RoadUV"]
+    used = set()
+    for polygon in obj.data.polygons:
+        region_name = road_builder.UV_REGION_NAMES[
+            region_attribute.data[polygon.index].value
+        ]
+        if region_name == "authored":
+            assert allow_authored, (obj.name, polygon.index)
+            continue
+        if region_name in surface_regions:
+            atlas_name = "surface"
+            assert polygon.material_index == 0, (obj.name, polygon.index, region_name)
+        elif region_name in structure_regions:
+            atlas_name = "structure"
+            assert polygon.material_index == 1, (obj.name, polygon.index, region_name)
+        elif region_name in tunnel_regions:
+            atlas_name = "tunnel"
+            assert polygon.material_index == 1, (obj.name, polygon.index, region_name)
+        else:
+            raise AssertionError((obj.name, polygon.index, region_name))
+        u_min, u_max, _ = road_builder._atlas_texture_region(atlas_name, region_name)
+        face_u = [uv_layer.data[index].uv.x for index in polygon.loop_indices]
+        assert min(face_u) >= u_min - 1e-6, (
+            obj.name, polygon.index, region_name, min(face_u), u_min,
+        )
+        assert max(face_u) <= u_max + 1e-6, (
+            obj.name, polygon.index, region_name, max(face_u), u_max,
+        )
+        used.add(region_name)
+    return used
+
+
+initial_regions = {}
 for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
     segment = bpy.data.objects[f"{mode}_segment"]
     node = bpy.data.objects[f"{mode}_node"]
@@ -246,6 +313,51 @@ for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
     else:
         assert len(segment.data.materials) == 1, mode
         assert len(node.data.materials) == 1, mode
+    initial_regions[(mode, "segment")] = assert_exact_uv_regions(segment)
+    initial_regions[(mode, "node")] = assert_exact_uv_regions(node)
+
+assert initial_regions[("basic", "segment")] == {
+    "lane.default", "shoulder.default", "sidewalk.default",
+    "curb.upper", "curb.wall", "curb.lower", "line.solid.white",
+}
+assert "line.solid.white" not in initial_regions[("basic", "node")]
+assert {"deck.underside", "elevated.fascia", "girder.bottom", "girder.side"} <= initial_regions[("elevated", "segment")]
+assert {"deck.underside", "bridge.fascia", "girder.bottom", "girder.side"} <= initial_regions[("bridge", "segment")]
+assert tunnel_regions <= initial_regions[("tunnel", "segment")]
+assert tunnel_regions <= initial_regions[("slope", "segment")]
+
+structure_ranges = [
+    road_builder._atlas_texture_region("structure", region_id)[:2]
+    for region_id in (
+        "deck.underside", "bridge.fascia",
+        "girder.bottom", "girder.side",
+    )
+]
+bridge_mesh = bpy.data.objects["bridge_segment"].data
+bridge_uv = bridge_mesh.uv_layers[0]
+for polygon in bridge_mesh.polygons:
+    if polygon.material_index != 1:
+        continue
+    face_u = [bridge_uv.data[index].uv.x for index in polygon.loop_indices]
+    assert any(
+        min(face_u) >= u_min - 1e-6 and max(face_u) <= u_max + 1e-6
+        for u_min, u_max in structure_ranges
+    ), (polygon.index, min(face_u), max(face_u))
+
+tunnel_ranges = [
+    road_builder._atlas_texture_region("tunnel", region_id)[:2]
+    for region_id in ("tunnel.roof", "tunnel.wall")
+]
+tunnel_mesh = bpy.data.objects["tunnel_segment"].data
+tunnel_uv = tunnel_mesh.uv_layers[0]
+for polygon in tunnel_mesh.polygons:
+    if polygon.material_index != 1:
+        continue
+    face_u = [tunnel_uv.data[index].uv.x for index in polygon.loop_indices]
+    assert any(
+        min(face_u) >= u_min - 1e-6 and max(face_u) <= u_max + 1e-6
+        for u_min, u_max in tunnel_ranges
+    ), (polygon.index, min(face_u), max(face_u))
 
 for mode_index, mode in enumerate(("basic", "elevated", "bridge", "slope", "tunnel")):
     for part in ("segment", "node"):
@@ -301,7 +413,11 @@ for marking_center in (-6.5, -3.25, 0.0, 3.25, 6.5):
     assert round(marking_center - 0.2, 4) in segment_x
     assert round(marking_center + 0.2, 4) in segment_x
 node_x = {round(vertex.co.x, 4) for vertex in left_node.data.vertices}
-assert node_x == {-10.5, -7.5, 0.0, 7.5, 10.5}, node_x
+assert node_x == {
+    -10.5, -7.6, -7.5, -7.25, -6.5, -3.25,
+    0.0,
+    3.25, 6.5, 7.25, 7.5, 7.6, 10.5,
+}, node_x
 
 
 def uvs_at_coordinate(obj, coordinate):
@@ -326,23 +442,69 @@ left_top_u = next(iter(left_curb_top_uv))[0]
 left_bottom_u = next(iter(left_curb_bottom_uv))[0]
 right_bottom_u = next(iter(right_curb_bottom_uv))[0]
 right_top_u = next(iter(right_curb_top_uv))[0]
-expected_curb_uv_width = 0.3 / 21.6
-assert abs((left_bottom_u - left_top_u) - expected_curb_uv_width) < 1e-5
-assert abs((right_top_u - right_bottom_u) - expected_curb_uv_width) < 1e-5
+wall_u_min, wall_u_max, _ = road_builder._texture_region("curb.wall")
+expected_curb_uv_width = wall_u_max - wall_u_min
+assert abs(abs(left_bottom_u - left_top_u) - expected_curb_uv_width) < 1e-5
+assert abs(abs(right_top_u - right_bottom_u) - expected_curb_uv_width) < 1e-5
+assert abs(left_top_u - wall_u_min) < 1e-5
+assert abs(left_bottom_u - wall_u_max) < 1e-5
+assert abs(right_top_u - wall_u_min) < 1e-5
+assert abs(right_bottom_u - wall_u_max) < 1e-5
 
 uv_layer = basic_segment.data.uv_layers[0]
 for uv in (loop.uv for loop in uv_layer.data):
     assert -1e-6 <= uv.x <= 1.0 + 1e-6, uv[:]
     assert -1e-6 <= uv.y <= 1.0 + 1e-6, uv[:]
 marking_uv = []
+line_u_min, line_u_max, _ = road_builder._texture_region("line.solid.white")
 for polygon in polygons_of_kind(basic_segment, "marking"):
     face_uv = [uv_layer.data[index].uv for index in polygon.loop_indices]
     marking_uv.extend(face_uv)
-    assert abs(min(uv.x for uv in face_uv)) < 1e-6
-    assert abs(max(uv.x for uv in face_uv) - 1.0) < 1e-6
+    assert abs(min(uv.x for uv in face_uv) - line_u_min) < 1e-6
+    assert abs(max(uv.x for uv in face_uv) - line_u_max) < 1e-6
 assert abs(min(uv.y for uv in marking_uv)) < 1e-6
 assert abs(max(uv.y for uv in marking_uv) - 1.0) < 1e-6
 assert len({round(uv.y, 4) for uv in marking_uv}) == 21
+
+surface_region_ids = (
+    "lane.default", "shoulder.default", "sidewalk.default",
+    "curb.upper", "curb.wall", "curb.lower",
+)
+surface_u_ranges = [road_builder._texture_region(item)[:2] for item in surface_region_ids]
+for polygon in polygons_of_kind(basic_segment, "surface"):
+    face_u = [uv_layer.data[index].uv.x for index in polygon.loop_indices]
+    assert any(
+        min(face_u) >= u_min - 1e-6 and max(face_u) <= u_max + 1e-6
+        for u_min, u_max in surface_u_ranges
+    ), (polygon.index, min(face_u), max(face_u))
+node_uv_x = {
+    round(loop.uv.x, 6) for loop in left_node.data.uv_layers[0].data
+}
+for region_id in surface_region_ids:
+    u_min, u_max, _ = road_builder._texture_region(region_id)
+    assert round(u_min, 6) in node_uv_x, (region_id, u_min, sorted(node_uv_x))
+    assert round(u_max, 6) in node_uv_x, (region_id, u_max, sorted(node_uv_x))
+
+enabled_boundaries = [item for item in props.boundaries if item.marking_enabled]
+styled_boundary_id = enabled_boundaries[0].boundary_id
+enabled_boundaries[0].marking_style = "DASHED_WHITE"
+road_builder.build_mode(bpy.context.scene, "basic")
+styled_segment = bpy.data.objects["basic_segment"]
+styled_regions = assert_exact_uv_regions(styled_segment)
+assert {"line.solid.white", "line.dashed.white"} <= styled_regions
+styled_uv = styled_segment.data.uv_layers[0]
+marking_ranges = {
+    tuple(round(styled_uv.data[index].uv.x, 6) for index in polygon.loop_indices)
+    for polygon in polygons_of_kind(styled_segment, "marking")
+}
+solid_u = tuple(round(value, 6) for value in road_builder._texture_region("line.solid.white")[:2])
+dashed_u = tuple(round(value, 6) for value in road_builder._texture_region("line.dashed.white")[:2])
+assert any(min(values) == solid_u[0] and max(values) == solid_u[1] for values in marking_ranges)
+assert any(min(values) == dashed_u[0] and max(values) == dashed_u[1] for values in marking_ranges)
+next(
+    item for item in props.boundaries if item.boundary_id == styled_boundary_id
+).marking_style = "SOLID_WHITE"
+road_builder.build_mode(bpy.context.scene, "basic")
 
 # A generated median replaces the opposing-lane marking and the road surface
 # beneath it.  Its two curb tops and unsplit centre top remain distinct faces.
@@ -448,6 +610,8 @@ props.median_mesh = median_source
 road_builder.build_mode(bpy.context.scene, "basic")
 custom_median = bpy.data.objects["basic_segment"]
 assert custom_median["cs1_median_source"] == "MedianSource"
+custom_median_regions = assert_exact_uv_regions(custom_median)
+assert "sidewalk.default" in custom_median_regions
 custom_top_faces = [
     polygon for polygon in custom_median.data.polygons
     if polygon.normal.z > 0.99
@@ -663,6 +827,19 @@ for mode, entries in mode_entries.items():
         entry["mesh"]["material"]["main_texture_scale"] == [1.0, 0.5]
         for entry in entries
     ), mode
+    for entry in entries:
+        exported = entry["mesh"]
+        source_name = exported["name"].rsplit(".", 1)[0]
+        source = bpy.data.objects[source_name]
+        source_uv = {
+            (round(float(item.uv.x), 7), round(float(item.uv.y), 7))
+            for item in source.data.uv_layers["RoadUV"].data
+        }
+        exported_uv = {
+            (round(exported["uv"][index], 7), round(exported["uv"][index + 1], 7))
+            for index in range(0, len(exported["uv"]), 2)
+        }
+        assert exported_uv == source_uv, (mode, exported["name"])
     surface = entries[0]["mesh"]
     surface_indices = set(surface["triangles"])
     exported_heights = [surface["vertices"][index * 3 + 1] for index in surface_indices]
@@ -762,6 +939,8 @@ assert road_builder._live_preview_timer() is None
 props.shoulder_width = 1.0
 road_builder._LIVE_PREVIEW_PENDING.clear()
 
+assert bpy.ops.cs1_road.reload_surface_texture() == {"FINISHED"}
+
 panel_layout = FakeLayout()
 panel = type("FakePanel", (), {"layout": panel_layout})()
 road_builder.CS1ROAD_PT_main.draw(panel, bpy.context)
@@ -777,6 +956,7 @@ for panel_type in (
 ):
     panel_type.draw(panel, bpy.context)
 assert "script.reload" in panel_layout.operator_ids
+assert "cs1_road.reload_surface_texture" in panel_layout.operator_ids
 assert panel_layout.property_names.count("sidewalk_width") == 2
 assert panel_layout.property_names.count("shoulder_width") == 2
 for median_field in (

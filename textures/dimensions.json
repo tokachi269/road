@@ -1,0 +1,373 @@
+{
+  "texture_height_px": 2048,
+  "atlas_width_px": 2048,
+  "downscale_size_px": 1024,
+  "authoring_scale": 2,
+  "logical_pixels_per_meter": 32.0,
+  "placement_grid_px": 32,
+  "default_padding_px": 32,
+  "longitudinal_span_m": 32.0,
+  "period_m": 16.0,
+  "repeats": 2,
+  "pixels_per_meter": 64.0,
+  "dashed_paint_m": 6.0,
+  "dashed_gap_m": 10.0,
+  "atlas_layout": {
+    "surface": {
+      "banks": [
+        {
+          "id": "surface",
+          "x_px": 0,
+          "width_px": 1536
+        },
+        {
+          "id": "line",
+          "x_px": 1536,
+          "width_px": 512,
+          "slot_width_px": 32,
+          "capacity": 16
+        }
+      ],
+      "slots": [
+        {
+          "id": "lane.default",
+          "slot_x_px": 672,
+          "slot_width_px": 256,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "lane.default",
+              "file": "surface_lane_3m.png",
+              "x_px": 704,
+              "width_px": 192
+            }
+          ]
+        },
+        {
+          "id": "sidewalk.default",
+          "slot_x_px": 0,
+          "slot_width_px": 224,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "sidewalk.default",
+              "file": "surface_sidewalk_2p5m.png",
+              "x_px": 32,
+              "width_px": 160
+            }
+          ]
+        },
+        {
+          "id": "shoulder.default",
+          "slot_x_px": 480,
+          "slot_width_px": 96,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "shoulder.default",
+              "file": "surface_shoulder_0p5m.png",
+              "x_px": 512,
+              "width_px": 32
+            }
+          ]
+        },
+        {
+          "id": "curb.default",
+          "slot_x_px": 352,
+          "slot_width_px": 96,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "curb.upper",
+              "file": "surface_curb_upper_sidewalk_0p1m.png",
+              "x_px": 384,
+              "width_px": 6
+            },
+            {
+              "id": "curb.wall",
+              "file": "surface_curb_wall_0p3m.png",
+              "x_px": 390,
+              "width_px": 10
+            },
+            {
+              "id": "curb.lower",
+              "file": "surface_curb_lower_roadway_0p25m.png",
+              "x_px": 400,
+              "width_px": 16
+            }
+          ]
+        },
+        {
+          "id": "line.dashed.white",
+          "slot_x_px": 2016,
+          "slot_width_px": 32,
+          "padding_left_px": 6,
+          "padding_right_px": 0,
+          "regions": [
+            {
+              "id": "line.dashed.white",
+              "file": "surface_marking_dashed_0p15m_in_0p4m_band.png",
+              "x_px": 2022,
+              "width_px": 26
+            }
+          ]
+        },
+        {
+          "id": "line.solid.white",
+          "slot_x_px": 1984,
+          "slot_width_px": 32,
+          "padding_left_px": 6,
+          "padding_right_px": 0,
+          "regions": [
+            {
+              "id": "line.solid.white",
+              "file": "surface_marking_solid_0p15m_in_0p4m_band.png",
+              "x_px": 1990,
+              "width_px": 26
+            }
+          ]
+        }
+      ]
+    },
+    "structure": {
+      "slots": [
+        {
+          "id": "deck.underside",
+          "slot_x_px": 0,
+          "slot_width_px": 832,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "deck.underside",
+              "file": "structure_deck_underside_12m.png",
+              "x_px": 32,
+              "width_px": 768
+            }
+          ]
+        },
+        {
+          "id": "elevated.fascia",
+          "slot_x_px": 832,
+          "slot_width_px": 128,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "elevated.fascia",
+              "file": "structure_elevated_fascia_1m.png",
+              "x_px": 864,
+              "width_px": 64
+            }
+          ]
+        },
+        {
+          "id": "bridge.fascia",
+          "slot_x_px": 960,
+          "slot_width_px": 160,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "bridge.fascia",
+              "file": "structure_bridge_fascia_1p5m.png",
+              "x_px": 992,
+              "width_px": 96
+            }
+          ]
+        },
+        {
+          "id": "girder.bottom",
+          "slot_x_px": 1120,
+          "slot_width_px": 128,
+          "padding_left_px": 32,
+          "padding_right_px": 52,
+          "regions": [
+            {
+              "id": "girder.bottom",
+              "file": "structure_girder_bottom_0p7m.png",
+              "x_px": 1152,
+              "width_px": 44
+            }
+          ]
+        },
+        {
+          "id": "girder.side",
+          "slot_x_px": 1248,
+          "slot_width_px": 224,
+          "padding_left_px": 32,
+          "padding_right_px": 58,
+          "regions": [
+            {
+              "id": "girder.side",
+              "file": "structure_girder_side_2p1m.png",
+              "x_px": 1280,
+              "width_px": 134
+            }
+          ]
+        }
+      ]
+    },
+    "tunnel": {
+      "slots": [
+        {
+          "id": "tunnel.roof",
+          "slot_x_px": 0,
+          "slot_width_px": 832,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "tunnel.roof",
+              "file": "tunnel_roof_12m.png",
+              "x_px": 32,
+              "width_px": 768
+            }
+          ]
+        },
+        {
+          "id": "tunnel.wall",
+          "slot_x_px": 832,
+          "slot_width_px": 384,
+          "padding_left_px": 32,
+          "padding_right_px": 32,
+          "regions": [
+            {
+              "id": "tunnel.wall",
+              "file": "tunnel_wall_5m.png",
+              "x_px": 864,
+              "width_px": 320
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "layers": [
+    {
+      "file": "surface_lane_3m.png",
+      "meters": 3.0,
+      "width_px": 192,
+      "height_px": 2048,
+      "color": "#5B86D8",
+      "content": "solid"
+    },
+    {
+      "file": "surface_shoulder_0p5m.png",
+      "meters": 0.5,
+      "width_px": 32,
+      "height_px": 2048,
+      "color": "#87A670",
+      "content": "solid"
+    },
+    {
+      "file": "surface_sidewalk_2p5m.png",
+      "meters": 2.5,
+      "width_px": 160,
+      "height_px": 2048,
+      "color": "#A2DED4",
+      "content": "solid"
+    },
+    {
+      "file": "surface_curb_wall_0p3m.png",
+      "meters": 0.15,
+      "geometry_height_m": 0.3,
+      "width_px": 10,
+      "height_px": 2048,
+      "color": "#539268",
+      "content": "0.15m authored curb wall; current preview geometry remains 0.30m"
+    },
+    {
+      "file": "surface_curb_upper_sidewalk_0p1m.png",
+      "meters": 0.1,
+      "width_px": 6,
+      "height_px": 2048,
+      "color": "#E2A66B",
+      "content": "JIS L-gutter 250A curb top on the sidewalk side"
+    },
+    {
+      "file": "surface_curb_lower_roadway_0p25m.png",
+      "meters": 0.25,
+      "width_px": 16,
+      "height_px": 2048,
+      "color": "#6BB7E2",
+      "content": "JIS L-gutter 250A drainage surface on the roadway side"
+    },
+    {
+      "file": "surface_marking_solid_0p15m_in_0p4m_band.png",
+      "meters": 0.4,
+      "width_px": 26,
+      "height_px": 2048,
+      "color": "#99A9CE",
+      "content": "0.15m centered paint"
+    },
+    {
+      "file": "surface_marking_dashed_0p15m_in_0p4m_band.png",
+      "meters": 0.4,
+      "width_px": 26,
+      "height_px": 2048,
+      "color": "#C396DC",
+      "content": "6m paint + 10m gap, 2 repeats"
+    },
+    {
+      "file": "structure_deck_underside_12m.png",
+      "meters": 12.0,
+      "width_px": 768,
+      "height_px": 2048,
+      "color": "#56646D",
+      "content": "solid"
+    },
+    {
+      "file": "structure_elevated_fascia_1m.png",
+      "meters": 1.0,
+      "width_px": 64,
+      "height_px": 2048,
+      "color": "#A5C694",
+      "content": "solid"
+    },
+    {
+      "file": "structure_bridge_fascia_1p5m.png",
+      "meters": 1.5,
+      "width_px": 96,
+      "height_px": 2048,
+      "color": "#DCB8E1",
+      "content": "solid"
+    },
+    {
+      "file": "structure_girder_bottom_0p7m.png",
+      "meters": 0.7,
+      "width_px": 44,
+      "height_px": 2048,
+      "color": "#9DB882",
+      "content": "solid"
+    },
+    {
+      "file": "structure_girder_side_2p1m.png",
+      "meters": 2.1,
+      "width_px": 134,
+      "height_px": 2048,
+      "color": "#7665D6",
+      "content": "solid"
+    },
+    {
+      "file": "tunnel_roof_12m.png",
+      "meters": 12.0,
+      "width_px": 768,
+      "height_px": 2048,
+      "color": "#A48FC4",
+      "content": "solid"
+    },
+    {
+      "file": "tunnel_wall_5m.png",
+      "meters": 5.0,
+      "width_px": 320,
+      "height_px": 2048,
+      "color": "#D7658E",
+      "content": "solid"
+    }
+  ]
+}

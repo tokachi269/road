@@ -58,9 +58,19 @@ Elevatedの左右端部は、Blender内の右側基準Mesh Object 1つで固定�
 
 ## UV ownership
 
-現在の実装は、明示要求に従い歩道上面、curb立面、路面を連続した断面展開にし、線bandはalpha余白を含む独立0～1領域を使う。目標はcurb壁の接続位置を両側で一致させ、壁面用の幅を確保した上で領域ごとのscaleを調整することであり、全領域を同じscaleへ固定することではない。
+現在の実装は、接続された一体meshを保ったまま、face semanticごとに共通atlasのregionへUVを割り当てる。歩道面、curb歩道側上面、curb壁、curb車道側下面、路肩、各lane、線bandを`textures/dimensions.json`のregionへ対応させる。左右は同じregionを反転利用する。UV境界のために必要な横断辺だけを追加し、長手方向のslice数は増やさない。
 
-Network materialの長手方向scaleは全geometry familyで`0.5`を基準とし、標準時の4反復相当を2反復相当へ減らす。Texture制作上の1周期は16 m、1024 pxの縦幅は2周期の32 mとして扱う。日本の標準的な6 m塗装を維持する破線では残り10 mを空白にする。白線の周期だけを理由に別mesh、別material、別segment entryを作らない。縦方向の情報量が不足した場合は、同じmeshのUVに使うV範囲を広げて調整し、面分割やdraw call追加では対応しない。Runtime preview bundleは`main_texture_scale = [1, 0.5]`を明示し、RuntimeHostがUnity Materialへ適用する。最終CRPで同値を復元する保存・load契約はOutput Entry Plan/RoadImporter側の未実装事項として分離する。
+Network materialの長手方向scaleは全geometry familyで`0.5`を基準とし、標準時の4反復相当を2反復相当へ減らす。Texture制作上の1周期は16 m、2048 pxの縦幅は2周期の32 mとして扱う。縦横とも64 px/mを基準とする。日本の標準的な6 m塗装を維持する破線では残り10 mを空白にする。白線の周期だけを理由に別mesh、別material、別segment entryを作らない。縦方向の情報量が不足した場合は、同じmeshのUVに使うV範囲を広げて調整し、面分割やdraw call追加では対応しない。Runtime preview bundleは`main_texture_scale = [1, 0.5]`を明示し、RuntimeHostがUnity Materialへ適用する。最終CRPで同値を復元する保存・load契約はOutput Entry Plan/RoadImporter側の未実装事項として分離する。
+
+制作atlasの寸法・固定slot・正規化U座標のDecision ownerは`textures/dimensions.json`とする。個別素材は`textures/base_layers`へ置き、完成配置PNGはmanifestから再生成する。2048 pxを制作解像度、1024 pxを縮小候補とし、1024側の1 pxを2048側の2 pxとして全regionを偶数幅・偶数座標にする。slotは2048側32 px grid、通常の外周paddingは32 pxとし、paddingのedge extrusionとmipmapは個別layerではなく最終atlas出力時に生成する。`surface`は既存PSDの作業配置を基準に、歩道、curb profile、路肩、路面を0..1536へ置き、線用32 px slot群を1536..2048へ置く。curbを路面系から離れた専用bankへ分離しない。lineの26 px bandは内部に透明域を持つため、種類追加は空slotを使用し、容量を超える場合は既存UVを移動せず、新しい共通texture setを追加する。
+
+curb profileは歩道側上面6 px、壁面10 px、車道側下面16 pxを内部paddingなしで連続配置し、その32 px groupの外側だけをpaddingする。壁面10 pxは将来の見かけ高0.15 mを64 px/mで制作する値であり、現行preview geometryの0.30 m高とは分けて`dimensions.json`へ記録する。UV値は手入力せず、regionの`x_px / atlas_width_px`から生成する。`tools/validate_texture_layout.py`はPNG寸法、slot重複、2048から1024への整数縮小、正規化UVを検査する。Blenderは同じmanifestからregionを解決し、PSD座標をBlender側へ複製しない。
+
+Blenderの生成道路が共有する`CS1 Road Shared Surface` Materialは、`textures/road.psd`をImage Textureとして直接参照する。PSDの更新はDevelopmentパネルから再読み込みできる。線の種類は`textures/dimensions.json`の32 px slot間隔で配置するが、0.4 mの線faceのUはslot内の26 px content regionへ割り当てる。他のsurface faceも各semantic regionへ割り当て、座標をBlender側へ重複定義しない。生成curb付き分離帯もcurb壁・上面・中央面へ同じregionを再利用する。任意指定meshのUVは入力meshのものを保持する。
+
+32 pxの`slot_width_px`は種類追加・padding・縮小整合のための配置単位であり、faceへ割り当てるUV幅ではない。生成コードは`slot_width_px`を参照せず、必ず各`region`の`x_px / width_px`を使う。生成faceはUVとregion IDを同時に持ち、UV未指定を汎用0～1投影で補完しない。これにより、管理枠32 pxを白線の実内容26 pxと取り違える経路をなくす。
+
+`structure`と`tunnel`も同じmanifestを使う。床版下面、Elevated/Bridge fascia、主桁側面・下面は`structure_base_2048.png`、トンネル・Entranceの壁と天井／下面は`tunnel_base_2048.png`のsemantic regionへ割り当てる。生成形状だけを自動割当の対象にし、Elevated端部や分離帯として指定された任意meshのUVは書き換えない。
 
 別会話で提案されたsemantic boundaryごとのUV seamは、現在の明示要求と衝突する可能性がある。道路幅でtexture scaleが変わる問題もあるため、どちらもlintで固定せず実ゲーム比較の観測対象にする。
 

@@ -22,7 +22,7 @@
 | メッシュの単位 | 本プロジェクトの決定 | 各モードにつき、segmentを1個のBlenderメッシュオブジェクト、nodeを1個のBlenderメッシュオブジェクトとして生成する。CS1のselector別メッシュとLODはエクスポート時に生成し、previewをプリミティブの集合にはしない。 |
 | 不可視面 | 本プロジェクトの決定 | Groundは路面上面、歩道上面、露出するcurb立面だけを持つ。ElevatedとBridgeは見える下面と外側fasciaを追加するが、長手方向の端面は作らない。Tunnelは路面と内向きの壁・天井を持つ。 |
 | Node中央分割 | ユーザー要件に基づく本プロジェクトの決定 | 1個のBlenderオブジェクトを維持したまま、X=0の路面頂点を共有しない左右のvertex islandにする。左右を独立したトポロジーとして扱え、プリミティブオブジェクトへ分解する必要はない。 |
-| UV map | サンプル確認済み・実装済み | 確認したすべてのCSURサンプルFBXにUV layerが1個ある。道路上面は左歩道上面、左curb立面、路面、右curb立面、右歩道上面を断面の実長で連続展開する。curb立面を上面投影で潰さない。64 mの長手方向全体は下端0・上端1へ連続して割り当てる。marking領域はatlas用の独立帯として横0～1を使い、線の中央に余分な辺を置かない。最終atlasのtile割当は未実装。 |
+| UV map | サンプル確認済み・Blender preview実装済み | 確認したすべてのCSURサンプルFBXにUV layerが1個ある。生成surfaceは歩道、curb上面・壁・車道側下面、路肩、各lane、線を`textures/dimensions.json`の共通atlas regionへ割り当てる。生成structureは床版下面、mode別fascia、主桁側面・下面、生成tunnelは壁・天井を各familyのregionへ割り当てる。curb立面を上面投影で潰さず、左右は同じregionを反転利用する。64 mの長手方向は0～1で生成し、Blender Material側でVを2倍して2048px内の16m周期を反復表示する。線の中央に余分な辺は置かない。指定meshの入力UVは保持する。最終FBX/CRPで同じtexture scaleが復元されることは未検証。 |
 | LOD | サンプル確認済み・未実装 | 参照したすべてのsegment/node FBXに対応する`_lod.FBX`がある。LODの生成とエクスポートが完了するまでgame-readyとは扱わない。 |
 | Normal | Importer・エクスポート要件 | 可視面は意図した頂点順序で生成する。隣接するsegment/nodeが覆う端面は省略する。Blender上でnormalとback-face visibilityを検証する。 |
 
@@ -164,9 +164,9 @@ Marking領域幅は次で決める。
 - 左右揺れを大きくする劣化線：marking領域40～50 cm。
 - 二重線・斜線帯：実際の線群の外幅に左右それぞれ10～15 cm以上のasphalt余白を加える。
 
-Marking領域の境界pixelは周囲のasphalt tileと同じ色・normal・roughnessへ収束させ、面の継ぎ目を見せない。剥離形状と線の揺れはtile内のmaskで表現する。Marking領域は線中心で二分せず、両端だけを持つ1枚のface帯にする。帯の横UVは0～1を使い、線中心はtexture内で表現する。長手方向はNetwork materialのV scale `0.5`を基準に2反復相当とし、情報量が不足する場合は同じ面のV範囲を広げる。周期変更のためにmarkingを別meshへ分離しない。
+Marking領域の境界pixelは周囲のasphalt tileと同じ色・normal・roughnessへ収束させ、面の継ぎ目を見せない。剥離形状と線の揺れはtile内のmaskで表現する。Marking領域は線中心で二分せず、両端だけを持つ1枚のface帯にする。帯の横UVは、atlas全体では各線の26 px content region、線素材内ではその全幅を使い、線中心はtexture内で表現する。32 px slot全幅は使用しない。長手方向はNetwork materialのV scale `0.5`を基準に2反復相当とし、情報量が不足する場合は同じ面のV範囲を広げる。周期変更のためにmarkingを別meshへ分離しない。
 
-歩道・curb・路面の通常surfaceは別々に上面投影しない。横断面に沿った累積距離をUへ使うため、歩道とcurb上端、curb下端と路面の共有辺は同じUV座標になる。curb高さ分のUV幅を必ず確保し、立面textureが線へ潰れないようにする。Ground node transitionのようにcurb高さが長手方向で変化する場合は、その位置の断面実長からUを計算し、接続を維持したまま立面幅を連続的に縮める。
+歩道・curb・路面の通常surfaceは別々に上面投影しない。接続されたmeshのface semanticに応じて、歩道、curb上面、curb壁、curb下面、路肩、laneの連続配置regionを使う。共有する形状頂点をUV境界のために分離せず、face loop UVだけを切り替える。curb立面には専用のUV幅を必ず確保し、上面投影で潰さない。Ground node transitionのようにcurb高さが長手方向で変化する場合も、同じcurb壁regionを使いながら形状だけを連続的に変える。
 
 この方式では、路側線の有無を次のように変更できる。
 
@@ -252,7 +252,7 @@ JSON v3は`shared_geometry`、`styles`、`layout.strips`、`layout.boundaries`�
 3. `tunnel`：Tunnel壁、天井、portal。
 4. `node`：交差点asphalt、横断歩道、stop lineなど、node固有のUVが必要な場合だけ使用。
 
-各atlasは全車線数・全道路variantで再利用する。最初は1024×1024を基準とし、Network materialのV scaleは`0.5`、長手方向は16 m周期を2反復した32 mとして扱う。破線は6 m塗装＋10 m空白を制作基準とする。これにより縦横とも32 px/mになる。解像感が不足する場合は、まず同一mesh上のV使用範囲を広げ、それでも不足したatlasだけ解像度を上げる。LODには小さい共通atlasを用意する。Diffuseは必須とし、alpha・normal・specular等は表現上必要なatlasだけ追加する。
+各atlasは全車線数・全道路variantで再利用する。2048×2048を制作基準とし、1024×1024へ正確に半減できる偶数座標・偶数幅でregionを配置する。Network materialのV scaleは`0.5`、長手方向は16 m周期を2反復した32 mとして扱う。破線は6 m塗装＋10 m空白を制作基準とする。これにより2048版は縦横64 px/m、1024版は32 px/mになる。L形側溝250Aの制作ベースは立面だけでなく、歩道側の100 mm天端と車道側の250 mm排水面も別PNGレイヤーとして持つ。curb profileは上面6 px、将来0.15 m想定の壁面10 px、下面16 pxを連続した32 pxとして置き、外側に2048版32 pxのpaddingを持つ。現行preview geometryの0.30 m高とtexture制作上の0.15 mは同一値として扱わない。UV位置は`textures/dimensions.json`の各content regionから生成し、PSDやBlenderへ別々に手入力しない。固定slotは素材配置の管理単位であり、face UVへは使わない。解像感が不足する場合は、まず同一mesh上のV使用範囲を広げ、それでも不足したatlasだけ解像度を上げる。LODには小さい共通atlasを用意する。Diffuseは必須とし、alpha・normal・specular等は表現上必要なatlasだけ追加する。
 
 Blenderで編集するsegment/nodeはそれぞれ1個のmesh objectを維持する。ただしCS1の1個のsegment mesh entryは基本的に1material・1shaderとして扱われるため、エクスポート時だけshader単位へ分ける。Material分類は共通の`surface / structure / tunnel`とし、1 modeの出力はsurfaceと対応する非surfaceの最大2系統にする。Slopeの非surfaceはtunnelへ含め、白線、curb、側溝ごとのrender meshやdraw callは増やさない。
 
