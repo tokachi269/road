@@ -10,7 +10,6 @@
     <AssemblyName>RoadRuntimeHost.ContractSmoke</AssemblyName>
     <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
     <OutputPath>bin\Release\</OutputPath>
-    <CitiesSkylinesManagedDir Condition="'$(CitiesSkylinesManagedDir)' == ''">C:\Program Files (x86)\SteamLibrary\steamapps\common\Cities_Skylines\Cities_Data\Managed</CitiesSkylinesManagedDir>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Assembly-CSharp"><HintPath>$(CitiesSkylinesManagedDir)\Assembly-CSharp.dll</HintPath><Private>true</Private></Reference>

@@ -25,9 +25,8 @@ CSURについてはGround中心の仕組みだという認識があり、それ�
 - Tunnel Entrance
 - Tunnel
 
-作業場所は`D:\GitHub\road`、Blenderは次を使用する。
-
-`G:\Program Files\Blender\stable\blender-5.1.0-windows-x64\blender-5.1.0-windows-x64`
+作業場所はこのリポジトリのrootとし、Blender 5.1の実行場所は追跡外の
+`config/toolchain.psd1`で指定する。
 
 Blender内で設定や生成結果を編集できることも要求された。
 
@@ -178,7 +177,7 @@ BlenderのRoadタブに内容が表示されない問題も発生した。原因
 
 ### 2.11 Wireを参考にする意味についての認識違い
 
-ユーザーから`D:\GitHub\wire\domains\wire`にある道路・生成系のUXを参考にするよう言われた。
+ユーザーから`wire`リポジトリの`domains/wire`にある道路・生成系のUXを参考にするよう言われた。
 
 こちらは当初、preset、一覧、断面previewなど画面上の指定方法を中心に捉えた。
 
@@ -422,7 +421,7 @@ Adaptive Networksは、防音壁、prop、標識、median表示など追加表�
 
 ## 4. 現在の試作状態
 
-Repository: `D:\GitHub\road`
+Repository: このリポジトリのroot
 GitHub: `https://github.com/tokachi269/road`（private）
 Branch: `main`
 Remote HEAD: `d323408`
@@ -445,11 +444,7 @@ Blender add-on versionは`0.4.0`。
 検証済みコマンド:
 
 ```powershell
-& 'G:\Program Files\Blender\stable\blender-5.1.0-windows-x64\blender-5.1.0-windows-x64\blender.exe' `
-  --background --factory-startup `
-  --python 'D:\GitHub\road\tests\blender_addon_smoke.py'
-
-Set-Location D:\GitHub\road
+.\scripts\run-blender.ps1 -Script .\tests\blender_addon_smoke.py
 .\scripts\build-road-importer.ps1
 ```
 

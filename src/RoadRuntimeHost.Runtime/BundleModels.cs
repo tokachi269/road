@@ -4,6 +4,7 @@ namespace RoadRuntimeHost.Runtime
     {
         public int SchemaVersion;
         public string Revision;
+        public string TextureRevision;
         public ManifestRoad[] Roads;
     }
     internal sealed class ManifestRoad
@@ -65,8 +66,15 @@ namespace RoadRuntimeHost.Runtime
         public string Shader;
         public float[] Color;
         public NamedValue[] Textures;
+        public PackedTextureBundle[] PackedTextures;
         public NamedValue[] MaterialProperties;
         public float[] MainTextureScale;
+    }
+    internal sealed class PackedTextureBundle
+    {
+        public string Name;
+        public string Packing;
+        public NamedValue[] Sources;
     }
     internal sealed class Catalog
     {

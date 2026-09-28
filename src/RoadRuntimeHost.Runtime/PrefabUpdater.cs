@@ -9,14 +9,40 @@ namespace RoadRuntimeHost.Runtime
 {
     internal sealed class PrefabUpdater
     {
+        private sealed class PackedTextureState
+        {
+            public string Packing;
+            public Texture2D Texture;
+            public Dictionary<string, Texture2D> Sources;
+        }
+
         private readonly string _previewPath;
         private readonly Dictionary<string, PropInfo> _props = new Dictionary<string, PropInfo>();
         private readonly Dictionary<string, CatalogCondition> _conditions = new Dictionary<string, CatalogCondition>();
         private readonly HashSet<string> _unsupportedConditionNamespaces = new HashSet<string>();
+        private readonly Dictionary<string, Texture2D> _textures = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, PackedTextureState> _packedTextures = new Dictionary<string, PackedTextureState>(StringComparer.Ordinal);
 
         public PrefabUpdater(string previewPath)
         {
             _previewPath = previewPath;
+        }
+
+        public int ReloadTextures()
+        {
+            int count = 0;
+            foreach (KeyValuePair<string, Texture2D> item in _textures)
+            {
+                if (!File.Exists(item.Key))
+                    throw new DiagnosticException("DATA_MISSING", "texture_file_missing", "Texture file does not exist: " + item.Key);
+                if (!item.Value.LoadImage(File.ReadAllBytes(item.Key)))
+                    throw new InvalidDataException("Texture image could not be decoded: " + item.Key);
+                item.Value.wrapMode = TextureWrapMode.Repeat;
+                ++count;
+            }
+            foreach (PackedTextureState packed in _packedTextures.Values) RebuildPackedTexture(packed);
+            DiagnosticLog.Info("SUCCESS", "textures_reloaded", "Shared runtime textures were reloaded in place", "texture_count", count.ToString(), "packed_texture_count", _packedTextures.Count.ToString());
+            return count;
         }
 
         public void ApplyProps(Catalog catalog)
@@ -402,6 +428,7 @@ namespace RoadRuntimeHost.Runtime
                 if (source.Color != null && source.Color.Length >= 4)
                     material.color = new Color(source.Color[0], source.Color[1], source.Color[2], source.Color[3]);
                 ApplyTextures(material, source.Textures);
+                ApplyPackedTextures(material, source.PackedTextures);
                 ApplyMainTextureScale(material, source.MainTextureScale);
             }
             return material;
@@ -434,11 +461,125 @@ namespace RoadRuntimeHost.Runtime
                     DiagnosticLog.Warn("DATA_MISSING", "texture_file_missing", "Texture file does not exist", "property", texture.Name ?? string.Empty, "path", path);
                     continue;
                 }
-                Texture2D image = new Texture2D(2, 2, TextureFormat.ARGB32, true);
-                image.name = Path.GetFileNameWithoutExtension(path);
-                image.LoadImage(File.ReadAllBytes(path));
+                Texture2D image = LoadTexture(path, texture.Name);
                 material.SetTexture(texture.Name, image);
             }
+        }
+
+        private Texture2D LoadTexture(string path, string propertyName)
+        {
+            Texture2D image;
+            if (_textures.TryGetValue(path, out image)) return image;
+            image = new Texture2D(2, 2, TextureFormat.ARGB32, true);
+            image.name = Path.GetFileNameWithoutExtension(path);
+            if (!image.LoadImage(File.ReadAllBytes(path)))
+                throw new InvalidDataException("Texture image could not be decoded: " + path);
+            image.wrapMode = TextureWrapMode.Repeat;
+            _textures[path] = image;
+            DiagnosticLog.Info("SUCCESS", "texture_loaded", "Runtime texture was loaded into the shared cache", "property", propertyName ?? string.Empty, "path", path, "width", image.width.ToString(), "height", image.height.ToString());
+            return image;
+        }
+
+        private void ApplyPackedTextures(Material material, PackedTextureBundle[] definitions)
+        {
+            if (material == null || definitions == null) return;
+            foreach (PackedTextureBundle definition in definitions)
+            {
+                if (definition == null || string.IsNullOrEmpty(definition.Name)
+                    || string.IsNullOrEmpty(definition.Packing)) continue;
+                Dictionary<string, Texture2D> sources = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
+                List<string> keyParts = new List<string>();
+                foreach (NamedValue source in definition.Sources ?? new NamedValue[0])
+                {
+                    string path = DecodeJsonString(source.ValueJson);
+                    if (!string.IsNullOrEmpty(path) && !Path.IsPathRooted(path)) path = SafePreviewPath(path);
+                    if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                    {
+                        DiagnosticLog.Warn("DATA_MISSING", "packed_texture_source_missing", "Packed texture source file does not exist", "property", definition.Name, "packing", definition.Packing, "source", source.Name ?? string.Empty, "path", path ?? string.Empty);
+                        continue;
+                    }
+                    sources[source.Name] = LoadTexture(path, definition.Name + "." + source.Name);
+                    keyParts.Add(source.Name + "=" + path);
+                }
+                if (sources.Count == 0) continue;
+                keyParts.Sort(StringComparer.Ordinal);
+                string key = definition.Packing + "|" + string.Join("|", keyParts.ToArray());
+                PackedTextureState state;
+                if (!_packedTextures.TryGetValue(key, out state))
+                {
+                    state = new PackedTextureState { Packing = definition.Packing, Sources = sources };
+                    RebuildPackedTexture(state);
+                    state.Texture.name = definition.Packing.ToLowerInvariant() + "_runtime";
+                    _packedTextures[key] = state;
+                    DiagnosticLog.Info("SUCCESS", "packed_texture_created", "CS1 runtime texture channels were packed", "property", definition.Name, "packing", definition.Packing, "source_count", sources.Count.ToString(), "width", state.Texture.width.ToString(), "height", state.Texture.height.ToString());
+                }
+                material.SetTexture(definition.Name, state.Texture);
+            }
+        }
+
+        private static void RebuildPackedTexture(PackedTextureState state)
+        {
+            int width = 0;
+            int height = 0;
+            foreach (Texture2D source in state.Sources.Values)
+            {
+                if (width == 0)
+                {
+                    width = source.width;
+                    height = source.height;
+                }
+                else if (source.width != width || source.height != height)
+                    throw new InvalidDataException("Packed texture sources must have identical dimensions");
+            }
+            if (width == 0 || height == 0) throw new InvalidDataException("Packed texture has no sources");
+            Color32[] alpha = SourcePixels(state, "a");
+            Color32[] pavement = SourcePixels(state, "p");
+            Color32[] road = SourcePixels(state, "r");
+            Color32[] normal = SourcePixels(state, "n");
+            Color32[] specular = SourcePixels(state, "s");
+            Color32[] pixels;
+            if (string.Equals(state.Packing, "APR", StringComparison.Ordinal))
+                pixels = PackAprPixels(alpha, pavement, road, width * height);
+            else if (string.Equals(state.Packing, "XYS", StringComparison.Ordinal))
+                pixels = PackXysPixels(normal, specular, width * height);
+            else throw new InvalidDataException("Unsupported packed texture kind: " + state.Packing);
+            if (state.Texture == null)
+                state.Texture = new Texture2D(width, height, TextureFormat.ARGB32, true);
+            else if (state.Texture.width != width || state.Texture.height != height)
+                throw new InvalidDataException("Packed texture dimensions changed during hot reload");
+            state.Texture.SetPixels32(pixels);
+            state.Texture.Apply(true, false);
+            state.Texture.wrapMode = TextureWrapMode.Repeat;
+        }
+
+        private static Color32[] SourcePixels(PackedTextureState state, string name)
+        {
+            Texture2D source;
+            return state.Sources.TryGetValue(name, out source) ? source.GetPixels32() : null;
+        }
+
+        private static Color32[] PackAprPixels(Color32[] alpha, Color32[] pavement, Color32[] road, int length)
+        {
+            Color32[] result = new Color32[length];
+            for (int index = 0; index != length; ++index)
+                result[index] = new Color32(
+                    (byte)(255 - (alpha == null ? 255 : alpha[index].r)),
+                    (byte)(255 - (pavement == null ? 0 : pavement[index].r)),
+                    road == null ? (byte)0 : road[index].r,
+                    255);
+            return result;
+        }
+
+        private static Color32[] PackXysPixels(Color32[] normal, Color32[] specular, int length)
+        {
+            Color32[] result = new Color32[length];
+            for (int index = 0; index != length; ++index)
+                result[index] = new Color32(
+                    normal == null ? (byte)128 : normal[index].r,
+                    normal == null ? (byte)128 : normal[index].g,
+                    (byte)(255 - (specular == null ? 0 : specular[index].r)),
+                    255);
+            return result;
         }
 
         private static string DecodeJsonString(string json)

@@ -8,6 +8,21 @@ Runtimeで断面からmeshを生成しない。道路meshの正本はBlenderの�
 
 道路meshの各material bundleは`main_texture_scale = [1, 0.5]`を持つ。RuntimeHostはこれをUnity Materialの`mainTextureScale`へ設定する。長手周期の変更はmaterial scaleまたは既存faceのV範囲で行い、周期だけのためにmesh entryを追加しない。
 
+Textureは`textures/road.psd`を直接読むのではなく、Photoshop Generator Plugins / Image AssetsのPNG出力を使う。各familyのDiffuse groupは次の名前にし、Generatorを有効にする。
+
+```text
+surface_d.png
+structure_d.png
+tunnel_d.png
+```
+
+PhotoshopはPSD横の`road-assets` directoryへ出力する。Diffuseの`d`だけが必須で、各familyに任意で`_a / _p / _r / _n / _s`を追加できる。例は`surface_a.png`、`structure_n.png`、`tunnel_s.png`である。PSDは画像制作物であり、配置座標の正本ではない。出力契約とUV座標は`textures/dimensions.json`が所有する。Runtime exportは存在する画像が2048x2048 PNGか検証し、preview directoryの`textures`へatomic copyする。
+
+CS1 Runtime materialでは6枚を個別propertyへ渡さない。`d`は`_MainTex`、`a / p / r`はchannel packedした`_APRMap`、`n / s`はchannel packedした`_XYSMap`になる。任意画像がないchannelにはCS1既定値を入れる。Blenderでは`d / a / n / s`を表示へ接続する。`p / r`はCS1 theme textureとのblend maskなので、theme入力がないBlender上では画像nodeの読込までとし、推測した色への置換はしない。
+
+`packed_textures`を追加したpreview manifest / road bundle / prop bundleはschema version 2とする。現行Runtimeは移行用にversion 1も読み込めるが、version 2を出力することで旧Runtimeが未知のtexture fieldを黙って無視するのを防ぐ。
+各groupは透明部分を含めてcanvas全体が2048x2048になるようにする。Generatorがlayer boundsで切り詰めたPNGはexport時に拒否され、意図せずUV scaleを変えない。Blenderは読み込み済みの3画像を約1秒ごとに監視し、変更時だけviewport画像を再読込する。Developmentの`Reload Photoshop Generator PNGs`でも手動再読込できる。
+
 ## ファイル
 
 `catalog/*.tsv`はExcel、LibreOffice、表計算ソフトで編集できる。列名は固定し、行順だけに意味を持たせない。
@@ -36,7 +51,7 @@ Road sidebarの`Runtime preview`で次を設定する。
 4. `Build and export runtime bundle`で全modeをbuildしてexportする。
 5. 継続編集時は`Auto export every second`を有効にする。
 
-auto exportは約1秒ごとにPropertyGroup、入力端部mesh、生成meshのfingerprintを比較する。設定が変わった場合は全modeをbuildしてから対象roadのbundleだけを置換する。生成meshを直接編集した場合は再buildせず現在meshをexportする。road bundleを書き終えてからmanifestをatomic replaceするため、Hostは途中のJSONを正規更新として読まない。
+auto exportは約1秒ごとにPropertyGroup、入力端部mesh、生成mesh、Generator PNGのfile versionを比較する。設定が変わった場合は全modeをbuildしてから対象roadのbundleだけを置換する。生成meshを直接編集した場合は再buildせず現在meshをexportする。PNGだけが変わった場合はmeshをbuildせず画像とmanifestだけを更新する。road bundleとtextureを書き終えてからmanifestをatomic replaceするため、Hostは途中の出力を正規更新として読まない。
 
 Prop/Decalは選択Meshを`Export selected Prop/Decal mesh`で出す。使用materialは現状1つだけに制限している。catalogの`mesh_bundle`へ`props/<prop-id>.json`を指定する。`textures`にはshader property名とpreview directory相対画像path、`material_properties`には`_DecalSize`等のfloatまたは2/4要素vectorをJSONで指定できる。値はRuntimeがmeshから推測しない。新規Prop登録には実在する`template_name`が必要で、未指定時にRuntimeが推測して適当なvanilla Propを選ぶことはしない。
 
@@ -45,8 +60,8 @@ Prop/Decalは選択Meshを`Export selected Prop/Decal mesh`で出す。使用mat
 ## buildとstaging
 
 ```powershell
-Set-Location D:\GitHub\road
-.\scripts\stage-runtime-host.ps1 -PreviewPath 'D:\GitHub\road\build\runtime-preview'
+Set-Location <repository-root>
+.\scripts\stage-runtime-host.ps1 -PreviewPath (Join-Path $PWD 'build\runtime-preview')
 ```
 
 出力は`build/runtime-host`である。
@@ -110,6 +125,7 @@ Get-Content $log | ConvertFrom-Json | Where-Object { $_.context.road_id -eq 'jp-
 - Loaderは`runtime.current`を約1秒間隔で監視する。新しいhash名DLLがstage/installされるとRuntime実装を切り替える。
 - Runtimeは`catalog.json`と`manifest.json`を約1秒間隔で確認する。
 - revisionが変わったroadだけbundleを読む。
+- `texture_revision`が変わると、共有source Texture2Dへ同じpathのPNGをin-placeで再読込し、共有APR/XYS Texture2Dもin-placeで再packする。道路bundleと既設segmentは作り直さない。
 - catalogとBlender bundleのlane契約が一致しないroadは適用せず、同じrevisionでも修正されるまで再試行する。
 - 同名Prefabがロード済みなら同じ`NetInfo` objectへmesh、material、lane、Prop配置を再設定する。既設道路を削除して引き直さない。
 - mesh/materialだけの変更では試験区画を作り直さない。

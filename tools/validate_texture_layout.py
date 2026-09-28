@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -34,7 +35,11 @@ def regions_by_id(manifest: dict) -> dict[str, dict]:
     return regions
 
 
-def validate_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, dict]:
+def validate_manifest(
+    path: Path = DEFAULT_MANIFEST,
+    *,
+    require_generator_outputs: bool = False,
+) -> dict[str, dict]:
     manifest = load_manifest(path)
     root = BASE_LAYER_ROOT
     atlas_width = int(manifest["atlas_width_px"])
@@ -49,6 +54,76 @@ def validate_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, dict]:
         raise ValueError("authoring atlas must downscale by authoring_scale exactly")
     if atlas_width % 4 or atlas_height % 4:
         raise ValueError("BC/DXT atlas dimensions must be multiples of four")
+
+    generator = manifest.get("photoshop_generator")
+    if not isinstance(generator, dict):
+        raise ValueError("photoshop_generator contract is missing")
+    assets_directory = Path(generator.get("assets_directory", ""))
+    if not str(assets_directory) or assets_directory.is_absolute() or ".." in assets_directory.parts:
+        raise ValueError("photoshop_generator assets_directory is unsafe")
+    generator_maps = generator.get("maps")
+    generator_families = generator.get("families")
+    runtime_packs = generator.get("runtime_packs")
+    if (
+        not isinstance(generator_maps, dict)
+        or not isinstance(generator_families, dict)
+        or not isinstance(runtime_packs, dict)
+    ):
+        raise ValueError(
+            "photoshop_generator maps, runtime_packs and families must be objects"
+        )
+    if set(generator_families) != set(manifest["atlas_layout"]):
+        raise ValueError("Photoshop Generator families must match atlas_layout families")
+    packed_map_ids: set[str] = set()
+    for packing, pack_contract in runtime_packs.items():
+        if packing not in {"APR", "XYS"} or not isinstance(pack_contract, dict):
+            raise ValueError(f"Unsupported runtime texture packing: {packing}")
+        if not pack_contract.get("shader_property"):
+            raise ValueError(f"Runtime texture packing has no shader property: {packing}")
+        source_maps = pack_contract.get("source_maps")
+        if not isinstance(source_maps, list) or not source_maps:
+            raise ValueError(f"Runtime texture packing has no source maps: {packing}")
+        for map_id in source_maps:
+            if map_id not in generator_maps:
+                raise ValueError(
+                    f"Runtime texture packing references an unknown map: {packing}.{map_id}"
+                )
+            if map_id in packed_map_ids:
+                raise ValueError(f"Photoshop Generator map is packed twice: {map_id}")
+            packed_map_ids.add(map_id)
+    for map_id, map_contract in generator_maps.items():
+        if not isinstance(map_contract, dict):
+            raise ValueError(f"Photoshop Generator map is not an object: {map_id}")
+        if not map_contract.get("shader_property") and map_id not in packed_map_ids:
+            raise ValueError(f"Photoshop Generator map has no runtime consumer: {map_id}")
+    generated_names: set[str] = set()
+    for family, family_maps in generator_families.items():
+        if not isinstance(family_maps, dict):
+            raise ValueError(f"Photoshop Generator family is not an object: {family}")
+        if set(family_maps) != set(generator_maps):
+            raise ValueError(
+                f"Photoshop Generator family must name every declared map: {family}"
+            )
+        for map_id, filename in family_maps.items():
+            if map_id not in generator_maps:
+                raise ValueError(f"Photoshop Generator map is not declared: {map_id}")
+            map_contract = generator_maps[map_id]
+            if filename in generated_names:
+                raise ValueError(f"Photoshop Generator output is reused: {filename}")
+            generated_names.add(filename)
+            generated_path = path.parent / assets_directory / filename
+            if (
+                require_generator_outputs
+                and map_contract.get("required")
+                and not generated_path.is_file()
+            ):
+                raise ValueError(f"Photoshop Generator output is missing: {generated_path}")
+            if generated_path.is_file():
+                with Image.open(generated_path) as image:
+                    if image.size != (atlas_width, atlas_height):
+                        raise ValueError(
+                            f"Photoshop Generator output has wrong size: {filename} {image.size}"
+                        )
 
     dimensions = {item["file"]: item for item in manifest["layers"]}
     referenced_files: set[str] = set()
@@ -87,15 +162,13 @@ def validate_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, dict]:
                     raise ValueError(
                         f"{atlas_name}/{slot['id']}: connected regions have a gap"
                     )
-                if x % authoring_scale or width % authoring_scale:
+                if width % authoring_scale:
                     raise ValueError(
-                        f"{atlas_name}/{region['id']}: region cannot downscale exactly"
+                        f"{atlas_name}/{region['id']}: region width cannot downscale exactly"
                     )
                 previous_end = x + width
 
                 filename = region["file"]
-                if filename in referenced_files:
-                    raise ValueError(f"texture file is placed more than once: {filename}")
                 referenced_files.add(filename)
                 if filename not in dimensions:
                     raise ValueError(f"layout file has no dimension entry: {filename}")
@@ -108,6 +181,34 @@ def validate_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, dict]:
                             f"PNG size disagrees with layout: {filename} {image.size}"
                         )
 
+    profiles = manifest.get("uv_profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError("uv_profiles contract is missing")
+    region_ids = set(regions_by_id(manifest))
+    for profile_id, profile in profiles.items():
+        if profile_id in region_ids:
+            raise ValueError(f"UV profile duplicates a texture region id: {profile_id}")
+        if not isinstance(profile, dict):
+            raise ValueError(f"UV profile must be an object: {profile_id}")
+        atlas_name = profile.get("atlas")
+        if atlas_name not in manifest["atlas_layout"]:
+            raise ValueError(f"UV profile has unknown atlas: {profile_id}")
+        x = int(profile.get("x_px", -1))
+        width = int(profile.get("width_px", -1))
+        if x < 0 or width <= 0 or x + width > atlas_width:
+            raise ValueError(f"UV profile exceeds atlas: {profile_id}")
+        if x % authoring_scale or width % authoring_scale:
+            raise ValueError(f"UV profile cannot downscale exactly: {profile_id}")
+        containing_slots = [
+            slot for slot in manifest["atlas_layout"][atlas_name]["slots"]
+            if x >= int(slot["slot_x_px"])
+            and x + width <= int(slot["slot_x_px"]) + int(slot["slot_width_px"])
+        ]
+        if len(containing_slots) != 1:
+            raise ValueError(
+                f"UV profile must stay inside exactly one slot: {profile_id}"
+            )
+
     missing = set(dimensions) - referenced_files
     if missing:
         raise ValueError(f"dimension entries are not placed: {sorted(missing)}")
@@ -115,6 +216,15 @@ def validate_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, dict]:
 
 
 if __name__ == "__main__":
-    result = validate_manifest()
+    parser = argparse.ArgumentParser(description="Validate the texture layout contract.")
+    parser.add_argument(
+        "--require-generator-outputs",
+        action="store_true",
+        help="also require every mandatory Photoshop Generator PNG to exist",
+    )
+    args = parser.parse_args()
+    result = validate_manifest(
+        require_generator_outputs=args.require_generator_outputs,
+    )
     print(f"texture-layout: OK ({len(result)} regions)")
 

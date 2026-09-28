@@ -50,7 +50,13 @@ from .domain import (
     strip_id,
 )
 from .geometry_plan import plan_main_girders
-from .runtime_export import export_prop_bundle, export_runtime_bundle, geometry_fingerprint, safe_road_id
+from .runtime_export import (
+    export_prop_bundle,
+    export_runtime_bundle,
+    geometry_fingerprint,
+    safe_road_id,
+    texture_fingerprint,
+)
 
 
 MODE_ITEMS = (
@@ -151,28 +157,16 @@ UV_REGION_NAMES = (
 )
 UV_REGION_VALUES = {name: index for index, name in enumerate(UV_REGION_NAMES)}
 _AUTO_EXPORT_STATE = {}
+_AUTO_EXPORT_ERRORS = {}
 _LIVE_PREVIEW_PENDING = {}
 _LIVE_PREVIEW_DELAY = 0.15
 _LIVE_PREVIEW_SETTLE_DELAY = 0.60
 _LIVE_PREVIEW_REBUILDING = False
 DEFAULT_RUNTIME_OUTPUT = str(Path(__file__).resolve().parents[2] / "build" / "runtime-preview")
-DEFAULT_SURFACE_ATLAS = (
-    Path(__file__).resolve().parents[2]
-    / "textures"
-    / "road.psd"
-)
 DEFAULT_TEXTURE_LAYOUT = (
     Path(__file__).resolve().parents[2]
     / "textures"
     / "dimensions.json"
-)
-DEFAULT_STRUCTURE_ATLAS = (
-    Path(__file__).resolve().parents[2]
-    / "textures" / "atlas_bases" / "structure_base_2048.png"
-)
-DEFAULT_TUNNEL_ATLAS = (
-    Path(__file__).resolve().parents[2]
-    / "textures" / "atlas_bases" / "tunnel_base_2048.png"
 )
 _TEXTURE_LAYOUT_CACHE = None
 def _enum_value(value: str, available, fallback: str) -> str:
@@ -216,6 +210,15 @@ def _texture_layout_manifest() -> dict:
     return _TEXTURE_LAYOUT_CACHE[1]
 
 
+def _generated_atlas_path(family: str, map_id: str = "d") -> Path:
+    generator = _texture_layout_manifest()["photoshop_generator"]
+    return (
+        DEFAULT_TEXTURE_LAYOUT.parent
+        / generator["assets_directory"]
+        / generator["families"][family][map_id]
+    )
+
+
 def _atlas_texture_region(
     atlas_name: str, region_id: str,
 ) -> tuple[float, float, float]:
@@ -237,41 +240,14 @@ def _texture_region(region_id: str) -> tuple[float, float, float]:
     return _atlas_texture_region("surface", region_id)
 
 
-def _combined_surface_region(
-    anchor: float, region_ids: tuple[str, ...], direction: int,
-) -> tuple[float, float]:
-    width = sum(
-        _texture_region(region_id)[1] - _texture_region(region_id)[0]
-        for region_id in region_ids
-    )
-    other = anchor + direction * width
-    return min(anchor, other), max(anchor, other)
-
-
 def _uv_region_bounds(region_id: str) -> tuple[str, float, float]:
-    wall_u_min, wall_u_max, _ = _texture_region("curb.wall")
-    combined = {
-        "sidewalk.default+curb.upper": (
-            "surface",
-            *_combined_surface_region(
-                wall_u_min, ("sidewalk.default", "curb.upper"), -1,
-            ),
-        ),
-        "curb.lower+shoulder.default": (
-            "surface",
-            *_combined_surface_region(
-                wall_u_max, ("curb.lower", "shoulder.default"), 1,
-            ),
-        ),
-        "curb.lower+lane.default": (
-            "surface",
-            *_combined_surface_region(
-                wall_u_max, ("curb.lower", "lane.default"), 1,
-            ),
-        ),
-    }
-    if region_id in combined:
-        return combined[region_id]
+    manifest = _texture_layout_manifest()
+    profile = manifest.get("uv_profiles", {}).get(region_id)
+    if profile is not None:
+        atlas_width = float(manifest["atlas_width_px"])
+        u_min = float(profile["x_px"]) / atlas_width
+        u_max = (float(profile["x_px"]) + float(profile["width_px"])) / atlas_width
+        return profile["atlas"], u_min, u_max
     for atlas_name in ("surface", "structure", "tunnel"):
         try:
             u_min, u_max, _ = _atlas_texture_region(atlas_name, region_id)
@@ -281,11 +257,21 @@ def _uv_region_bounds(region_id: str) -> tuple[str, float, float]:
     raise ValueError(f"Unknown UV region: {region_id}")
 
 
-def _surface_atlas_image(force_reload: bool = False) -> bpy.types.Image:
-    if not DEFAULT_SURFACE_ATLAS.is_file():
-        raise FileNotFoundError(f"Surface atlas does not exist: {DEFAULT_SURFACE_ATLAS}")
-    image = bpy.data.images.load(str(DEFAULT_SURFACE_ATLAS), check_existing=True)
-    mtime_ns = DEFAULT_SURFACE_ATLAS.stat().st_mtime_ns
+def _generator_image(
+    family: str, map_id: str = "d", force_reload: bool = False,
+) -> bpy.types.Image | None:
+    image_path = _generated_atlas_path(family, map_id)
+    map_contract = _texture_layout_manifest()["photoshop_generator"]["maps"][map_id]
+    if not image_path.is_file():
+        if map_contract.get("required"):
+            raise FileNotFoundError(
+                f"Photoshop Generator output does not exist: {image_path}"
+            )
+        return None
+    image = bpy.data.images.load(str(image_path), check_existing=True)
+    if map_id != "d":
+        image.colorspace_settings.name = "Non-Color"
+    mtime_ns = image_path.stat().st_mtime_ns
     mtime_key = str(mtime_ns)
     if force_reload or image.get("cs1_source_mtime_ns") != mtime_key:
         image.reload()
@@ -293,16 +279,61 @@ def _surface_atlas_image(force_reload: bool = False) -> bpy.types.Image:
     return image
 
 
+def _surface_atlas_image(force_reload: bool = False) -> bpy.types.Image:
+    return _generator_image("surface", "d", force_reload)
+
+
+def _add_generator_preview_maps(
+    material, nodes, links, mapping, shader, family, force_reload,
+) -> None:
+    labels = {
+        "a": "CS1 Alpha",
+        "p": "CS1 Pavement mask (runtime theme)",
+        "r": "CS1 Road mask (runtime theme)",
+        "n": "CS1 Normal",
+        "s": "CS1 Specular",
+    }
+    texture_y = {
+        "a": 160.0,
+        "p": -80.0,
+        "r": -320.0,
+        "n": -560.0,
+        "s": -800.0,
+    }
+    for map_id in ("a", "p", "r", "n", "s"):
+        image = _generator_image(family, map_id, force_reload)
+        if image is None:
+            continue
+        texture = nodes.new("ShaderNodeTexImage")
+        texture.name = labels[map_id]
+        texture.label = labels[map_id]
+        texture.location = (-520.0, texture_y[map_id])
+        texture.width = 240.0
+        texture.image = image
+        texture.extension = "REPEAT"
+        links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+        if map_id == "a" and shader.inputs.get("Alpha") is not None:
+            links.new(texture.outputs["Color"], shader.inputs["Alpha"])
+            if hasattr(material, "surface_render_method"):
+                material.surface_render_method = "DITHERED"
+        elif map_id == "n" and shader.inputs.get("Normal") is not None:
+            normal = nodes.new("ShaderNodeNormalMap")
+            normal.name = "CS1 Normal conversion"
+            normal.location = (-180.0, texture_y[map_id])
+            links.new(texture.outputs["Color"], normal.inputs["Color"])
+            links.new(normal.outputs["Normal"], shader.inputs["Normal"])
+        elif map_id == "s":
+            specular = shader.inputs.get("Specular IOR Level")
+            if specular is None:
+                specular = shader.inputs.get("Specular")
+            if specular is not None:
+                links.new(texture.outputs["Color"], specular)
+
+
 def _image_texture_material(
-    name: str, image_path: Path, fallback_color, force_reload: bool = False,
+    name: str, family: str, fallback_color, force_reload: bool = False,
 ) -> bpy.types.Material:
-    if not image_path.is_file():
-        raise FileNotFoundError(f"Texture atlas does not exist: {image_path}")
-    image = bpy.data.images.load(str(image_path), check_existing=True)
-    mtime_key = str(image_path.stat().st_mtime_ns)
-    if force_reload or image.get("cs1_source_mtime_ns") != mtime_key:
-        image.reload()
-        image["cs1_source_mtime_ns"] = mtime_key
+    image = _generator_image(family, "d", force_reload)
     material = bpy.data.materials.get(name) or bpy.data.materials.new(name)
     material.diffuse_color = fallback_color
     material.use_nodes = True
@@ -310,17 +341,28 @@ def _image_texture_material(
     links = material.node_tree.links
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
+    output.location = (500.0, 100.0)
     shader = nodes.new("ShaderNodeBsdfPrincipled")
+    shader.location = (160.0, 100.0)
     uv_map = nodes.new("ShaderNodeUVMap")
+    uv_map.location = (-1040.0, 100.0)
     uv_map.uv_map = "RoadUV"
     mapping = nodes.new("ShaderNodeMapping")
+    mapping.location = (-800.0, 100.0)
     mapping.inputs["Scale"].default_value = (1.0, 2.0, 1.0)
     texture = nodes.new("ShaderNodeTexImage")
+    texture.name = "CS1 Diffuse"
+    texture.label = "CS1 Diffuse"
+    texture.location = (-520.0, 420.0)
+    texture.width = 240.0
     texture.image = image
     texture.extension = "REPEAT"
     links.new(uv_map.outputs["UV"], mapping.inputs["Vector"])
     links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
     links.new(texture.outputs["Color"], shader.inputs["Base Color"])
+    _add_generator_preview_maps(
+        material, nodes, links, mapping, shader, family, force_reload,
+    )
     links.new(shader.outputs[0], output.inputs[0])
     return material
 
@@ -340,35 +382,81 @@ def _material(
     links = material.node_tree.links
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
+    output.location = (500.0, 100.0)
     shader = nodes.new("ShaderNodeBsdfPrincipled")
+    shader.location = (160.0, 100.0)
     uv_map = nodes.new("ShaderNodeUVMap")
+    uv_map.location = (-1040.0, 100.0)
     uv_map.uv_map = "RoadUV"
     mapping = nodes.new("ShaderNodeMapping")
+    mapping.location = (-800.0, 100.0)
     mapping.inputs["Scale"].default_value = (1.0, 2.0, 1.0)
     texture = nodes.new("ShaderNodeTexImage")
+    texture.name = "CS1 Diffuse"
+    texture.label = "CS1 Diffuse"
+    texture.location = (-520.0, 420.0)
+    texture.width = 240.0
     texture.image = _surface_atlas_image(force_texture_reload)
     texture.extension = "REPEAT"
     links.new(uv_map.outputs["UV"], mapping.inputs["Vector"])
     links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
     links.new(texture.outputs["Color"], shader.inputs["Base Color"])
+    _add_generator_preview_maps(
+        material, nodes, links, mapping, shader, "surface", force_texture_reload,
+    )
     links.new(shader.outputs[0], output.inputs[0])
     return material
 
 
-def _structure_material() -> bpy.types.Material:
+def _structure_material(force_reload: bool = False) -> bpy.types.Material:
     return _image_texture_material(
         SHARED_STRUCTURE_MATERIAL,
-        DEFAULT_STRUCTURE_ATLAS,
+        "structure",
         (0.34, 0.36, 0.38, 1.0),
+        force_reload,
     )
 
 
-def _tunnel_material() -> bpy.types.Material:
+def _tunnel_material(force_reload: bool = False) -> bpy.types.Material:
     return _image_texture_material(
         SHARED_TUNNEL_MATERIAL,
-        DEFAULT_TUNNEL_ATLAS,
+        "tunnel",
         (0.20, 0.22, 0.24, 1.0),
+        force_reload,
     )
+
+
+def _reload_loaded_generator_images() -> int:
+    reloaded = 0
+    generator = _texture_layout_manifest()["photoshop_generator"]
+    expected = {
+        _generated_atlas_path(family, map_id).resolve(): bool(
+            generator["maps"][map_id].get("required")
+        )
+        for family in ("surface", "structure", "tunnel")
+        for map_id in generator["maps"]
+    }
+    for image in bpy.data.images:
+        if image.source != "FILE" or not image.filepath:
+            continue
+        try:
+            image_path = Path(bpy.path.abspath(image.filepath)).resolve()
+        except (OSError, ValueError):
+            continue
+        if image_path not in expected:
+            continue
+        if not image_path.is_file():
+            if expected[image_path]:
+                raise FileNotFoundError(
+                    f"Photoshop Generator output does not exist: {image_path}"
+                )
+            continue
+        mtime_key = str(image_path.stat().st_mtime_ns)
+        if image.get("cs1_source_mtime_ns") != mtime_key:
+            image.reload()
+            image["cs1_source_mtime_ns"] = mtime_key
+            reloaded += 1
+    return reloaded
 
 
 def _mesh_object(
@@ -1007,7 +1095,21 @@ def _road_uv_spans(props, road_half) -> tuple[_RoadUVSpan, ...]:
         if not touches_left_curb and not touches_right_curb:
             continue
         composite_id = f"curb.lower+{span.region_id}"
-        _atlas_name, u_min, u_max = _uv_region_bounds(composite_id)
+        atlas_name, u_min, _default_u_max = _uv_region_bounds(composite_id)
+        manifest = _texture_layout_manifest()
+        if atlas_name != "surface":
+            raise ValueError(f"{composite_id} must use the surface atlas")
+        u_max = u_min + (
+            (span.x_max - span.x_min)
+            * float(manifest["pixels_per_meter"])
+            / float(manifest["atlas_width_px"])
+        )
+        edge_asphalt_u_max = _texture_region("edge.asphalt")[1]
+        if u_max > edge_asphalt_u_max + 1e-8:
+            raise ValueError(
+                f"{composite_id} width {span.x_max - span.x_min:.3f} m "
+                "exceeds the 3.25 m continuous road-edge texture profile"
+            )
         if abs(u_min - wall_u_max) > 1e-8:
             raise ValueError(f"{composite_id} does not meet curb.wall")
         spans[index] = _RoadUVSpan(
@@ -1569,8 +1671,15 @@ def _sync_boundaries(props, legacy_edge_lines=None, legacy_lane_lines=None) -> N
         saved = previous.get(boundary_id)
         item.role = saved["boundary_role"] if saved else role
         item.marking_enabled = saved["enabled"] if saved else default_enabled
-        item.marking_role = saved["role"] if saved else default_marking_role
-        item.marking_style = saved["style"] if saved else "SOLID_WHITE"
+        role_is_unchanged = bool(
+            saved and saved["role"] == default_marking_role
+        )
+        item.marking_role = default_marking_role
+        item.marking_style = saved["style"] if role_is_unchanged else (
+            "DASHED_WHITE"
+            if default_marking_role == "CENTER_LINE"
+            else "SOLID_WHITE"
+        )
         if legacy_edge_lines is not None and item.marking_role == "CARRIAGEWAY_EDGE":
             item.marking_enabled = bool(legacy_edge_lines)
         if legacy_lane_lines is not None and item.role == "LANE_DIVIDER":
@@ -2122,12 +2231,14 @@ class CS1ROAD_OT_build_all(Operator):
 
 class CS1ROAD_OT_reload_surface_texture(Operator):
     bl_idname = "cs1_road.reload_surface_texture"
-    bl_label = "Reload road.psd"
-    bl_description = "Reload road.psd used by generated road surface materials"
+    bl_label = "Reload generated textures"
+    bl_description = "Reload surface, structure, and tunnel PNGs exported by Photoshop Generator"
 
     def execute(self, context):
         try:
             _material(0.15, 0.4, force_texture_reload=True)
+            _structure_material(force_reload=True)
+            _tunnel_material(force_reload=True)
         except (OSError, RuntimeError, ValueError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
@@ -2189,6 +2300,12 @@ def _export_runtime_scene(scene):
         props.sidewalk_width,
         _runtime_lanes(props),
         modes,
+        DEFAULT_TEXTURE_LAYOUT,
+        {
+            SHARED_SURFACE_MATERIAL: "surface",
+            SHARED_STRUCTURE_MATERIAL: "structure",
+            SHARED_TUNNEL_MATERIAL: "tunnel",
+        },
     )
 
 
@@ -2232,6 +2349,10 @@ def _runtime_geometry_fingerprint():
     return geometry_fingerprint(objects)
 
 
+def _runtime_texture_fingerprint():
+    return texture_fingerprint(DEFAULT_TEXTURE_LAYOUT)
+
+
 def _runtime_auto_export_timer():
     for scene in bpy.data.scenes:
         props = getattr(scene, "cs1_road_builder", None)
@@ -2245,11 +2366,37 @@ def _runtime_auto_export_timer():
                 for mode, _, _ in MODE_ITEMS:
                     build_mode(scene, mode)
             current_geometry = _runtime_geometry_fingerprint()
-            if previous is None or previous != (current_authoring, current_geometry):
+            current_textures = _runtime_texture_fingerprint()
+            if previous is not None and previous[2] != current_textures:
+                _material(
+                    props.marking_paint_width,
+                    props.marking_region_width,
+                    force_texture_reload=True,
+                )
+                _structure_material(force_reload=True)
+                _tunnel_material(force_reload=True)
+            current_state = (
+                current_authoring, current_geometry, current_textures,
+            )
+            if previous is None or previous != current_state:
                 _export_runtime_scene(scene)
-                _AUTO_EXPORT_STATE[scene_key] = (current_authoring, current_geometry)
+                _AUTO_EXPORT_STATE[scene_key] = current_state
         except (OSError, ValueError, TypeError) as error:
-            print(f"CS1 Road Builder runtime export: {error}")
+            signature = f"{type(error).__name__}: {error}"
+            if _AUTO_EXPORT_ERRORS.get(scene_key) != signature:
+                print(f"CS1 Road Builder runtime export: {signature}")
+                _AUTO_EXPORT_ERRORS[scene_key] = signature
+        else:
+            _AUTO_EXPORT_ERRORS.pop(scene_key, None)
+    try:
+        _reload_loaded_generator_images()
+    except (OSError, RuntimeError, ValueError) as error:
+        signature = f"{type(error).__name__}: {error}"
+        if _AUTO_EXPORT_ERRORS.get("textures") != signature:
+            print(f"CS1 Road Builder texture reload: {signature}")
+            _AUTO_EXPORT_ERRORS["textures"] = signature
+    else:
+        _AUTO_EXPORT_ERRORS.pop("textures", None)
     return 1.0
 
 
@@ -2264,6 +2411,7 @@ class CS1ROAD_OT_export_runtime(Operator):
             _AUTO_EXPORT_STATE[context.scene.as_pointer()] = (
                 _authoring_fingerprint(context.scene.cs1_road_builder),
                 _runtime_geometry_fingerprint(),
+                _runtime_texture_fingerprint(),
             )
         except (OSError, ValueError, TypeError) as error:
             self.report({"ERROR"}, str(error))
@@ -2743,10 +2891,10 @@ class CS1ROAD_PT_development(_CS1RoadChildPanel, Panel):
         development = self.layout
         development.operator(
             "cs1_road.reload_surface_texture",
-            text="Reload road.psd on generated roads",
+            text="Reload Photoshop Generator PNGs",
             icon="TEXTURE",
         )
-        development.label(text="Generated surface Material uses textures/road.psd.")
+        development.label(text="Uses road-assets/*_d plus optional _a/_p/_r/_n/_s PNGs.")
         development.operator("script.reload", text="Reload Scripts", icon="FILE_REFRESH")
         development.label(text="Rebuild generated meshes after reloading.", icon="INFO")
         development.label(text="Generated objects remain editable meshes.", icon="EDITMODE_HLT")
@@ -2783,6 +2931,7 @@ def unregister():
     if bpy.app.timers.is_registered(_live_preview_timer):
         bpy.app.timers.unregister(_live_preview_timer)
     _AUTO_EXPORT_STATE.clear()
+    _AUTO_EXPORT_ERRORS.clear()
     _LIVE_PREVIEW_PENDING.clear()
     del bpy.types.Scene.cs1_road_builder
     for cls in reversed(CLASSES):

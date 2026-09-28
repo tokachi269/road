@@ -14,17 +14,21 @@ Cities: Skylines 1向けの独自道路ジェネレータ開発環境です。CS
 - `references/CSUR/`: XMLと全モード実装の参照用submodule。生成処理には使わない
 - `scripts/`: 環境確認、Blender起動、Importerビルド・配置、生成物配置
 - `docs/cs1-road-requirements.md`: importer・サンプル・CSURを照合した実装基準
+- `docs/engineering/agent_harness.md`: agent支援作業のscope・証拠・停止条件
 
 ## 確認済みツール
 
-- Blender 5.1.0: `G:\Program Files\Blender\stable\blender-5.1.0-windows-x64\blender-5.1.0-windows-x64\blender.exe`
-- Cities: Skylines 1: `C:\Program Files (x86)\SteamLibrary\steamapps\common\Cities_Skylines`
-- Visual Studio MSBuild: `C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe`
+- Blender 5.1.0
+- Cities: Skylines 1
+- Visual Studio MSBuild
+
+ローカルの絶対パスは追跡しない。`config/toolchain.example.psd1`を
+`config/toolchain.psd1`へコピーし、各自の環境だけで設定する。
 
 ## 初回確認
 
 ```powershell
-Set-Location D:\GitHub\road
+Set-Location <repository-root>
 .\scripts\check-environment.ps1
 .\scripts\run-blender.ps1 -Script .\generator\smoke.py
 .\scripts\build-road-importer.ps1
@@ -37,7 +41,7 @@ Blenderのテスト結果は`build/smoke/`へ出力されます。RoadImporter�
 Runtime側で断面meshは生成しません。Blenderで生成・編集した完成meshをbundleへ書き出し、通常マップ用Hostが同名Prefabへ反映します。
 
 ```powershell
-.\scripts\stage-runtime-host.ps1 -PreviewPath 'D:\GitHub\road\build\runtime-preview'
+.\scripts\stage-runtime-host.ps1 -PreviewPath (Join-Path $PWD 'build\runtime-preview')
 ```
 
 初回だけ`install-runtime-host.ps1`でLoaderを配置します。以後はBlenderの`Runtime preview`で同じdirectoryへ出力し、必要なときだけstagingしたversioned Runtime DLLをMods directoryへ上書きします。詳細、制約、未検証項目は[docs/runtime-preview.md](docs/runtime-preview.md)と[docs/runtime-workboard.md](docs/runtime-workboard.md)に記載しています。

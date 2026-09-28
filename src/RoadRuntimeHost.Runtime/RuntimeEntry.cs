@@ -8,6 +8,14 @@ namespace RoadRuntimeHost.Runtime
 {
     public sealed class RuntimeEntry
     {
+        private const int CurrentPreviewSchemaVersion = 2;
+        private const int LegacyPreviewSchemaVersion = 1;
+
+        private static bool IsSupportedPreviewSchema(int version)
+        {
+            return version == LegacyPreviewSchemaVersion || version == CurrentPreviewSchemaVersion;
+        }
+
         private sealed class AppliedRoad
         {
             public string Revision;
@@ -21,6 +29,7 @@ namespace RoadRuntimeHost.Runtime
         private readonly Dictionary<string, string> _roadRejectedInputs = new Dictionary<string, string>();
         private string _previewPath;
         private string _manifestRevision;
+        private string _textureRevision;
         private string _catalogRevision;
         private float _elapsed;
         private bool _stopped;
@@ -49,13 +58,13 @@ namespace RoadRuntimeHost.Runtime
                 Catalog catalog = JsonFiles.Read<Catalog>(Path.Combine(root, "catalog.json"));
                 Manifest manifest = JsonFiles.Read<Manifest>(Path.Combine(root, "manifest.json"));
                 if (catalog == null || catalog.SchemaVersion != 1) throw new InvalidDataException("invalid catalog");
-                if (manifest == null || manifest.SchemaVersion != 1) throw new InvalidDataException("invalid manifest");
+                if (manifest == null || !IsSupportedPreviewSchema(manifest.SchemaVersion)) throw new InvalidDataException("invalid manifest");
                 int roads = 0;
                 foreach (ManifestRoad entry in manifest.Roads ?? new ManifestRoad[0])
                 {
                     if (Path.IsPathRooted(entry.BundlePath) || entry.BundlePath.Contains("..")) throw new InvalidDataException("unsafe bundle path");
                     RoadBundle bundle = JsonFiles.Read<RoadBundle>(Path.Combine(root, entry.BundlePath));
-                    if (bundle == null || bundle.SchemaVersion != 1 || bundle.Revision != entry.Revision) throw new InvalidDataException("invalid road bundle " + entry.RoadId);
+                    if (bundle == null || !IsSupportedPreviewSchema(bundle.SchemaVersion) || bundle.Revision != entry.Revision) throw new InvalidDataException("invalid road bundle " + entry.RoadId);
                     if (bundle.Modes == null || bundle.Modes.Length == 0) throw new InvalidDataException("road bundle has no modes " + entry.RoadId);
                     RequireRoadDimensions(entry.RoadId, bundle);
                     CatalogRoad catalogRoad = FindCatalogRoad(catalog, entry.RoadId);
@@ -126,10 +135,12 @@ namespace RoadRuntimeHost.Runtime
             try
             {
                 Manifest manifest = JsonFiles.Read<Manifest>(manifestPath);
-                if (manifest == null || manifest.SchemaVersion != 1) throw new InvalidDataException("unsupported manifest schema");
+                if (manifest == null || !IsSupportedPreviewSchema(manifest.SchemaVersion)) throw new InvalidDataException("unsupported manifest schema");
                 ManifestRoad[] entries = manifest.Roads ?? new ManifestRoad[0];
                 if (!force && !catalogChanged && string.Equals(manifest.Revision, _manifestRevision, StringComparison.Ordinal) && !HasPendingRoad(entries)) return;
-                DiagnosticLog.Info("DATA", "manifest_changed", "Applying changed manifest", "revision", manifest.Revision ?? string.Empty, "road_count", entries.Length.ToString(), "catalog_changed", catalogChanged.ToString());
+                bool texturesChanged = !force && !string.Equals(manifest.TextureRevision, _textureRevision, StringComparison.Ordinal);
+                DiagnosticLog.Info("DATA", "manifest_changed", "Applying changed manifest", "revision", manifest.Revision ?? string.Empty, "road_count", entries.Length.ToString(), "catalog_changed", catalogChanged.ToString(), "textures_changed", texturesChanged.ToString());
+                if (texturesChanged) _updater.ReloadTextures();
                 int attempted = 0;
                 int applied = 0;
                 int rejected = 0;
@@ -148,6 +159,7 @@ namespace RoadRuntimeHost.Runtime
                     else ++rejected;
                 }
                 _manifestRevision = manifest.Revision;
+                _textureRevision = manifest.TextureRevision;
                 _manifestRejectedFileVersion = null;
                 if (_manifestFailureSignature != null)
                     DiagnosticLog.Info("SUCCESS", "manifest_apply_recovered", "Manifest processing recovered after a previous failure", "path", manifestPath, "revision", manifest.Revision ?? string.Empty);
@@ -271,7 +283,7 @@ namespace RoadRuntimeHost.Runtime
                 string path = SafeBundlePath(entry.BundlePath);
                 DiagnosticLog.Info("DATA", "road_apply_begin", "Applying road bundle", "road_id", entry.RoadId ?? string.Empty, "revision", entry.Revision ?? string.Empty, "bundle_path", path);
                 RoadBundle bundle = JsonFiles.Read<RoadBundle>(path);
-                if (bundle == null || bundle.SchemaVersion != 1) throw new InvalidDataException("unsupported road bundle schema: " + entry.RoadId);
+                if (bundle == null || !IsSupportedPreviewSchema(bundle.SchemaVersion)) throw new InvalidDataException("unsupported road bundle schema: " + entry.RoadId);
                 if (!string.Equals(bundle.RoadId, entry.RoadId, StringComparison.Ordinal)
                     || !string.Equals(bundle.Revision, entry.Revision, StringComparison.Ordinal))
                     throw new InvalidDataException("manifest/bundle revision mismatch: " + entry.RoadId);

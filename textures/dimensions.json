@@ -10,6 +10,66 @@
   "period_m": 16.0,
   "repeats": 2,
   "pixels_per_meter": 64.0,
+  "photoshop_generator": {
+    "assets_directory": "road-assets",
+    "maps": {
+      "d": {
+        "shader_property": "_MainTex",
+        "required": true
+      },
+      "a": {
+        "required": false
+      },
+      "p": {
+        "required": false
+      },
+      "r": {
+        "required": false
+      },
+      "n": {
+        "required": false
+      },
+      "s": {
+        "required": false
+      }
+    },
+    "runtime_packs": {
+      "APR": {
+        "shader_property": "_APRMap",
+        "source_maps": ["a", "p", "r"]
+      },
+      "XYS": {
+        "shader_property": "_XYSMap",
+        "source_maps": ["n", "s"]
+      }
+    },
+    "families": {
+      "surface": {
+        "d": "surface_d.png",
+        "a": "surface_a.png",
+        "p": "surface_p.png",
+        "r": "surface_r.png",
+        "n": "surface_n.png",
+        "s": "surface_s.png"
+      },
+      "structure": {
+        "d": "structure_d.png",
+        "a": "structure_a.png",
+        "p": "structure_p.png",
+        "r": "structure_r.png",
+        "n": "structure_n.png",
+        "s": "structure_s.png"
+      },
+      "tunnel": {
+        "d": "tunnel_d.png",
+        "a": "tunnel_a.png",
+        "p": "tunnel_p.png",
+        "r": "tunnel_r.png",
+        "n": "tunnel_n.png",
+        "s": "tunnel_s.png"
+      }
+    }
+  },
   "dashed_paint_m": 6.0,
   "dashed_gap_m": 10.0,
   "atlas_layout": {
@@ -31,7 +91,7 @@
       "slots": [
         {
           "id": "lane.default",
-          "slot_x_px": 672,
+          "slot_x_px": 736,
           "slot_width_px": 256,
           "padding_left_px": 32,
           "padding_right_px": 32,
@@ -39,14 +99,14 @@
             {
               "id": "lane.default",
               "file": "surface_lane_3m.png",
-              "x_px": 704,
+              "x_px": 768,
               "width_px": 192
             }
           ]
         },
         {
           "id": "sidewalk.default",
-          "slot_x_px": 0,
+          "slot_x_px": 992,
           "slot_width_px": 224,
           "padding_left_px": 32,
           "padding_right_px": 32,
@@ -54,14 +114,14 @@
             {
               "id": "sidewalk.default",
               "file": "surface_sidewalk_2p5m.png",
-              "x_px": 32,
+              "x_px": 1024,
               "width_px": 160
             }
           ]
         },
         {
           "id": "shoulder.default",
-          "slot_x_px": 480,
+          "slot_x_px": 640,
           "slot_width_px": 96,
           "padding_left_px": 32,
           "padding_right_px": 32,
@@ -69,18 +129,24 @@
             {
               "id": "shoulder.default",
               "file": "surface_shoulder_0p5m.png",
-              "x_px": 512,
+              "x_px": 672,
               "width_px": 32
             }
           ]
         },
         {
-          "id": "curb.default",
-          "slot_x_px": 352,
-          "slot_width_px": 96,
+          "id": "road.edge.profile",
+          "slot_x_px": 192,
+          "slot_width_px": 448,
           "padding_left_px": 32,
           "padding_right_px": 32,
           "regions": [
+            {
+              "id": "edge.sidewalk",
+              "file": "surface_sidewalk_2p5m.png",
+              "x_px": 224,
+              "width_px": 160
+            },
             {
               "id": "curb.upper",
               "file": "surface_curb_upper_sidewalk_0p1m.png",
@@ -98,6 +164,12 @@
               "file": "surface_curb_lower_roadway_0p25m.png",
               "x_px": 400,
               "width_px": 16
+            },
+            {
+              "id": "edge.asphalt",
+              "file": "surface_lane_3m.png",
+              "x_px": 416,
+              "width_px": 192
             }
           ]
         },
@@ -105,13 +177,13 @@
           "id": "line.dashed.white",
           "slot_x_px": 2016,
           "slot_width_px": 32,
-          "padding_left_px": 6,
-          "padding_right_px": 0,
+          "padding_left_px": 3,
+          "padding_right_px": 3,
           "regions": [
             {
               "id": "line.dashed.white",
               "file": "surface_marking_dashed_0p15m_in_0p4m_band.png",
-              "x_px": 2022,
+              "x_px": 2019,
               "width_px": 26
             }
           ]
@@ -120,13 +192,13 @@
           "id": "line.solid.white",
           "slot_x_px": 1984,
           "slot_width_px": 32,
-          "padding_left_px": 6,
-          "padding_right_px": 0,
+          "padding_left_px": 3,
+          "padding_right_px": 3,
           "regions": [
             {
               "id": "line.solid.white",
               "file": "surface_marking_solid_0p15m_in_0p4m_band.png",
-              "x_px": 1990,
+              "x_px": 1987,
               "width_px": 26
             }
           ]
@@ -245,6 +317,23 @@
           ]
         }
       ]
+    }
+  },
+  "uv_profiles": {
+    "sidewalk.default+curb.upper": {
+      "atlas": "surface",
+      "x_px": 224,
+      "width_px": 166
+    },
+    "curb.lower+shoulder.default": {
+      "atlas": "surface",
+      "x_px": 400,
+      "width_px": 32
+    },
+    "curb.lower+lane.default": {
+      "atlas": "surface",
+      "x_px": 400,
+      "width_px": 192
     }
   },
   "layers": [

@@ -22,7 +22,7 @@
 | メッシュの単位 | 本プロジェクトの決定 | 各モードにつき、segmentを1個のBlenderメッシュオブジェクト、nodeを1個のBlenderメッシュオブジェクトとして生成する。CS1のselector別メッシュとLODはエクスポート時に生成し、previewをプリミティブの集合にはしない。 |
 | 不可視面 | 本プロジェクトの決定 | Groundは路面上面、歩道上面、露出するcurb立面だけを持つ。ElevatedとBridgeは見える下面と外側fasciaを追加するが、長手方向の端面は作らない。Tunnelは路面と内向きの壁・天井を持つ。 |
 | Node中央分割 | ユーザー要件に基づく本プロジェクトの決定 | 1個のBlenderオブジェクトを維持したまま、X=0の路面頂点を共有しない左右のvertex islandにする。左右を独立したトポロジーとして扱え、プリミティブオブジェクトへ分解する必要はない。 |
-| UV map | サンプル確認済み・Blender preview実装済み | 確認したすべてのCSURサンプルFBXにUV layerが1個ある。通常道路端は歩道上面、curb壁、既存路面の3面を維持し、texture区分のためにcurb上面・下面の細いfaceを追加しない。生成structureは床版下面、mode別fascia、主桁側面・下面、生成tunnelは壁・天井を各familyのregionへ割り当てる。curb立面を上面投影で潰さず、左右は同じregionを反転利用する。64 mの長手方向は0～1で生成し、Blender Material側でVを2倍して2048px内の16m周期を反復表示する。線の中央に余分な辺は置かない。指定meshの入力UVは保持する。最終FBX/CRPで同じtexture scaleが復元されることは未検証。 |
+| UV map | サンプル確認済み・Blender preview実装済み | 確認したすべてのCSURサンプルFBXにUV layerが1個ある。通常道路端は歩道上面、curb壁、既存路面の3面を維持し、texture区分のためにcurb上面・下面の細いfaceを追加しない。生成structureは床版下面、mode別fascia、主桁側面・下面、生成tunnelは壁・天井を各familyのregionへ割り当てる。curb立面を上面投影で潰さず、左右は同じregionを反転利用する。64 mの長手方向は0～1で生成し、Blender Material側でVを2倍して2048px内の16m周期を反復表示する。線の中央に余分な辺は置かない。指定meshの入力UVは保持する。最終FBX/CRPで同じtexture scaleが復元されることは未検証。Diffuseは`_MainTex`、a/p/rは`_APRMap`、n/sは`_XYSMap`へ変換するRuntime preview契約とchannel packingは実装・contract test済みだが、ゲーム内表示は未検証。 |
 | LOD | サンプル確認済み・未実装 | 参照したすべてのsegment/node FBXに対応する`_lod.FBX`がある。LODの生成とエクスポートが完了するまでgame-readyとは扱わない。 |
 | Normal | Importer・エクスポート要件 | 可視面は意図した頂点順序で生成する。隣接するsegment/nodeが覆う端面は省略する。Blender上でnormalとback-face visibilityを検証する。 |
 
@@ -192,7 +192,7 @@ Marking領域の境界pixelは周囲のasphalt tileと同じ色・normal・rough
 
 ## 操作モデルと設定の所有
 
-`D:\GitHub\wire\domains\wire`から採用する中心はUI配置ではなく、入力、保存する正本、派生結果を分離し、stable IDで関係を保持する考え方である。道路固有のstrip・lane・boundary・marking契約は`D:\GitHub\wire\domains\road`も参照する。
+`wire`リポジトリの`domains/wire`から採用する中心はUI配置ではなく、入力、保存する正本、派生結果を分離し、stable IDで関係を保持する考え方である。道路固有のstrip・lane・boundary・marking契約は同リポジトリの`domains/road`も参照する。
 
 ### 正本の分割
 
@@ -252,7 +252,7 @@ JSON v3は`shared_geometry`、`styles`、`layout.strips`、`layout.boundaries`�
 3. `tunnel`：Tunnel壁、天井、portal。
 4. `node`：交差点asphalt、横断歩道、stop lineなど、node固有のUVが必要な場合だけ使用。
 
-各atlasは全車線数・全道路variantで再利用する。2048×2048を制作基準とし、1024×1024へ正確に半減できる偶数座標・偶数幅でregionを配置する。Network materialのV scaleは`0.5`、長手方向は16 m周期を2反復した32 mとして扱う。破線は6 m塗装＋10 m空白を制作基準とする。これにより2048版は縦横64 px/m、1024版は32 px/mになる。L形側溝250Aの制作ベースは立面だけでなく、歩道側の100 mm天端と車道側の250 mm排水面も別PNGレイヤーとして持つ。curb profileは上面6 px、将来0.15 m想定の壁面10 px、下面16 pxを連続した32 pxとして置き、外側に2048版32 pxのpaddingを持つ。現行preview geometryの0.30 m高とtexture制作上の0.15 mは同一値として扱わない。UV位置は`textures/dimensions.json`の各content regionから生成し、PSDやBlenderへ別々に手入力しない。固定slotは素材配置の管理単位であり、face UVへは使わない。解像感が不足する場合は、まず同一mesh上のV使用範囲を広げ、それでも不足したatlasだけ解像度を上げる。LODには小さい共通atlasを用意する。Diffuseは必須とし、alpha・normal・specular等は表現上必要なatlasだけ追加する。
+各atlasは全車線数・全道路variantで再利用する。2048×2048を制作基準とし、1024×1024へ半減してもregion幅が整数になる偶数幅で配置する。通常regionの座標は偶数とするが、32 px slot内の26 px line bandは中央を合わせるため左右3 px paddingとし、開始座標は奇数を許容する。1024版ではその境界が半画素になるため、UV座標を整数へ丸めず正規化位置を維持する。Network materialのV scaleは`0.5`、長手方向は16 m周期を2反復した32 mとして扱う。破線は6 m塗装＋10 m空白を制作基準とする。これにより2048版は縦横64 px/m、1024版は32 px/mになる。L形側溝250Aの制作ベースは立面だけでなく、歩道側の100 mm天端と車道側の250 mm排水面も別PNGレイヤーとして持つ。curb profileは上面6 px、将来0.15 m想定の壁面10 px、下面16 pxを連続した32 pxとして置き、外側に2048版32 pxのpaddingを持つ。現行preview geometryの0.30 m高とtexture制作上の0.15 mは同一値として扱わない。UV位置は`textures/dimensions.json`の各content regionから生成し、PSDやBlenderへ別々に手入力しない。固定slotは素材配置の管理単位であり、face UVへは使わない。解像感が不足する場合は、まず同一mesh上のV使用範囲を広げ、それでも不足したatlasだけ解像度を上げる。LODには小さい共通atlasを用意する。Diffuseは必須とし、Alpha、Pavement、Road、Normal、Specularは表現上必要なfamilyだけ追加する。
 
 Blenderで編集するsegment/nodeはそれぞれ1個のmesh objectを維持する。ただしCS1の1個のsegment mesh entryは基本的に1material・1shaderとして扱われるため、エクスポート時だけshader単位へ分ける。Material分類は共通の`surface / structure / tunnel`とし、1 modeの出力はsurfaceと対応する非surfaceの最大2系統にする。Slopeの非surfaceはtunnelへ含め、白線、curb、側溝ごとのrender meshやdraw callは増やさない。
 

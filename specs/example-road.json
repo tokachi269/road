@@ -24,6 +24,11 @@
         "paint_width": 0.15,
         "region_width": 0.4,
         "texture_tile": "solid_white"
+      },
+      "DASHED_WHITE": {
+        "paint_width": 0.15,
+        "region_width": 0.4,
+        "texture_tile": "dashed_white"
       }
     }
   },
@@ -40,7 +45,7 @@
     "boundaries": [
       {"id": "boundary-left-curb", "role": "CURB", "left_strip_id": "strip-left-sidewalk", "right_strip_id": "strip-left-shoulder", "profile_id": "CURB", "marking": null},
       {"id": "boundary-left-carriageway", "role": "CARRIAGEWAY_EDGE", "left_strip_id": "strip-left-shoulder", "right_strip_id": "strip-lane-backward-1", "profile_id": "FLAT", "marking": {"role": "CARRIAGEWAY_EDGE", "style_id": "SOLID_WHITE", "placement": "CENTER"}},
-      {"id": "boundary-lane-backward-1-lane-forward-1", "role": "LANE_DIVIDER", "left_strip_id": "strip-lane-backward-1", "right_strip_id": "strip-lane-forward-1", "profile_id": "FLAT", "marking": {"role": "CENTER_LINE", "style_id": "SOLID_WHITE", "placement": "CENTER"}},
+      {"id": "boundary-lane-backward-1-lane-forward-1", "role": "LANE_DIVIDER", "left_strip_id": "strip-lane-backward-1", "right_strip_id": "strip-lane-forward-1", "profile_id": "FLAT", "marking": {"role": "CENTER_LINE", "style_id": "DASHED_WHITE", "placement": "CENTER"}},
       {"id": "boundary-right-carriageway", "role": "CARRIAGEWAY_EDGE", "left_strip_id": "strip-lane-forward-1", "right_strip_id": "strip-right-shoulder", "profile_id": "FLAT", "marking": {"role": "CARRIAGEWAY_EDGE", "style_id": "SOLID_WHITE", "placement": "CENTER"}},
       {"id": "boundary-right-curb", "role": "CURB", "left_strip_id": "strip-right-shoulder", "right_strip_id": "strip-right-sidewalk", "profile_id": "CURB", "marking": null}
     ]

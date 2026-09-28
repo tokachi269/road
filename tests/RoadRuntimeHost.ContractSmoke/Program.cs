@@ -4,6 +4,7 @@ using System.Reflection;
 using RoadRuntimeHost.Runtime;
 using RoadRuntimeHost.Loader;
 using ICities;
+using UnityEngine;
 
 namespace RoadRuntimeHost.ContractSmoke
 {
@@ -26,6 +27,7 @@ namespace RoadRuntimeHost.ContractSmoke
                     || runtime.GetMethod("Tick", new Type[] { typeof(float), typeof(float) }) == null
                     || runtime.GetMethod("Stop", Type.EmptyTypes) == null)
                     throw new InvalidOperationException("hot runtime reflection contract is incomplete");
+                ValidatePackedTextureContract(runtime.Assembly);
                 string temp = Path.Combine(Path.GetTempPath(), "RoadRuntimeHost.ContractSmoke." + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(temp);
                 try
@@ -117,6 +119,32 @@ namespace RoadRuntimeHost.ContractSmoke
                 Console.Error.WriteLine(error);
                 return 1;
             }
+        }
+
+        private static void ValidatePackedTextureContract(Assembly runtimeAssembly)
+        {
+            Type updater = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.PrefabUpdater", true);
+            MethodInfo packApr = updater.GetMethod("PackAprPixels", BindingFlags.Static | BindingFlags.NonPublic);
+            MethodInfo packXys = updater.GetMethod("PackXysPixels", BindingFlags.Static | BindingFlags.NonPublic);
+            if (packApr == null || packXys == null)
+                throw new InvalidOperationException("runtime texture packers are missing");
+            Color32[] alpha = { new Color32(10, 10, 10, 255) };
+            Color32[] pavement = { new Color32(20, 20, 20, 255) };
+            Color32[] road = { new Color32(30, 30, 30, 255) };
+            Color32[] apr = (Color32[])packApr.Invoke(null, new object[] { alpha, pavement, road, 1 });
+            if (apr[0].r != 245 || apr[0].g != 235 || apr[0].b != 30 || apr[0].a != 255)
+                throw new InvalidOperationException("APR channel packing disagrees with the CS1 texture contract");
+            Color32[] aprDefaults = (Color32[])packApr.Invoke(null, new object[] { null, null, null, 1 });
+            if (aprDefaults[0].r != 0 || aprDefaults[0].g != 255 || aprDefaults[0].b != 0)
+                throw new InvalidOperationException("APR default channels are invalid");
+            Color32[] normal = { new Color32(40, 50, 255, 255) };
+            Color32[] specular = { new Color32(60, 60, 60, 255) };
+            Color32[] xys = (Color32[])packXys.Invoke(null, new object[] { normal, specular, 1 });
+            if (xys[0].r != 40 || xys[0].g != 50 || xys[0].b != 195 || xys[0].a != 255)
+                throw new InvalidOperationException("XYS channel packing disagrees with the CS1 texture contract");
+            Color32[] xysDefaults = (Color32[])packXys.Invoke(null, new object[] { null, null, 1 });
+            if (xysDefaults[0].r != 128 || xysDefaults[0].g != 128 || xysDefaults[0].b != 255)
+                throw new InvalidOperationException("XYS default channels are invalid");
         }
 
         private static void WriteLaneContractPreview(string root, float bundleWidth)

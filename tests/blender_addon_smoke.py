@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -13,6 +14,29 @@ ADDON_PARENT = ROOT / "blender_addon"
 sys.path.insert(0, str(ADDON_PARENT))
 
 road_builder = importlib.import_module("road_builder")
+
+# Geometry and UV verification must not race Photoshop Generator while the PSD
+# is being saved. Use deterministic atlas bases as test-only Generator output;
+# production still requires textures/road-assets/*_d.png.
+texture_fixture_root = ROOT / "build" / "smoke" / "texture-fixture"
+texture_fixture_assets = texture_fixture_root / "road-assets"
+texture_fixture_assets.mkdir(parents=True, exist_ok=True)
+texture_manifest = json.loads(
+    (ROOT / "textures" / "dimensions.json").read_text(encoding="utf-8")
+)
+for family in ("surface", "structure", "tunnel"):
+    for map_id in ("d", "a", "p", "r", "n", "s"):
+        shutil.copyfile(
+            ROOT / "textures" / "atlas_bases" / f"{family}_base_2048.png",
+            texture_fixture_assets / f"{family}_{map_id}.png",
+        )
+texture_fixture_manifest = texture_fixture_root / "dimensions.json"
+texture_fixture_manifest.write_text(
+    json.dumps(texture_manifest, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+road_builder.DEFAULT_TEXTURE_LAYOUT = texture_fixture_manifest
+road_builder._TEXTURE_LAYOUT_CACHE = None
 road_builder.register()
 
 
@@ -214,6 +238,12 @@ props.elevated_edge_mesh = create_elevated_edge_source(
 
 result = bpy.ops.cs1_road.build_all()
 assert result == {"FINISHED"}
+center_boundaries = [
+    item for item in props.boundaries
+    if item.marking_enabled and item.marking_role == "CENTER_LINE"
+]
+assert len(center_boundaries) == 1
+assert center_boundaries[0].marking_style == "DASHED_WHITE"
 
 for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
     collection = bpy.data.collections.get(f"CS1_ROAD_{mode}")
@@ -236,21 +266,36 @@ for material in (shared_surface, shared_structure, shared_tunnel):
     mapping_nodes = [node for node in material.node_tree.nodes if node.type == "MAPPING"]
     assert len(mapping_nodes) == 1, material.name
     assert tuple(mapping_nodes[0].inputs["Scale"].default_value) == (1.0, 2.0, 1.0)
+    node_locations = [tuple(node.location) for node in material.node_tree.nodes]
+    assert len(node_locations) == len(set(node_locations)), (
+        material.name, node_locations,
+    )
+    image_nodes = [node for node in material.node_tree.nodes if node.type == "TEX_IMAGE"]
+    assert {node.label for node in image_nodes} == {
+        "CS1 Diffuse", "CS1 Alpha", "CS1 Pavement mask (runtime theme)",
+        "CS1 Road mask (runtime theme)", "CS1 Normal", "CS1 Specular",
+    }, material.name
 surface_image_nodes = [
     node for node in shared_surface.node_tree.nodes if node.type == "TEX_IMAGE"
 ]
-assert len(surface_image_nodes) == 1
-assert tuple(surface_image_nodes[0].image.size) == (2048, 2048)
-assert surface_image_nodes[0].image.filepath.endswith("road.psd")
+assert len(surface_image_nodes) == 6
+assert all(tuple(node.image.size) == (2048, 2048) for node in surface_image_nodes)
+assert {
+    Path(node.image.filepath).name for node in surface_image_nodes
+} == {f"surface_{map_id}.png" for map_id in ("d", "a", "p", "r", "n", "s")}
 structure_image_nodes = [
     node for node in shared_structure.node_tree.nodes if node.type == "TEX_IMAGE"
 ]
 tunnel_image_nodes = [
     node for node in shared_tunnel.node_tree.nodes if node.type == "TEX_IMAGE"
 ]
-assert len(structure_image_nodes) == len(tunnel_image_nodes) == 1
-assert structure_image_nodes[0].image.filepath.endswith("structure_base_2048.png")
-assert tunnel_image_nodes[0].image.filepath.endswith("tunnel_base_2048.png")
+assert len(structure_image_nodes) == len(tunnel_image_nodes) == 6
+assert {
+    Path(node.image.filepath).name for node in structure_image_nodes
+} == {f"structure_{map_id}.png" for map_id in ("d", "a", "p", "r", "n", "s")}
+assert {
+    Path(node.image.filepath).name for node in tunnel_image_nodes
+} == {f"tunnel_{map_id}.png" for map_id in ("d", "a", "p", "r", "n", "s")}
 
 surface_regions = {
     "lane.default", "shoulder.default", "sidewalk.default",
@@ -264,6 +309,41 @@ structure_regions = {
     "girder.bottom", "girder.side",
 }
 tunnel_regions = {"tunnel.roof", "tunnel.wall"}
+
+locked_region_pixels = {
+    "edge.sidewalk": ("surface", 224, 384),
+    "curb.upper": ("surface", 384, 390),
+    "curb.wall": ("surface", 390, 400),
+    "curb.lower": ("surface", 400, 416),
+    "edge.asphalt": ("surface", 416, 608),
+    "shoulder.default": ("surface", 672, 704),
+    "lane.default": ("surface", 768, 960),
+    "sidewalk.default": ("surface", 1024, 1184),
+    "line.solid.white": ("surface", 1987, 2013),
+    "line.dashed.white": ("surface", 2019, 2045),
+    "deck.underside": ("structure", 32, 800),
+    "elevated.fascia": ("structure", 864, 928),
+    "bridge.fascia": ("structure", 992, 1088),
+    "girder.bottom": ("structure", 1152, 1196),
+    "girder.side": ("structure", 1280, 1414),
+    "tunnel.roof": ("tunnel", 32, 800),
+    "tunnel.wall": ("tunnel", 864, 1184),
+}
+for region_id, (atlas_name, x_min, x_max) in locked_region_pixels.items():
+    actual = road_builder._atlas_texture_region(atlas_name, region_id)[:2]
+    assert actual == (x_min / 2048.0, x_max / 2048.0), (region_id, actual)
+
+locked_profile_pixels = {
+    "sidewalk.default+curb.upper": (224, 390),
+    "curb.lower+shoulder.default": (400, 432),
+    "curb.lower+lane.default": (400, 592),
+}
+for region_id, (x_min, x_max) in locked_profile_pixels.items():
+    atlas_name, u_min, u_max = road_builder._uv_region_bounds(region_id)
+    assert atlas_name == "surface", region_id
+    assert (u_min, u_max) == (x_min / 2048.0, x_max / 2048.0), (
+        region_id, u_min, u_max,
+    )
 
 
 def assert_exact_uv_regions(obj, allow_authored=False):
@@ -289,6 +369,8 @@ def assert_exact_uv_regions(obj, allow_authored=False):
             assert polygon.material_index == 1, (obj.name, polygon.index, region_name)
         else:
             raise AssertionError((obj.name, polygon.index, region_name))
+        if region_name.startswith("curb.lower+"):
+            u_max = road_builder._texture_region("edge.asphalt")[1]
         face_u = [uv_layer.data[index].uv.x for index in polygon.loop_indices]
         assert min(face_u) >= u_min - 1e-6, (
             obj.name, polygon.index, region_name, min(face_u), u_min,
@@ -321,9 +403,19 @@ for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
 assert initial_regions[("basic", "segment")] == {
     "lane.default", "curb.lower+shoulder.default",
     "sidewalk.default+curb.upper",
-    "curb.wall", "line.solid.white",
+    "curb.wall", "line.solid.white", "line.dashed.white",
 }
 assert "line.solid.white" not in initial_regions[("basic", "node")]
+road_half = road_builder._cross_section(props)[0] * 0.5
+outer_uv_spans = [
+    span for span in road_builder._road_uv_spans(props, road_half)
+    if span.uv_region_id == "curb.lower+shoulder.default"
+]
+assert len(outer_uv_spans) == 2
+for span in outer_uv_spans:
+    assert abs((span.u_range[1] - span.u_range[0]) * 2048.0 - 64.0) < 1e-6
+    curb_visible_width = (span.x_max - span.x_min) * 16.0 / 64.0
+    assert abs(curb_visible_width - 0.25) < 1e-6
 assert {"deck.underside", "elevated.fascia", "girder.bottom", "girder.side"} <= initial_regions[("elevated", "segment")]
 assert {"deck.underside", "bridge.fascia", "girder.bottom", "girder.side"} <= initial_regions[("bridge", "segment")]
 assert tunnel_regions <= initial_regions[("tunnel", "segment")]
@@ -470,12 +562,20 @@ for uv in (loop.uv for loop in uv_layer.data):
     assert -1e-6 <= uv.x <= 1.0 + 1e-6, uv[:]
     assert -1e-6 <= uv.y <= 1.0 + 1e-6, uv[:]
 marking_uv = []
-line_u_min, line_u_max, _ = road_builder._texture_region("line.solid.white")
+marking_region_attribute = basic_segment.data.attributes["cs1_uv_region"]
 for polygon in polygons_of_kind(basic_segment, "marking"):
+    region_name = road_builder.UV_REGION_NAMES[
+        marking_region_attribute.data[polygon.index].value
+    ]
+    line_u_min, line_u_max, _ = road_builder._texture_region(region_name)
     face_uv = [uv_layer.data[index].uv for index in polygon.loop_indices]
     marking_uv.extend(face_uv)
     assert abs(min(uv.x for uv in face_uv) - line_u_min) < 1e-6
     assert abs(max(uv.x for uv in face_uv) - line_u_max) < 1e-6
+    assert abs((max(uv.x for uv in face_uv) - min(uv.x for uv in face_uv)) * 2048.0 - 26.0) < 1e-5
+solid_u_min, solid_u_max, _ = road_builder._texture_region("line.solid.white")
+assert abs((solid_u_max - solid_u_min) * 2048.0 - 26.0) < 1e-6
+assert abs((solid_u_min + solid_u_max) * 0.5 * 2048.0 - 2000.0) < 1e-6
 assert abs(min(uv.y for uv in marking_uv)) < 1e-6
 assert abs(max(uv.y for uv in marking_uv) - 1.0) < 1e-6
 assert len({round(uv.y, 4) for uv in marking_uv}) == 21
@@ -485,6 +585,13 @@ surface_region_ids = (
     "sidewalk.default+curb.upper", "curb.wall",
 )
 surface_u_ranges = [road_builder._uv_region_bounds(item)[1:] for item in surface_region_ids]
+surface_u_ranges.extend(
+    span.u_range
+    for span in road_builder._road_uv_spans(
+        props, road_builder._cross_section(props)[0] * 0.5,
+    )
+    if span.u_range is not None
+)
 for polygon in polygons_of_kind(basic_segment, "surface"):
     face_u = [uv_layer.data[index].uv.x for index in polygon.loop_indices]
     assert any(
@@ -496,6 +603,16 @@ node_uv_x = {
 }
 for region_id in surface_region_ids:
     _atlas_name, u_min, u_max = road_builder._uv_region_bounds(region_id)
+    dynamic_ranges = [
+        span.u_range
+        for span in road_builder._road_uv_spans(
+            props, road_builder._cross_section(props)[0] * 0.5,
+        )
+        if span.uv_region_id == region_id and span.u_range is not None
+    ]
+    if dynamic_ranges:
+        u_min = min(item[0] for item in dynamic_ranges)
+        u_max = max(item[1] for item in dynamic_ranges)
     assert round(u_min, 6) in node_uv_x, (region_id, u_min, sorted(node_uv_x))
     assert round(u_max, 6) in node_uv_x, (region_id, u_max, sorted(node_uv_x))
 
@@ -513,6 +630,8 @@ marking_ranges = {
 }
 solid_u = tuple(round(value, 6) for value in road_builder._texture_region("line.solid.white")[:2])
 dashed_u = tuple(round(value, 6) for value in road_builder._texture_region("line.dashed.white")[:2])
+assert abs((road_builder._texture_region("line.dashed.white")[1] - road_builder._texture_region("line.dashed.white")[0]) * 2048.0 - 26.0) < 1e-6
+assert abs(sum(road_builder._texture_region("line.dashed.white")[:2]) * 0.5 * 2048.0 - 2032.0) < 1e-6
 assert any(min(values) == solid_u[0] and max(values) == solid_u[1] for values in marking_ranges)
 assert any(min(values) == dashed_u[0] and max(values) == dashed_u[1] for values in marking_ranges)
 next(
@@ -809,7 +928,16 @@ props.runtime_prefab_name = "Smoke Road"
 assert bpy.ops.cs1_road.export_runtime() == {"FINISHED"}
 manifest = json.loads((runtime_output / "manifest.json").read_text(encoding="utf-8"))
 bundle = json.loads((runtime_output / "roads" / "smoke-road.json").read_text(encoding="utf-8"))
+assert manifest["schema_version"] == 2
+assert bundle["schema_version"] == 2
 assert manifest["roads"][0]["revision"] == bundle["revision"]
+assert len(manifest["texture_revision"]) == 64
+for family in ("surface", "structure", "tunnel"):
+    for map_id in ("d", "a", "p", "r", "n", "s"):
+        filename = f"{family}_{map_id}.png"
+        source = texture_fixture_assets / filename
+        staged = runtime_output / "textures" / filename
+        assert staged.read_bytes() == source.read_bytes(), filename
 assert bundle["half_width"] == 6.0
 assert bundle["pavement_width"] == 2.5
 assert len(bundle["revision"]) == 64
@@ -835,6 +963,16 @@ expected_materials = {
         road_builder.SHARED_TUNNEL_MATERIAL,
     ] * 2,
 }
+expected_texture_paths = {
+    road_builder.SHARED_SURFACE_MATERIAL: "textures/surface_d.png",
+    road_builder.SHARED_STRUCTURE_MATERIAL: "textures/structure_d.png",
+    road_builder.SHARED_TUNNEL_MATERIAL: "textures/tunnel_d.png",
+}
+expected_texture_families = {
+    road_builder.SHARED_SURFACE_MATERIAL: "surface",
+    road_builder.SHARED_STRUCTURE_MATERIAL: "structure",
+    road_builder.SHARED_TUNNEL_MATERIAL: "tunnel",
+}
 for mode, entries in mode_entries.items():
     assert [entry["mesh"]["material"]["name"] for entry in entries] == expected_materials[mode]
     assert all(
@@ -843,6 +981,37 @@ for mode, entries in mode_entries.items():
     ), mode
     for entry in entries:
         exported = entry["mesh"]
+        assert exported["material"]["textures"] == [{
+            "name": "_MainTex",
+            "value_json": json.dumps(
+                expected_texture_paths[exported["material"]["name"]],
+            ),
+        }]
+        family = expected_texture_families[exported["material"]["name"]]
+        assert exported["material"]["packed_textures"] == [
+            {
+                "name": "_APRMap",
+                "packing": "APR",
+                "sources": [
+                    {
+                        "name": map_id,
+                        "value_json": json.dumps(f"textures/{family}_{map_id}.png"),
+                    }
+                    for map_id in ("a", "p", "r")
+                ],
+            },
+            {
+                "name": "_XYSMap",
+                "packing": "XYS",
+                "sources": [
+                    {
+                        "name": map_id,
+                        "value_json": json.dumps(f"textures/{family}_{map_id}.png"),
+                    }
+                    for map_id in ("n", "s")
+                ],
+            },
+        ]
         source_name = exported["name"].rsplit(".", 1)[0]
         source = bpy.data.objects[source_name]
         source_uv = {
@@ -905,6 +1074,7 @@ edge_source.select_set(True)
 props.runtime_prop_id = "smoke-decal"
 assert bpy.ops.cs1_road.export_runtime_prop() == {"FINISHED"}
 prop_bundle = json.loads((runtime_output / "props" / "smoke-decal.json").read_text(encoding="utf-8"))
+assert prop_bundle["schema_version"] == 2
 assert prop_bundle["prop_id"] == "smoke-decal"
 assert prop_bundle["mesh"]["material"]["shader"] == "Custom/Props/Decal/Blend"
 assert len(prop_bundle["mesh"]["triangles"]) > 0
