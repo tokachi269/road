@@ -90,6 +90,16 @@ namespace RoadRuntimeHost.ContractSmoke
                     string matched = Path.Combine(temp, "matched");
                     WriteLaneContractPreview(matched, 3.0f);
                     RuntimeEntry.ValidatePreview(matched, log);
+                    string missingCornerOffset = Path.Combine(temp, "missing-corner-offset");
+                    WriteLaneContractPreview(missingCornerOffset, 3.0f);
+                    string missingCornerBundle = Path.Combine(Path.Combine(missingCornerOffset, "roads"), "matched-road.json");
+                    File.WriteAllText(
+                        missingCornerBundle,
+                        File.ReadAllText(missingCornerBundle).Replace(",\"node_min_corner_offset\":12", string.Empty));
+                    bool missingCornerRejected = false;
+                    try { RuntimeEntry.ValidatePreview(missingCornerOffset, log); }
+                    catch { missingCornerRejected = true; }
+                    if (!missingCornerRejected) throw new InvalidOperationException("missing node min corner offset was accepted");
                     string mismatched = Path.Combine(temp, "mismatched");
                     WriteLaneContractPreview(mismatched, 3.25f);
                     bool mismatchRejected = false;
@@ -175,7 +185,7 @@ namespace RoadRuntimeHost.ContractSmoke
             string bundleLane = lane.Replace("\"width\":3", "\"width\":" + bundleWidth.ToString(System.Globalization.CultureInfo.InvariantCulture));
             File.WriteAllText(Path.Combine(root, "catalog.json"), "{\"schema_version\":1,\"revision\":\"catalog\",\"roads\":[{\"road_id\":\"matched-road\",\"lanes\":[" + lane + "]}]}");
             File.WriteAllText(Path.Combine(root, "manifest.json"), "{\"schema_version\":1,\"revision\":\"manifest\",\"roads\":[{\"road_id\":\"matched-road\",\"bundle_path\":\"roads/matched-road.json\",\"revision\":\"bundle\"}]}");
-            File.WriteAllText(Path.Combine(Path.Combine(root, "roads"), "matched-road.json"), "{\"schema_version\":1,\"road_id\":\"matched-road\",\"revision\":\"bundle\",\"half_width\":6,\"pavement_width\":2.5,\"lanes\":[" + bundleLane + "],\"modes\":[{\"mode\":\"basic\",\"entries\":[]}]}");
+            File.WriteAllText(Path.Combine(Path.Combine(root, "roads"), "matched-road.json"), "{\"schema_version\":1,\"road_id\":\"matched-road\",\"revision\":\"bundle\",\"half_width\":6,\"pavement_width\":2.5,\"node_min_corner_offset\":12,\"lanes\":[" + bundleLane + "],\"modes\":[{\"mode\":\"basic\",\"entries\":[]}]}");
         }
 
         private static int CountOccurrences(string text, string value)

@@ -886,6 +886,7 @@ assert -0.3 in tunnel_z and 0.0 in tunnel_z and 4.7 in tunnel_z, tunnel_z
 
 left_edge_boundary = next(item for item in props.boundaries if item.boundary_id == "boundary-left-carriageway")
 left_edge_boundary.marking_enabled = False
+props.node_min_corner_offset = 12.0
 spec_output = ROOT / "build" / "smoke" / "roundtrip-road.json"
 spec_output.parent.mkdir(parents=True, exist_ok=True)
 assert bpy.ops.cs1_road.export_spec(filepath=str(spec_output)) == {"FINISHED"}
@@ -895,8 +896,12 @@ assert saved["shared_geometry"]["segment_length"] == 64.0
 assert saved["node"]["length"] == 64.0
 assert saved["node"]["center_split"] is True
 assert saved["node"]["shoulder_bands"] is False
+assert saved["node"]["min_corner_offset"] == 12.0
 assert round(saved["styles"]["markings"]["SOLID_WHITE"]["paint_width"], 3) == 0.15
 assert round(saved["styles"]["markings"]["SOLID_WHITE"]["region_width"], 3) == 0.4
+assert [round(value, 3) for value in saved["styles"]["imt_preview"]["cracks"]] == [0.7, 0.4]
+assert [round(value, 3) for value in saved["styles"]["imt_preview"]["voids"]] == [0.2, 1.0]
+assert saved["styles"]["imt_preview"]["dash_length"] == 6.0
 assert len(saved["layout"]["strips"]) == 8
 assert len(saved["layout"]["boundaries"]) == 7
 assert sum(item["marking"] is not None for item in saved["layout"]["boundaries"]) == 4
@@ -912,6 +917,7 @@ assert bpy.ops.cs1_road.import_spec(filepath=str(spec_output)) == {"FINISHED"}
 roundtrip_boundaries = {item.boundary_id: item for item in props.boundaries}
 assert roundtrip_boundaries["boundary-left-carriageway"].marking_enabled is False
 assert roundtrip_boundaries["boundary-right-carriageway"].marking_enabled is True
+assert props.node_min_corner_offset == 12.0
 
 example = ROOT / "specs" / "example-road.json"
 assert bpy.ops.cs1_road.import_spec(filepath=str(example)) == {"FINISHED"}
@@ -920,6 +926,12 @@ assert props.lanes[0].zone == "LEFT_SIDEWALK"
 assert props.lanes[0].lane_type == "PEDESTRIAN"
 assert props.lanes[1].direction == "BACKWARD"
 assert props.lanes[2].direction == "FORWARD"
+assert props.node_min_corner_offset == 0.0
+assert props.imt_appearance_preset == "JP_WEATHERED"
+props.imt_texture = 0.30
+assert props.imt_appearance_preset == "CUSTOM"
+props.imt_appearance_preset = "JP_WEATHERED"
+assert round(props.imt_texture, 2) == 0.25
 
 runtime_output = ROOT / "build" / "smoke" / "runtime-preview"
 props.runtime_output_dir = str(runtime_output)
@@ -940,6 +952,12 @@ for family in ("surface", "structure", "tunnel"):
         assert staged.read_bytes() == source.read_bytes(), filename
 assert bundle["half_width"] == 6.0
 assert bundle["pavement_width"] == 2.5
+assert bundle["node_min_corner_offset"] == 0.0
+assert [round(value, 3) for value in bundle["imt_marking_style"]["cracks"]] == [0.7, 0.4]
+assert [round(value, 3) for value in bundle["imt_marking_style"]["voids"]] == [0.2, 1.0]
+assert round(bundle["imt_marking_style"]["line_width"], 3) == 0.15
+assert bundle["imt_marking_style"]["crosswalk_width"] == 3.0
+assert bundle["imt_marking_style"]["center_line_yellow"] is False
 assert len(bundle["revision"]) == 64
 assert len(bundle["structural_signature"]) == 64
 mode_entries = {item["mode"]: item["entries"] for item in bundle["modes"]}

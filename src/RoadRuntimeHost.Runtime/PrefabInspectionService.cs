@@ -131,6 +131,8 @@ namespace RoadRuntimeHost.Runtime
             JsonProperty(item, "name", info.name, false);
             JsonProperty(item, "half_width", info.m_halfWidth, true);
             JsonProperty(item, "pavement_width", info.m_pavementWidth, true);
+            JsonProperty(item, "min_corner_offset", info.m_minCornerOffset, true);
+            JsonProperty(item, "max_corner_offset", info.m_maxCornerOffset, true);
             JsonProperty(item, "segment_length", info.m_segmentLength, true);
             JsonProperty(item, "max_slope", info.m_maxSlope, true);
             JsonProperty(item, "max_build_angle", info.m_maxBuildAngle, true);

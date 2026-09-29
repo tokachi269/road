@@ -23,10 +23,29 @@ namespace RoadRuntimeHost.Runtime
         public string TemplateName;
         public float HalfWidth;
         public float PavementWidth;
+        public float NodeMinCornerOffset = float.NaN;
+        public ImtMarkingStyleBundle ImtMarkingStyle;
         public string Revision;
         public string StructuralSignature;
         public LaneBundle[] Lanes;
         public ModeBundle[] Modes;
+    }
+    internal sealed class ImtMarkingStyleBundle
+    {
+        public float[] WhiteColor;
+        public float[] YellowColor;
+        public bool CenterLineYellow;
+        public float Texture;
+        public float[] Cracks;
+        public float[] Voids;
+        public float CrosswalkWidth;
+        public float CrosswalkDashLength;
+        public float CrosswalkGapLength;
+        public float CrosswalkOffset;
+        public float StopLineWidth;
+        public float LineWidth;
+        public float DashLength;
+        public float DashGap;
     }
     internal sealed class LaneBundle
     {

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import bmesh
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup, UIList
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
@@ -135,6 +135,10 @@ MARKING_STYLE_ITEMS = (
     ("SOLID_WHITE", "Solid white", "Shared solid white marking style"),
     ("DASHED_WHITE", "Dashed white", "Shared dashed white marking style"),
 )
+IMT_APPEARANCE_PRESET_ITEMS = (
+    ("JP_WEATHERED", "JP weathered", "Shared worn-paint baseline used by this project"),
+    ("CUSTOM", "Custom", "Keep the editable appearance values below"),
+)
 MARKING_TEXTURE_REGIONS = {
     "SOLID_WHITE": "line.solid.white",
     "DASHED_WHITE": "line.dashed.white",
@@ -162,6 +166,7 @@ _LIVE_PREVIEW_PENDING = {}
 _LIVE_PREVIEW_DELAY = 0.15
 _LIVE_PREVIEW_SETTLE_DELAY = 0.60
 _LIVE_PREVIEW_REBUILDING = False
+_IMT_PRESET_APPLYING = False
 DEFAULT_RUNTIME_OUTPUT = str(Path(__file__).resolve().parents[2] / "build" / "runtime-preview")
 DEFAULT_TEXTURE_LAYOUT = (
     Path(__file__).resolve().parents[2]
@@ -1614,6 +1619,66 @@ def _on_boundary_marking_update(boundary, context) -> None:
         _schedule_live_preview(props, context)
 
 
+def _on_imt_appearance_preset_update(props, context) -> None:
+    global _IMT_PRESET_APPLYING
+    if props.imt_appearance_preset != "JP_WEATHERED":
+        return
+    _IMT_PRESET_APPLYING = True
+    try:
+        props.imt_white_color = (245 / 255, 245 / 255, 235 / 255, 1.0)
+        props.imt_yellow_color = (1.0, 0.72, 0.0, 1.0)
+        props.imt_texture = 0.25
+        props.imt_cracks_density = 0.70
+        props.imt_cracks_scale = 0.40
+        props.imt_voids_density = 0.20
+        props.imt_voids_scale = 1.0
+        props.imt_crosswalk_width = 3.0
+        props.imt_crosswalk_dash_length = 0.45
+        props.imt_crosswalk_gap_length = 0.55
+        props.imt_crosswalk_offset = 0.40
+        props.imt_stop_line_width = 0.30
+        props.imt_dash_length = 6.0
+        props.imt_dash_gap = 10.0
+    finally:
+        _IMT_PRESET_APPLYING = False
+
+
+def _on_imt_appearance_value_update(props, context) -> None:
+    if not _IMT_PRESET_APPLYING and props.imt_appearance_preset != "CUSTOM":
+        props.imt_appearance_preset = "CUSTOM"
+
+
+def _load_imt_appearance(props, source) -> None:
+    global _IMT_PRESET_APPLYING
+    preset = _enum_value(
+        str(source.get("preset", props.imt_appearance_preset)),
+        IMT_APPEARANCE_PRESET_ITEMS, props.imt_appearance_preset,
+    )
+    if preset == "JP_WEATHERED":
+        props.imt_appearance_preset = preset
+        return
+    _IMT_PRESET_APPLYING = True
+    try:
+        props.imt_appearance_preset = preset
+        props.imt_white_color = tuple(source.get("white_color", props.imt_white_color))
+        props.imt_yellow_color = tuple(source.get("yellow_color", props.imt_yellow_color))
+        props.imt_center_line_yellow = bool(source.get("center_line_yellow", props.imt_center_line_yellow))
+        props.imt_texture = float(source.get("texture", props.imt_texture))
+        cracks = source.get("cracks", [props.imt_cracks_density, props.imt_cracks_scale])
+        voids = source.get("voids", [props.imt_voids_density, props.imt_voids_scale])
+        props.imt_cracks_density, props.imt_cracks_scale = map(float, cracks)
+        props.imt_voids_density, props.imt_voids_scale = map(float, voids)
+        props.imt_crosswalk_width = float(source.get("crosswalk_width", props.imt_crosswalk_width))
+        props.imt_crosswalk_dash_length = float(source.get("crosswalk_dash_length", props.imt_crosswalk_dash_length))
+        props.imt_crosswalk_gap_length = float(source.get("crosswalk_gap_length", props.imt_crosswalk_gap_length))
+        props.imt_crosswalk_offset = float(source.get("crosswalk_offset", props.imt_crosswalk_offset))
+        props.imt_stop_line_width = float(source.get("stop_line_width", props.imt_stop_line_width))
+        props.imt_dash_length = float(source.get("dash_length", props.imt_dash_length))
+        props.imt_dash_gap = float(source.get("dash_gap", props.imt_dash_gap))
+    finally:
+        _IMT_PRESET_APPLYING = False
+
+
 def _ensure_default_lanes(props) -> None:
     if not props.lanes:
         _add_default_lanes(props)
@@ -2005,6 +2070,41 @@ class CS1RoadBuilderProperties(PropertyGroup):
         name=f"Lower roadway {ROADWAY_DEPRESSION:.2f} m", default=True,
         update=_on_depress_roadway_update,
     )
+    node_min_corner_offset: FloatProperty(
+        name="Min corner offset", default=0.0, min=0.0, max=128.0,
+        unit="LENGTH",
+        description="CS1 NetInfo.m_minCornerOffset; increases node corner smoothing",
+    )
+    imt_appearance_preset: EnumProperty(
+        name="Appearance preset", items=IMT_APPEARANCE_PRESET_ITEMS,
+        default="JP_WEATHERED", update=_on_imt_appearance_preset_update,
+    )
+    imt_white_color: FloatVectorProperty(
+        name="White paint", subtype="COLOR_GAMMA", size=4,
+        default=(245 / 255, 245 / 255, 235 / 255, 1.0), min=0.0, max=1.0,
+        update=_on_imt_appearance_value_update,
+    )
+    imt_yellow_color: FloatVectorProperty(
+        name="Yellow paint", subtype="COLOR_GAMMA", size=4,
+        default=(1.0, 0.72, 0.0, 1.0), min=0.0, max=1.0,
+        update=_on_imt_appearance_value_update,
+    )
+    imt_center_line_yellow: BoolProperty(
+        name="Opposing center line: yellow", default=False,
+        update=_on_imt_appearance_value_update,
+    )
+    imt_texture: FloatProperty(name="Texture", default=0.25, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_cracks_density: FloatProperty(name="Cracks density", default=0.70, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_cracks_scale: FloatProperty(name="Cracks scale", default=0.40, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_voids_density: FloatProperty(name="Voids density", default=0.20, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_voids_scale: FloatProperty(name="Voids scale", default=1.0, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_crosswalk_width: FloatProperty(name="Zebra width", default=3.0, min=0.1, max=16.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_crosswalk_dash_length: FloatProperty(name="Zebra stripe", default=0.45, min=0.05, max=4.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_crosswalk_gap_length: FloatProperty(name="Zebra gap", default=0.55, min=0.05, max=4.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_crosswalk_offset: FloatProperty(name="Zebra inner offset", default=0.40, min=0.0, max=8.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_stop_line_width: FloatProperty(name="Stop line width", default=0.30, min=0.05, max=2.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_dash_length: FloatProperty(name="Line dash", default=6.0, min=0.05, max=32.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_dash_gap: FloatProperty(name="Line gap", default=10.0, min=0.05, max=32.0, unit="LENGTH", update=_on_imt_appearance_value_update)
     edge_lines: BoolProperty(name="Legacy roadside lines", default=True, options={"HIDDEN"})
     lane_lines: BoolProperty(name="Legacy lane divider lines", default=True, options={"HIDDEN"})
     marking_paint_width: FloatProperty(
@@ -2058,7 +2158,7 @@ class CS1ROAD_UL_boundaries(UIList):
             row.prop(item, "marking_enabled", text="")
             row.label(text=item.name or item.boundary_id)
             if item.marking_enabled:
-                row.label(text=item.marking_role.replace("_", " ").title())
+                row.prop(item, "marking_style", text="")
             else:
                 row.label(text="No line")
         else:
@@ -2298,6 +2398,23 @@ def _export_runtime_scene(scene):
         props.runtime_template_name.strip() or "Basic Road",
         half_width,
         props.sidewalk_width,
+        props.node_min_corner_offset,
+        {
+            "white_color": list(props.imt_white_color),
+            "yellow_color": list(props.imt_yellow_color),
+            "center_line_yellow": props.imt_center_line_yellow,
+            "texture": props.imt_texture,
+            "cracks": [props.imt_cracks_density, props.imt_cracks_scale],
+            "voids": [props.imt_voids_density, props.imt_voids_scale],
+            "crosswalk_width": props.imt_crosswalk_width,
+            "crosswalk_dash_length": props.imt_crosswalk_dash_length,
+            "crosswalk_gap_length": props.imt_crosswalk_gap_length,
+            "crosswalk_offset": props.imt_crosswalk_offset,
+            "stop_line_width": props.imt_stop_line_width,
+            "line_width": props.marking_paint_width,
+            "dash_length": props.imt_dash_length,
+            "dash_gap": props.imt_dash_gap,
+        },
         _runtime_lanes(props),
         modes,
         DEFAULT_TEXTURE_LAYOUT,
@@ -2333,6 +2450,15 @@ def _authoring_fingerprint(props):
         props.road_name, lanes, boundaries, props.shoulder_width,
         props.sidewalk_width, props.depress_roadway, props.marking_paint_width,
         props.marking_region_width, props.node_shoulder_bands,
+        props.node_min_corner_offset,
+        tuple(props.imt_white_color), tuple(props.imt_yellow_color),
+        props.imt_center_line_yellow,
+        props.imt_texture, props.imt_cracks_density, props.imt_cracks_scale,
+        props.imt_voids_density, props.imt_voids_scale,
+        props.imt_crosswalk_width, props.imt_crosswalk_dash_length,
+        props.imt_crosswalk_gap_length, props.imt_crosswalk_offset,
+        props.imt_stop_line_width,
+        props.imt_dash_length, props.imt_dash_gap,
         props.median_enabled, props.median_width, props.median_height,
         props.median_with_curb, props.median_curb_width,
         props.median_no_split_group, median_fingerprint,
@@ -2595,6 +2721,8 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
             solid = marking_styles.get("SOLID_WHITE", {})
             props.marking_paint_width = solid.get("paint_width", props.marking_paint_width)
             props.marking_region_width = solid.get("region_width", props.marking_region_width)
+            imt = data.get("styles", {}).get("imt_preview", {})
+            _load_imt_appearance(props, imt)
         else:
             props.shoulder_width = cross.get("shoulder_width", props.shoulder_width)
             props.sidewalk_width = cross.get("sidewalk_width", props.sidewalk_width)
@@ -2604,6 +2732,7 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
             props.marking_region_width = legacy_markings.get("region_width", props.marking_region_width)
         node = data.get("node", {})
         props.node_shoulder_bands = node.get("shoulder_bands", props.node_shoulder_bands)
+        props.node_min_corner_offset = float(node["min_corner_offset"])
         props.lanes.clear()
         for source in data.get("lanes", []):
             lane_source = dict(source)
@@ -2664,16 +2793,36 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
                     "no_split_group": props.median_no_split_group,
                 },
             },
-            "styles": {"markings": {"SOLID_WHITE": {
-                "paint_width": props.marking_paint_width,
-                "region_width": props.marking_region_width,
-                "texture_tile": "solid_white",
-            }}},
+            "styles": {
+                "markings": {"SOLID_WHITE": {
+                    "paint_width": props.marking_paint_width,
+                    "region_width": props.marking_region_width,
+                    "texture_tile": "solid_white",
+                }},
+                "imt_preview": {
+                    "preset": props.imt_appearance_preset,
+                    "white_color": list(props.imt_white_color),
+                    "yellow_color": list(props.imt_yellow_color),
+                    "center_line_yellow": props.imt_center_line_yellow,
+                    "texture": props.imt_texture,
+                    "cracks": [props.imt_cracks_density, props.imt_cracks_scale],
+                    "voids": [props.imt_voids_density, props.imt_voids_scale],
+                    "crosswalk_width": props.imt_crosswalk_width,
+                    "crosswalk_dash_length": props.imt_crosswalk_dash_length,
+                    "crosswalk_gap_length": props.imt_crosswalk_gap_length,
+                    "crosswalk_offset": props.imt_crosswalk_offset,
+                    "stop_line_width": props.imt_stop_line_width,
+                    "line_width": props.marking_paint_width,
+                    "dash_length": props.imt_dash_length,
+                    "dash_gap": props.imt_dash_gap,
+                },
+            },
             "layout": _export_layout(props),
             "node": {
                 "length": MODE_LENGTH,
                 "center_split": True,
                 "shoulder_bands": props.node_shoulder_bands,
+                "min_corner_offset": props.node_min_corner_offset,
                 "transition_target": None if props.depress_roadway else "DEPRESSED",
             },
             "lanes": _export_lanes(props),
@@ -2717,6 +2866,7 @@ class CS1ROAD_PT_shared(_CS1RoadChildPanel, Panel):
     def draw(self, context):
         layout, props = self.layout, context.scene.cs1_road_builder
         layout.prop(props, "depress_roadway")
+        layout.prop(props, "node_min_corner_offset")
         row = layout.row(align=True)
         row.prop(props, "marking_paint_width")
         row.prop(props, "marking_region_width")
@@ -2810,6 +2960,31 @@ class CS1ROAD_PT_markings(_CS1RoadChildPanel, Panel):
         layout.label(text="Lines on road sections; intersections have none.")
         layout.template_list("CS1ROAD_UL_boundaries", "", props, "boundaries", props, "active_boundary_index", rows=6)
         layout.operator("cs1_road.boundaries_sync", text="Refresh line positions", icon="FILE_REFRESH")
+        preview = layout.box()
+        preview.label(text="IMT preview: shared appearance")
+        preview.prop(props, "imt_appearance_preset")
+        colors = preview.row(align=True)
+        colors.prop(props, "imt_white_color")
+        colors.prop(props, "imt_yellow_color")
+        preview.prop(props, "imt_center_line_yellow")
+        preview.prop(props, "imt_texture")
+        cracks = preview.row(align=True)
+        cracks.prop(props, "imt_cracks_density")
+        cracks.prop(props, "imt_cracks_scale")
+        voids = preview.row(align=True)
+        voids.prop(props, "imt_voids_density")
+        voids.prop(props, "imt_voids_scale")
+        zebra = preview.column(align=True)
+        zebra.prop(props, "imt_crosswalk_width")
+        row = zebra.row(align=True)
+        row.prop(props, "imt_crosswalk_dash_length")
+        row.prop(props, "imt_crosswalk_gap_length")
+        zebra.prop(props, "imt_crosswalk_offset")
+        zebra.prop(props, "imt_stop_line_width")
+        line_dash = preview.row(align=True)
+        line_dash.prop(props, "imt_dash_length")
+        line_dash.prop(props, "imt_dash_gap")
+        preview.label(text="Zebra outer extension is not exposed by IMT API", icon="INFO")
 
 
 class CS1ROAD_PT_mode(_CS1RoadChildPanel, Panel):

@@ -351,6 +351,8 @@ def export_runtime_bundle(
     template_name: str,
     half_width: float,
     pavement_width: float,
+    node_min_corner_offset: float,
+    imt_marking_style: dict,
     lanes: list[dict],
     modes: dict[str, list[bpy.types.Object]],
     texture_layout_path: Path,
@@ -378,6 +380,7 @@ def export_runtime_bundle(
         "template_name": template_name,
         "half_width": half_width,
         "pavement_width": pavement_width,
+        "node_min_corner_offset": node_min_corner_offset,
         "lanes": lanes,
     })
     payload = {
@@ -387,6 +390,8 @@ def export_runtime_bundle(
         "template_name": template_name,
         "half_width": half_width,
         "pavement_width": pavement_width,
+        "node_min_corner_offset": node_min_corner_offset,
+        "imt_marking_style": imt_marking_style,
         "structural_signature": structural_signature,
         "lanes": lanes,
         "modes": serialized_modes,

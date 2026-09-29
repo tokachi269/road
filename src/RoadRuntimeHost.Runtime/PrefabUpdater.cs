@@ -80,6 +80,7 @@ namespace RoadRuntimeHost.Runtime
                 NetInfo info = FindOrCloneNet(name, modeTemplate, bundle.RoadId + "." + mode.Mode);
                 info.m_halfWidth = bundle.HalfWidth;
                 info.m_pavementWidth = bundle.PavementWidth;
+                info.m_minCornerOffset = bundle.NodeMinCornerOffset;
                 ApplyLanes(info, bundle.Lanes, catalogRoad);
                 ApplyGeometry(info, mode.Mode, mode.Entries, catalogRoad);
                 if (catalogRoad != null)
@@ -89,7 +90,7 @@ namespace RoadRuntimeHost.Runtime
                 }
                 info.InitializePrefab();
                 modes[mode.Mode] = info;
-                DiagnosticLog.Info("SUCCESS", "road_mode_applied", "Road mode prefab was updated", "road_id", bundle.RoadId ?? string.Empty, "mode", mode.Mode ?? string.Empty, "prefab_name", name, "half_width", info.m_halfWidth.ToString(System.Globalization.CultureInfo.InvariantCulture), "pavement_width", info.m_pavementWidth.ToString(System.Globalization.CultureInfo.InvariantCulture), "lane_count", (info.m_lanes == null ? 0 : info.m_lanes.Length).ToString(), "segment_entry_count", (info.m_segments == null ? 0 : info.m_segments.Length).ToString(), "node_entry_count", (info.m_nodes == null ? 0 : info.m_nodes.Length).ToString());
+                DiagnosticLog.Info("SUCCESS", "road_mode_applied", "Road mode prefab was updated", "road_id", bundle.RoadId ?? string.Empty, "mode", mode.Mode ?? string.Empty, "prefab_name", name, "half_width", info.m_halfWidth.ToString(System.Globalization.CultureInfo.InvariantCulture), "pavement_width", info.m_pavementWidth.ToString(System.Globalization.CultureInfo.InvariantCulture), "min_corner_offset", info.m_minCornerOffset.ToString(System.Globalization.CultureInfo.InvariantCulture), "lane_count", (info.m_lanes == null ? 0 : info.m_lanes.Length).ToString(), "segment_entry_count", (info.m_segments == null ? 0 : info.m_segments.Length).ToString(), "node_entry_count", (info.m_nodes == null ? 0 : info.m_nodes.Length).ToString());
             }
             NetInfo basic;
             if (!modes.TryGetValue("basic", out basic)) throw new InvalidDataException("Road bundle has no usable basic mode");

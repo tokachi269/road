@@ -112,6 +112,7 @@ namespace RoadRuntimeHost.Runtime
         {
             if (_stopped) return;
             _stopped = true;
+            if (_imtPreview != null) _imtPreview.Stop();
             if (_layouts != null) _layouts.ReleaseAll();
             int appliedRoadCount = _roads.Count;
             _roads.Clear();
@@ -123,6 +124,7 @@ namespace RoadRuntimeHost.Runtime
         private void Poll(bool force)
         {
             _inspector.Poll(force);
+            _imtPreview.Poll();
             bool catalogChanged = ReloadCatalog(force);
             string manifestPath = Path.Combine(_previewPath, "manifest.json");
             if (!File.Exists(manifestPath))
@@ -328,7 +330,7 @@ namespace RoadRuntimeHost.Runtime
                         _layouts.Rebuild(entry.RoadId, info, scenario, catalogRoad != null ? catalogRoad.UiPriority : 0);
                     else _layouts.Release(entry.RoadId);
                 }
-                _imtPreview.ApplyRoad(entry.RoadId, info);
+                _imtPreview.ApplyRoad(entry.RoadId, info, bundle.ImtMarkingStyle);
                 DiagnosticLog.Info("SUCCESS", "road_apply_success", "Road bundle applied", "road_id", entry.RoadId ?? string.Empty, "revision", entry.Revision ?? string.Empty, "mode_count", (bundle.Modes == null ? 0 : bundle.Modes.Length).ToString(), "lane_count", (bundle.Lanes == null ? 0 : bundle.Lanes.Length).ToString(), "structural_changed", structuralChanged.ToString(), "test_changed", testChanged.ToString(), "elapsed_ms", stopwatch.ElapsedMilliseconds.ToString());
                 return true;
             }
@@ -364,6 +366,54 @@ namespace RoadRuntimeHost.Runtime
                     "Road bundle dimensions are invalid for " + roadId
                     + ": half_width=" + bundle.HalfWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     + " pavement_width=" + bundle.PavementWidth.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (float.IsNaN(bundle.NodeMinCornerOffset)
+                || float.IsInfinity(bundle.NodeMinCornerOffset)
+                || bundle.NodeMinCornerOffset < 0f)
+                throw new DiagnosticException(
+                    "DATA_INVALID",
+                    "road_node_corner_offset_invalid",
+                    "Road bundle node min corner offset must be non-negative for " + roadId
+                    + ": node_min_corner_offset=" + bundle.NodeMinCornerOffset.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            RequireImtStyle(roadId, bundle.ImtMarkingStyle);
+        }
+
+        private static void RequireImtStyle(string roadId, ImtMarkingStyleBundle style)
+        {
+            // Schema 1/2 bundles created before IMT appearance authoring use
+            // the runtime default. New Blender exports always include this.
+            if (style == null) return;
+            if (!ValidColor(style.WhiteColor) || !ValidColor(style.YellowColor)
+                || !ValidPair(style.Cracks) || !ValidPair(style.Voids)
+                || !Unit(style.Texture)
+                || style.CrosswalkWidth <= 0f
+                || style.CrosswalkDashLength <= 0f
+                || style.CrosswalkGapLength <= 0f
+                || style.CrosswalkOffset < 0f
+                || style.StopLineWidth <= 0f
+                || style.LineWidth <= 0f
+                || style.DashLength <= 0f
+                || style.DashGap <= 0f)
+                throw new DiagnosticException(
+                    "DATA_INVALID",
+                    "road_imt_style_invalid",
+                    "Road bundle IMT marking appearance is invalid for " + roadId);
+        }
+
+        private static bool ValidColor(float[] value)
+        {
+            if (value == null || value.Length < 3 || value.Length > 4) return false;
+            foreach (float item in value) if (!Unit(item)) return false;
+            return true;
+        }
+
+        private static bool ValidPair(float[] value)
+        {
+            return value != null && value.Length == 2 && Unit(value[0]) && Unit(value[1]);
+        }
+
+        private static bool Unit(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value) && value >= 0f && value <= 1f;
         }
 
         private static CatalogRoad FindCatalogRoad(Catalog catalog, string roadId)
