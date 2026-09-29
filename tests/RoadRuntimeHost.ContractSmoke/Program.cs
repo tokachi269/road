@@ -27,6 +27,7 @@ namespace RoadRuntimeHost.ContractSmoke
                     || runtime.GetMethod("Tick", new Type[] { typeof(float), typeof(float) }) == null
                     || runtime.GetMethod("Stop", Type.EmptyTypes) == null)
                     throw new InvalidOperationException("hot runtime reflection contract is incomplete");
+                ValidatePrefabInspectionContract(runtime.Assembly);
                 ValidatePackedTextureContract(runtime.Assembly);
                 string temp = Path.Combine(Path.GetTempPath(), "RoadRuntimeHost.ContractSmoke." + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(temp);
@@ -145,6 +146,26 @@ namespace RoadRuntimeHost.ContractSmoke
             Color32[] xysDefaults = (Color32[])packXys.Invoke(null, new object[] { null, null, 1 });
             if (xysDefaults[0].r != 128 || xysDefaults[0].g != 128 || xysDefaults[0].b != 255)
                 throw new InvalidOperationException("XYS default channels are invalid");
+        }
+
+        private static void ValidatePrefabInspectionContract(Assembly runtimeAssembly)
+        {
+            Type inspector = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.PrefabInspectionService", true);
+            MethodInfo validate = inspector.GetMethod("ValidateRequestForSmoke", BindingFlags.Static | BindingFlags.NonPublic);
+            if (validate == null) throw new InvalidOperationException("prefab inspection request validator is missing");
+            string capped = (string)validate.Invoke(null, new object[] { "{\"schema_version\":1,\"request_id\":\"smoke\",\"command\":\"find_net\",\"name_contains\":\"Road\",\"limit\":999}" });
+            if (capped != "find_net|20") throw new InvalidOperationException("prefab inspection result cap is not enforced");
+
+            bool bulkRejected = false;
+            try
+            {
+                validate.Invoke(null, new object[] { "{\"schema_version\":1,\"request_id\":\"smoke\",\"command\":\"dump_all\"}" });
+            }
+            catch (TargetInvocationException error)
+            {
+                bulkRejected = error.InnerException is InvalidDataException;
+            }
+            if (!bulkRejected) throw new InvalidOperationException("bulk prefab dump request was accepted");
         }
 
         private static void WriteLaneContractPreview(string root, float bundleWidth)

@@ -36,6 +36,8 @@ namespace RoadRuntimeHost.Runtime
         private Catalog _catalog;
         private PrefabUpdater _updater;
         private TestLayoutManager _layouts;
+        private PrefabInspectionService _inspector;
+        private ImtPreviewService _imtPreview;
         private bool _reportedMissingCatalog;
         private bool _reportedMissingManifest;
         private string _catalogFailureSignature;
@@ -90,6 +92,8 @@ namespace RoadRuntimeHost.Runtime
             Directory.CreateDirectory(_previewPath);
             _updater = new PrefabUpdater(_previewPath);
             _layouts = new TestLayoutManager();
+            _inspector = new PrefabInspectionService(_previewPath);
+            _imtPreview = new ImtPreviewService();
             _stopped = false;
             DiagnosticLog.Info("MOD", "runtime_start", "Hot runtime started", "preview_path", _previewPath, "load_mode", loadMode, "log_path", logPath);
             Poll(true);
@@ -118,6 +122,7 @@ namespace RoadRuntimeHost.Runtime
 
         private void Poll(bool force)
         {
+            _inspector.Poll(force);
             bool catalogChanged = ReloadCatalog(force);
             string manifestPath = Path.Combine(_previewPath, "manifest.json");
             if (!File.Exists(manifestPath))
@@ -323,6 +328,7 @@ namespace RoadRuntimeHost.Runtime
                         _layouts.Rebuild(entry.RoadId, info, scenario, catalogRoad != null ? catalogRoad.UiPriority : 0);
                     else _layouts.Release(entry.RoadId);
                 }
+                _imtPreview.ApplyRoad(entry.RoadId, info);
                 DiagnosticLog.Info("SUCCESS", "road_apply_success", "Road bundle applied", "road_id", entry.RoadId ?? string.Empty, "revision", entry.Revision ?? string.Empty, "mode_count", (bundle.Modes == null ? 0 : bundle.Modes.Length).ToString(), "lane_count", (bundle.Lanes == null ? 0 : bundle.Lanes.Length).ToString(), "structural_changed", structuralChanged.ToString(), "test_changed", testChanged.ToString(), "elapsed_ms", stopwatch.ElapsedMilliseconds.ToString());
                 return true;
             }

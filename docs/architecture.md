@@ -111,6 +111,8 @@ Runtimeは断面値からmeshを生成しない。Blenderで確定した頂点�
 
 Runtime exportは存在するGenerator PNGをpreview directoryの`textures`へatomic copyし、その内容hashをmanifestの`texture_revision`へ入れる。RuntimeHostは画像pathごとにsource Texture2Dを1つだけ共有し、source path集合ごとにpacked Texture2Dを共有する。`texture_revision`だけが変わった場合はsourceを同じTexture2Dへ再読込し、APR/XYSを同じpacked Texture2Dへ再構築するため、道路meshや既設segmentを作り直さない。
 
+ロード済みCS1 Prefabの確認は、preview directoryの`inspect.request.json`から対象名と区分を明示する読み取り専用経路で行う。これは道路定義の正本やcompiled outputではない。全Prefab dumpは提供せず、検索・詳細とも最大20件、request 16 KiB、response 64 KiBに制限する。取得区分は`summary / lanes / lane_props / segments / nodes`であり、Runtimeは指定外の区分を再帰的にserializeしない。
+
 Blender object内のmaterial slotは、export時にCS1のsegment/node entryへ展開する。したがってBlenderのobject分割とCS1 entry数は1対1ではない。selectorは現在templateの先頭entryから継承しており、複数selector contractの表現方法は未確定である。
 
 Loaderはゲームから読み込まれ続ける最小assemblyで、`runtime.current`が指すversioned Runtime DLLを約1秒ごとに確認する。切替時は新Runtimeの`Start`が成功してから旧Runtimeの`Stop`を呼ぶ。Mono AppDomainから旧assemblyをunloadするものではなく、繰り返し差し替えるとassembly分のメモリはプロセス終了まで残る。

@@ -84,6 +84,20 @@ runtime/
 
 hash名の新DLLを先にコピーし、最後に`runtime.current`をatomicに置換する。RuntimeはbuildごとにAssemblyVersionも変える。ファイル名だけ変えてAssembly identityが同じだとCS1のMonoが既に読み込んだ旧assemblyを返すためである。切替後は、ModTools等によるplugin型走査へ古い依存関係を露出させないため、現在版以外のRuntime DLLを削除する。既にMonoへ読み込まれたassemblyはプロセス終了まで残る。Loader自体を変更した場合だけゲームを終了して再installする。
 
+## ロード済みPrefabの限定取得
+
+RuntimeHostが動作中なら、ロード済み`NetInfo`から必要な区分だけを取得できる。全Prefabを1つのJSONへdumpする機能はない。検索・詳細は最大20件、requestは16 KiB、responseは64 KiBに制限される。
+
+```powershell
+.\scripts\query-runtime-prefab.ps1 -Command find_net -Filter 'Basic Road'
+.\scripts\query-runtime-prefab.ps1 -Command inspect_net -PrefabName 'Basic Road' -Section summary
+.\scripts\query-runtime-prefab.ps1 -Command inspect_net -PrefabName 'Basic Road' -Section lanes
+.\scripts\query-runtime-prefab.ps1 -Command inspect_net -PrefabName 'Basic Road' -Section lane_props -LaneIndex 2
+.\scripts\query-runtime-prefab.ps1 -Command inspect_net -PrefabName 'Basic Road' -Section nodes
+```
+
+`find_net`は名前とlane数だけを返す。`inspect_net`は完全一致のPrefab名を要求し、`summary / lanes / lane_props / segments / nodes`から1区分だけ返す。20件を超える場合は`truncated=true`となるため、`-Offset`で次ページを取得する。応答はpreview directoryの`inspect.response.json`へ置かれるが、道路定義の正本として保存・再利用しない。
+
 ## 専用診断ログ
 
 Hostの詳細ログはUnityの共通`output_log.txt`ではなく、MOD directory内の次のファイルへJSON Lines形式で出す。

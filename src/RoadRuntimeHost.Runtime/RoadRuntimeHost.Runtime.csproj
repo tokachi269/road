@@ -12,6 +12,7 @@
     <FileAlignment>512</FileAlignment>
     <Deterministic>false</Deterministic>
     <NoWarn>0649</NoWarn>
+    <IntersectionMarkingToolApiPath Condition=" '$(IntersectionMarkingToolApiPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\IntersectionMarkingTool.API.dll</IntersectionMarkingToolApiPath>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols><DebugType>full</DebugType><Optimize>false</Optimize>
@@ -24,6 +25,7 @@
   <ItemGroup>
     <Reference Include="Assembly-CSharp"><HintPath>$(CitiesSkylinesManagedDir)\Assembly-CSharp.dll</HintPath></Reference>
     <Reference Include="ColossalManaged"><HintPath>$(CitiesSkylinesManagedDir)\ColossalManaged.dll</HintPath></Reference>
+    <Reference Include="IntersectionMarkingTool.API"><HintPath>$(IntersectionMarkingToolApiPath)</HintPath><Private>false</Private></Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml" />
@@ -33,11 +35,16 @@
     <Compile Include="BundleModels.cs" />
     <Compile Include="DiagnosticLog.cs" />
     <Compile Include="JsonFiles.cs" />
+    <Compile Include="ImtPreviewService.cs" />
     <Compile Include="LaneContractValidator.cs" />
+    <Compile Include="PrefabInspectionService.cs" />
     <Compile Include="PrefabUpdater.cs" />
     <Compile Include="RuntimeEntry.cs" />
     <Compile Include="TestLayoutManager.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
+  <Target Name="RequireIntersectionMarkingToolApi" BeforeTargets="ResolveReferences" Condition="!Exists('$(IntersectionMarkingToolApiPath)')">
+    <Error Text="Intersection Marking Tool API was not found at $(IntersectionMarkingToolApiPath). Install Workshop item 2140418403 or pass IntersectionMarkingToolApiPath." />
+  </Target>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
