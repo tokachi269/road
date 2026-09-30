@@ -29,8 +29,21 @@ namespace RoadRuntimeHost.Runtime
         private readonly Dictionary<NetInfo, TargetRoad> _targets = new Dictionary<NetInfo, TargetRoad>();
         private readonly Dictionary<ushort, SegmentStamp> _segments = new Dictionary<ushort, SegmentStamp>();
         private readonly HashSet<ulong> _ownedLineIds = new HashSet<ulong>();
+        private readonly HashSet<ulong> _ownedSegmentLinePairs = new HashSet<ulong>();
+        private readonly HashSet<ulong> _nativeCrosswalksRestored = new HashSet<ulong>();
+        private readonly ImtInternalAdapter _internalAdapter = new ImtInternalAdapter();
+        private readonly object _targetSync = new object();
+        private readonly object _pendingSegmentSync = new object();
+        private readonly HashSet<ushort> _pendingSegments = new HashSet<ushort>();
+        private volatile HashSet<NetInfo> _targetInfos = new HashSet<NetInfo>();
         private volatile bool _scanPending;
+        private volatile bool _segmentBatchPending;
         private volatile bool _stopped;
+
+        public ImtPreviewService()
+        {
+            NetSegmentCreationHook.Start(OnSegmentCreated);
+        }
 
         public void ApplyRoad(string roadId, NetInfo info, ImtMarkingStyleBundle style)
         {
@@ -53,7 +66,7 @@ namespace RoadRuntimeHost.Runtime
                 ForgetTargetSegments(ai.m_slopeInfo);
                 ForgetTargetSegments(ai.m_tunnelInfo);
             }
-            QueueScan(true);
+            QueueFullScan();
         }
 
         private void ForgetTargetSegments(NetInfo info)
@@ -65,36 +78,46 @@ namespace RoadRuntimeHost.Runtime
             foreach (ushort segmentId in remove) _segments.Remove(segmentId);
         }
 
-        public void Poll()
-        {
-            QueueScan(false);
-        }
-
         public void Stop()
         {
             _stopped = true;
-            _targets.Clear();
+            NetSegmentCreationHook.Stop();
+            ImtCrosswalkTrajectoryHook.Stop();
+            lock (_targetSync)
+            {
+                _targets.Clear();
+                _targetInfos = new HashSet<NetInfo>();
+            }
+            lock (_pendingSegmentSync) _pendingSegments.Clear();
             _ownedLineIds.Clear();
+            _ownedSegmentLinePairs.Clear();
+            _nativeCrosswalksRestored.Clear();
         }
 
         private void RegisterTarget(string roadId, NetInfo info, ImtMarkingStyleBundle style)
         {
             if (info == null) return;
-            TargetRoad target;
-            if (!_targets.TryGetValue(info, out target))
+            ImtCrosswalkTrajectoryHook.RegisterTarget(info);
+            lock (_targetSync)
             {
-                target = new TargetRoad();
-                target.Info = info;
-                _targets.Add(info, target);
+                TargetRoad target;
+                if (!_targets.TryGetValue(info, out target))
+                {
+                    target = new TargetRoad();
+                    target.Info = info;
+                    _targets.Add(info, target);
+                }
+                target.RoadId = roadId ?? string.Empty;
+                target.Style = style;
+                HashSet<NetInfo> targetInfos = new HashSet<NetInfo>(_targetInfos);
+                targetInfos.Add(info);
+                _targetInfos = targetInfos;
             }
-            target.RoadId = roadId ?? string.Empty;
-            target.Style = style;
         }
 
-        private void QueueScan(bool initial)
+        private void QueueFullScan()
         {
-            if (_stopped || _scanPending || _targets.Count == 0 || !SimulationManager.exists) return;
-            TargetRoad[] targets = new List<TargetRoad>(_targets.Values).ToArray();
+            if (_stopped || _scanPending || _targetInfos.Count == 0 || !SimulationManager.exists) return;
             _scanPending = true;
 
             SimulationManager.instance.AddAction(delegate
@@ -102,13 +125,167 @@ namespace RoadRuntimeHost.Runtime
                 try
                 {
                     if (_stopped) return;
-                    Scan(targets, initial);
+                    Scan(SnapshotTargets());
                 }
                 finally { _scanPending = false; }
             });
         }
 
-        private void Scan(TargetRoad[] targets, bool initial)
+        private TargetRoad[] SnapshotTargets()
+        {
+            lock (_targetSync) return new List<TargetRoad>(_targets.Values).ToArray();
+        }
+
+        private void OnSegmentCreated(ushort segmentId, NetInfo info)
+        {
+            if (_stopped || segmentId == 0 || info == null || !_targetInfos.Contains(info) || !SimulationManager.exists) return;
+            lock (_pendingSegmentSync)
+            {
+                _pendingSegments.Add(segmentId);
+                if (_segmentBatchPending) return;
+                _segmentBatchPending = true;
+            }
+
+            SimulationManager.instance.AddAction(ProcessPendingSegments);
+        }
+
+        private void ProcessPendingSegments()
+        {
+            ushort[] segmentIds;
+            lock (_pendingSegmentSync)
+            {
+                segmentIds = new List<ushort>(_pendingSegments).ToArray();
+                _pendingSegments.Clear();
+                _segmentBatchPending = false;
+            }
+            if (_stopped || segmentIds.Length == 0) return;
+            ApplySegmentBatch(segmentIds);
+        }
+
+        private void ApplySegmentBatch(ushort[] segmentIds)
+        {
+            IDataProviderV1 provider = GetProvider();
+            if (provider == null)
+            {
+                lock (_pendingSegmentSync)
+                    foreach (ushort segmentId in segmentIds) _pendingSegments.Add(segmentId);
+                return;
+            }
+
+            TargetRoad[] targets = SnapshotTargets();
+            Dictionary<NetInfo, TargetRoad> targetByInfo = new Dictionary<NetInfo, TargetRoad>();
+            foreach (TargetRoad target in targets)
+                if (target.Info != null) targetByInfo[target.Info] = target;
+
+            int changedSegments = 0;
+            int linesAdded = 0;
+            int linesExisting = 0;
+            int crosswalksAdded = 0;
+            int crosswalksExisting = 0;
+            int stopLinesAdded = 0;
+            int stopLinesExisting = 0;
+            int failures = 0;
+            Exception firstFailure = null;
+            HashSet<ushort> nodes = new HashSet<ushort>();
+            NetManager manager = NetManager.instance;
+
+            foreach (ushort segmentId in segmentIds)
+            {
+                if (segmentId == 0 || segmentId >= manager.m_segments.m_size) continue;
+                ref NetSegment segment = ref manager.m_segments.m_buffer[segmentId];
+                TargetRoad target;
+                if ((segment.m_flags & NetSegment.Flags.Created) == 0
+                    || segment.Info == null
+                    || !targetByInfo.TryGetValue(segment.Info, out target)) continue;
+
+                SegmentStamp stamp;
+                if (_segments.TryGetValue(segmentId, out stamp)
+                    && stamp.BuildIndex == segment.m_buildIndex
+                    && ReferenceEquals(stamp.Info, segment.Info)
+                    && stamp.StartNode == segment.m_startNode
+                    && stamp.EndNode == segment.m_endNode) continue;
+
+                ++changedSegments;
+                _segments[segmentId] = new SegmentStamp
+                {
+                    BuildIndex = segment.m_buildIndex,
+                    Info = segment.Info,
+                    StartNode = segment.m_startNode,
+                    EndNode = segment.m_endNode
+                };
+                nodes.Add(segment.m_startNode);
+                nodes.Add(segment.m_endNode);
+                try
+                {
+                    ApplySegmentLines(provider, segmentId, target.Style, ref linesAdded, ref linesExisting);
+                    manager.UpdateSegmentRenderer(segmentId, true);
+                }
+                catch (Exception error)
+                {
+                    ++failures;
+                    if (firstFailure == null) firstFailure = error;
+                }
+            }
+
+            foreach (ushort nodeId in nodes)
+            {
+                if (nodeId == 0 || nodeId >= manager.m_nodes.m_size) continue;
+                ref NetNode node = ref manager.m_nodes.m_buffer[nodeId];
+                if (CountSegments(node) < 3) continue;
+                HashSet<NetInfo> appliedInfos = new HashSet<NetInfo>();
+                for (int slot = 0; slot < 8; ++slot)
+                {
+                    ushort connectedSegmentId = node.GetSegment(slot);
+                    if (connectedSegmentId == 0) continue;
+                    NetInfo connectedInfo = manager.m_segments.m_buffer[connectedSegmentId].Info;
+                    TargetRoad target;
+                    if (connectedInfo == null
+                        || !appliedInfos.Add(connectedInfo)
+                        || !targetByInfo.TryGetValue(connectedInfo, out target)) continue;
+                    try
+                    {
+                        ApplyNodeMarkings(provider, nodeId, target.Info, target.Style, ref crosswalksAdded, ref crosswalksExisting, ref stopLinesAdded, ref stopLinesExisting);
+                        manager.UpdateNodeRenderer(nodeId, true);
+                    }
+                    catch (Exception error)
+                    {
+                        ++failures;
+                        if (firstFailure == null) firstFailure = error;
+                    }
+                }
+            }
+
+            if (changedSegments == 0) return;
+            if (failures != 0)
+            {
+                DiagnosticLog.Error(
+                    "MOD_COMPATIBILITY",
+                    "imt_preview_segment_batch_partial_failure",
+                    "IMT preview markings were applied only partially for a new-segment batch",
+                    firstFailure,
+                    "notified_segment_count", segmentIds.Length.ToString(),
+                    "changed_segment_count", changedSegments.ToString(),
+                    "affected_node_count", nodes.Count.ToString(),
+                    "failure_count", failures.ToString());
+            }
+            DiagnosticLog.Info(
+                failures == 0 ? "SUCCESS" : "MOD_COMPATIBILITY",
+                "imt_preview_segment_batch_applied",
+                "IMT preview markings were evaluated for an event-driven new-segment batch",
+                "notified_segment_count", segmentIds.Length.ToString(),
+                "changed_segment_count", changedSegments.ToString(),
+                "affected_node_count", nodes.Count.ToString(),
+                "line_added_count", linesAdded.ToString(),
+                "line_existing_count", linesExisting.ToString(),
+                "crosswalk_added_count", crosswalksAdded.ToString(),
+                "crosswalk_existing_count", crosswalksExisting.ToString(),
+                "stop_line_added_count", stopLinesAdded.ToString(),
+                "stop_line_existing_count", stopLinesExisting.ToString(),
+                "failure_count", failures.ToString(),
+                "preview_only", bool.TrueString);
+        }
+
+        private void Scan(TargetRoad[] targets)
         {
             IDataProviderV1 provider = GetProvider();
             if (provider == null) return;
@@ -123,7 +300,6 @@ namespace RoadRuntimeHost.Runtime
             int linesExisting = 0;
             int crosswalksAdded = 0;
             int crosswalksExisting = 0;
-            int crosswalksUpdated = 0;
             int stopLinesAdded = 0;
             int stopLinesExisting = 0;
             int failures = 0;
@@ -175,7 +351,7 @@ namespace RoadRuntimeHost.Runtime
                 {
                     try
                     {
-                        ApplyNodeMarkings(provider, item.Key, target.Info, target.Style, ref crosswalksAdded, ref crosswalksExisting, ref crosswalksUpdated, ref stopLinesAdded, ref stopLinesExisting);
+                        ApplyNodeMarkings(provider, item.Key, target.Info, target.Style, ref crosswalksAdded, ref crosswalksExisting, ref stopLinesAdded, ref stopLinesExisting);
                         manager.UpdateNodeRenderer(item.Key, true);
                     }
                     catch (Exception error)
@@ -192,8 +368,8 @@ namespace RoadRuntimeHost.Runtime
             {
                 DiagnosticLog.Error(
                     "MOD_COMPATIBILITY",
-                    initial ? "imt_preview_apply_partial_failure" : "imt_preview_incremental_partial_failure",
-                    initial ? "IMT preview markings were applied only partially" : "IMT preview markings for new segments were applied only partially",
+                    "imt_preview_apply_partial_failure",
+                    "IMT preview markings were applied only partially",
                     firstFailure,
                     "target_prefab_count", targetByInfo.Count.ToString(),
                     "matching_segment_count", matchingSegments.ToString(),
@@ -203,8 +379,8 @@ namespace RoadRuntimeHost.Runtime
 
             DiagnosticLog.Info(
                 failures == 0 ? "SUCCESS" : "MOD_COMPATIBILITY",
-                initial ? "imt_preview_applied" : "imt_preview_incremental_applied",
-                initial ? "IMT preview markings were evaluated without changing the road mesh" : "IMT preview markings were evaluated for newly created or replaced segments",
+                "imt_preview_applied",
+                "IMT preview markings were evaluated without changing the road mesh",
                 "target_prefab_count", targetByInfo.Count.ToString(),
                 "matching_segment_count", matchingSegments.ToString(),
                 "changed_segment_count", changedSegments.ToString(),
@@ -212,7 +388,6 @@ namespace RoadRuntimeHost.Runtime
                 "line_existing_count", linesExisting.ToString(),
                 "crosswalk_added_count", crosswalksAdded.ToString(),
                 "crosswalk_existing_count", crosswalksExisting.ToString(),
-                "crosswalk_updated_count", crosswalksUpdated.ToString(),
                 "stop_line_added_count", stopLinesAdded.ToString(),
                 "stop_line_existing_count", stopLinesExisting.ToString(),
                 "failure_count", failures.ToString(),
@@ -276,25 +451,38 @@ namespace RoadRuntimeHost.Runtime
                 if (end == null) continue;
                 usedEndIndexes.Add(end.Index);
 
-                // IMT 1.15's TryGetRegularLine validates a same-entrance pair,
-                // while a segment line intentionally joins its two node entrances.
-                IRegularLineData current;
-                if (marking.TryGetRegularLine(start, end, out current))
+                // IMT 1.15's SegmentMarkingDataProvider.TryGetRegularLine has a
+                // contradictory same-entrance guard. RegularLineExist and
+                // RemoveRegularLine accept the valid cross-entrance pair.
+                ulong pairKey = SegmentLinePairKey(segmentId, start, end);
+                if (marking.RegularLineExist(start, end))
                 {
                     ++existing;
-                    if (!_ownedLineIds.Contains(current.Id)) continue;
+                    if (!_ownedSegmentLinePairs.Contains(pairKey)) continue;
                     if (!marking.RemoveRegularLine(start, end))
                         throw new InvalidOperationException("Existing IMT preview line could not be replaced");
-                    _ownedLineIds.Remove(current.Id);
+                    _ownedSegmentLinePairs.Remove(pairKey);
                 }
 
                 bool edge = index == 0 || index == starts.Count - 1;
                 bool yellow = !edge && appearance.CenterLineYellow && IsOpposingBoundary(segmentId, start.Source);
                 IRegularLineStyleData style = edge ? CreateSolidStyle(provider, appearance) : CreateDashedStyle(provider, appearance, yellow);
-                IRegularLineData created = marking.AddRegularLine(start, end, style);
-                _ownedLineIds.Add(created.Id);
+                marking.AddRegularLine(start, end, style);
+                _ownedSegmentLinePairs.Add(pairKey);
                 ++added;
             }
+        }
+
+        private static ulong SegmentLinePairKey(
+            ushort segmentId,
+            IEntrancePointData start,
+            IEntrancePointData end)
+        {
+            return ((ulong)segmentId << 48)
+                | ((ulong)start.EntranceId << 32)
+                | ((ulong)start.Index << 24)
+                | ((ulong)end.EntranceId << 8)
+                | end.Index;
         }
 
         private void ApplyNodeMarkings(
@@ -304,7 +492,6 @@ namespace RoadRuntimeHost.Runtime
             ImtMarkingStyleBundle appearance,
             ref int crosswalksAdded,
             ref int crosswalksExisting,
-            ref int crosswalksUpdated,
             ref int stopLinesAdded,
             ref int stopLinesExisting)
         {
@@ -325,25 +512,30 @@ namespace RoadRuntimeHost.Runtime
                 if (entrance.GetCrosswalkPoint(1, out crosswalkStart)
                     && entrance.GetCrosswalkPoint((byte)entrance.PointCount, out crosswalkEnd))
                 {
-                    ICrosswalkData currentCrosswalk;
-                    bool existed = marking.TryGetCrosswalk(crosswalkStart, crosswalkEnd, out currentCrosswalk);
-                    bool replaceOwned = existed && _ownedLineIds.Contains(currentCrosswalk.Line.Id);
+                    bool existed = marking.CrosswalkExist(crosswalkStart, crosswalkEnd);
+                    ICrosswalkData currentCrosswalk = existed
+                        ? _internalAdapter.GetCrosswalk(marking, crosswalkStart, crosswalkEnd)
+                        : null;
+                    ICrosswalkData effectiveCrosswalk = currentCrosswalk;
                     if (existed)
                     {
                         ++crosswalksExisting;
-                        if (replaceOwned)
-                        {
-                            if (!marking.RemoveCrosswalk(crosswalkStart, crosswalkEnd))
-                                throw new InvalidOperationException("Existing IMT crosswalk could not be replaced");
-                            _ownedLineIds.Remove(currentCrosswalk.Line.Id);
-                        }
                     }
-                    if (!existed || replaceOwned)
+                    else
                     {
                         ICrosswalkData createdCrosswalk = marking.AddCrosswalk(crosswalkStart, crosswalkEnd, CreateCrosswalkStyle(provider, appearance));
-                        _ownedLineIds.Add(createdCrosswalk.Line.Id);
-                        if (existed) ++crosswalksUpdated;
-                        else ++crosswalksAdded;
+                        effectiveCrosswalk = createdCrosswalk;
+                        ++crosswalksAdded;
+                    }
+
+                    if (effectiveCrosswalk != null)
+                    {
+                        ulong crosswalkId = _internalAdapter.GetCrosswalkLineId(effectiveCrosswalk);
+                        if (!_nativeCrosswalksRestored.Contains(crosswalkId))
+                        {
+                            _internalAdapter.RestoreNativeCrosswalk(marking, effectiveCrosswalk);
+                            _nativeCrosswalksRestored.Add(crosswalkId);
+                        }
                     }
                 }
 

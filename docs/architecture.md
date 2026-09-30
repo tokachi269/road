@@ -10,6 +10,7 @@
 - Blenderの断面表は、network lane各行に加えて左右共通の歩道surface幅と路肩幅を`not lane`行として表示する。通常laneは各行で種別・幅・向き・乗り物・速度を直接編集する。歩道lane幅はsurface幅から合計0.50mの余白を引いて導出し、独立入力にしない。歩道の`Both/Pedestrian/None`と通常の高さも導出し、`stop_offset=0`と`allow_connect=true`は通常時の既定値として内部に保持する。いずれも選択行の詳細フォームには出さない。
 - 歩道幅、路肩幅、分離帯の有無・全幅・路面からの高さは共有断面値が所有する。通常の車道高低差は道路単位の真偽値から`domain.py`の固定値0.30mを導出し、個別laneやmodeでは編集しない。
 - Nodeの角を道路幅とは独立して広げる必須値は`NetInfo.m_minCornerOffset`として保持し、全modeへ同じ値を適用する。`m_halfWidth`は道路全幅の半分であり、node寸法の代替として倍化しない。
+- Road colorは道路定義の`styles.surface.road_color`が所有し、全modeの共通surface Materialへ同じ値を適用する。mode固有値やtexture mask側へ重複保持しない。
 - 現在の線設定は、導出されたboundary IDに対応付けている。
 - Blender PropertyGroupは編集adapterであり、別の意味を決めない。
 - RoadImporter XMLはCS1向けcompiled outputであり、編集正本にしない。
@@ -98,6 +99,10 @@ CS1 Asset Editor
 Runtime previewはAsset Editor/CRP生成とは別経路である。
 
 IMT previewの線・停止線・ゼブラは、Blenderの道路定義にある共通appearance（白／黄の色、Texture、Cracks、Voids）を使う。Cracks等を種類ごとに重複保持せず、線種は形状と色差だけを持つ。対向するvehicle lane間だけを任意で黄色にでき、同方向lane間と路側線は白を使う。ゼブラ幅・縞／空白・内側offsetと停止線幅も同じ設定箇所からRuntime bundleへ出力する。IMT 1.15の公開APIはゼブラ専用の外側端点offsetを公開していないため、共有入口点を動かして路側線や停止線までずらす実装はしない。
+
+ゼブラのstyle、再計算、ユーザー編集後の保存値はIMTが所有する。RuntimeHostはmissing時だけ初期ゼブラを作り、既存ゼブラを道路データ再適用で削除・再作成しない。共有入口点、停止線、路側線、style値を変更せず、IMT 1.15の`ZebraCrosswalkStyle.CalculateImpl`だけに単一prefixを置く。対象道路は`NetInfo`集合でO(1)判定し、IMTがstyleを再計算して最終decal dataを返す時だけ、そのpolygon端をIMT自身の道路端（`m_halfWidth - m_pavementWidth`）まで延長する。既に道路端を越えるpolygonは縮めない。定期補正、全crosswalk走査、編集後の再上書きは行わず、hot Runtime停止時にpatchを解除する。IMTのUIがcrosswalk offsetを0以上へ制限するのは、offsetが位置だけでなく全体幅と輪郭切断にも使われるため、その制限を迂回しない。
+
+IMT previewの新規道路検出も1秒pollでは行わない。CS1本体の`NetManager.CreateSegment`は通常overloadから`TreeInfo`付きoverloadへ委譲するため、後者1か所の成功postfixだけで作成segment IDと`NetInfo`を受け取る。hook内ではIMT APIを呼ばず、対象`NetInfo`だけを重複排除したbatchへ積み、`CreateSegment`完了後のSimulation actionでそのsegmentと両端nodeだけを評価する。node側は接続slot最大8本だけを調べ、全segment配列は走査しない。既設segmentの全走査はRuntimeの毎秒処理ではなく、道路定義を初回適用・再適用した時だけ行う。hot Runtimeの新旧版が一時的に共存しても旧版の停止が新版patchを外さないよう、Harmony owner IDはassembly moduleごとに分ける。これは処理範囲の上限を定める設計であり、実ゲーム上の処理時間は未計測である。
 
 ```text
 TSV catalog ──compile──> catalog.json

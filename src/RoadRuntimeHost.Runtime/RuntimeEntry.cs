@@ -124,7 +124,6 @@ namespace RoadRuntimeHost.Runtime
         private void Poll(bool force)
         {
             _inspector.Poll(force);
-            _imtPreview.Poll();
             bool catalogChanged = ReloadCatalog(force);
             string manifestPath = Path.Combine(_previewPath, "manifest.json");
             if (!File.Exists(manifestPath))

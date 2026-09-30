@@ -29,6 +29,7 @@ namespace RoadRuntimeHost.ContractSmoke
                     throw new InvalidOperationException("hot runtime reflection contract is incomplete");
                 ValidatePrefabInspectionContract(runtime.Assembly);
                 ValidatePackedTextureContract(runtime.Assembly);
+                ValidateCrosswalkTrajectoryContract(runtime.Assembly);
                 string temp = Path.Combine(Path.GetTempPath(), "RoadRuntimeHost.ContractSmoke." + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(temp);
                 try
@@ -156,6 +157,79 @@ namespace RoadRuntimeHost.ContractSmoke
             Color32[] xysDefaults = (Color32[])packXys.Invoke(null, new object[] { null, null, 1 });
             if (xysDefaults[0].r != 128 || xysDefaults[0].g != 128 || xysDefaults[0].b != 255)
                 throw new InvalidOperationException("XYS default channels are invalid");
+        }
+
+        private static void ValidateCrosswalkTrajectoryContract(Assembly runtimeAssembly)
+        {
+            Type geometry = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.CrosswalkTrajectoryGeometry", true);
+            MethodInfo extend = geometry.GetMethod("ExtendPolygonToBoundaries", BindingFlags.Static | BindingFlags.Public);
+            if (extend == null) throw new InvalidOperationException("crosswalk trajectory extension contract is missing");
+
+            object[] arguments =
+            {
+                new Vector3[]
+                {
+                    new Vector3(-3f, 0f, -0.2f),
+                    new Vector3(3f, 0f, -0.2f),
+                    new Vector3(3f, 0f, 0.2f),
+                    new Vector3(-3f, 0f, 0.2f),
+                },
+                Vector3.zero,
+                new Vector3(-4f, 0f, 0f),
+                new Vector3(4f, 0f, 0f),
+                new Vector3(1f, 0f, 0f),
+                new Vector3(0f, 0f, 1f),
+            };
+            if (!(bool)extend.Invoke(null, arguments))
+                throw new InvalidOperationException("crosswalk trajectory did not extend to both road boundaries");
+            Vector3[] extended = (Vector3[])arguments[0];
+            if (!Approximately(extended[0], new Vector3(-4f, 0f, -0.2f))
+                || !Approximately(extended[1], new Vector3(4f, 0f, -0.2f))
+                || !Approximately(extended[2], new Vector3(4f, 0f, 0.2f))
+                || !Approximately(extended[3], new Vector3(-4f, 0f, 0.2f)))
+                throw new InvalidOperationException("crosswalk polygon endpoints disagree with the road boundaries");
+
+            Vector3[] wide =
+            {
+                new Vector3(-5f, 0f, -0.2f),
+                new Vector3(5f, 0f, -0.2f),
+                new Vector3(5f, 0f, 0.2f),
+                new Vector3(-5f, 0f, 0.2f),
+            };
+            object[] noShrink =
+            {
+                wide,
+                Vector3.zero,
+                new Vector3(-4f, 0f, 0f),
+                new Vector3(4f, 0f, 0f),
+                new Vector3(1f, 0f, 0f),
+                new Vector3(0f, 0f, 1f),
+            };
+            if ((bool)extend.Invoke(null, noShrink)
+                || !Approximately(wide[0], new Vector3(-5f, 0f, -0.2f))
+                || !Approximately(wide[1], new Vector3(5f, 0f, -0.2f)))
+                throw new InvalidOperationException("crosswalk trajectory extension shortened native IMT geometry");
+
+            MethodInfo decodeColor = geometry.GetMethod("DecodeSourceColor", BindingFlags.Static | BindingFlags.Public);
+            if (decodeColor == null) throw new InvalidOperationException("crosswalk decal color preservation contract is missing");
+            Color source = new Color(0.8f, 0.6f, 0.4f, 0.7f);
+            Color rendered = new Color(
+                Mathf.Pow(source.r, 4f),
+                Mathf.Pow(source.g, 4f),
+                Mathf.Pow(source.b, 4f),
+                source.a * source.a);
+            Color32 decoded = (Color32)decodeColor.Invoke(null, new object[] { rendered, false });
+            Color32 expected = (Color32)source;
+            if (Math.Abs(decoded.r - expected.r) > 1
+                || Math.Abs(decoded.g - expected.g) > 1
+                || Math.Abs(decoded.b - expected.b) > 1
+                || Math.Abs(decoded.a - expected.a) > 1)
+                throw new InvalidOperationException("crosswalk decal reconstruction changed the IMT style color");
+        }
+
+        private static bool Approximately(Vector3 left, Vector3 right)
+        {
+            return (left - right).sqrMagnitude < 0.000001f;
         }
 
         private static void ValidatePrefabInspectionContract(Assembly runtimeAssembly)

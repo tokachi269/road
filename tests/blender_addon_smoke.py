@@ -232,6 +232,7 @@ props.shoulder_width = 1.0
 props.sidewalk_width = 3.0
 props.depress_roadway = True
 props.node_shoulder_bands = False
+props.road_color = (0.20, 0.25, 0.30)
 props.elevated_edge_mesh = create_elevated_edge_source(
     "ElevatedEdge", -0.6, 0.15
 )
@@ -262,6 +263,9 @@ for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
 shared_surface = bpy.data.materials[road_builder.SHARED_SURFACE_MATERIAL]
 shared_structure = bpy.data.materials[road_builder.SHARED_STRUCTURE_MATERIAL]
 shared_tunnel = bpy.data.materials[road_builder.SHARED_TUNNEL_MATERIAL]
+assert tuple(round(value, 3) for value in shared_surface.diffuse_color) == (
+    0.20, 0.25, 0.30, 1.0,
+)
 for material in (shared_surface, shared_structure, shared_tunnel):
     mapping_nodes = [node for node in material.node_tree.nodes if node.type == "MAPPING"]
     assert len(mapping_nodes) == 1, material.name
@@ -899,6 +903,9 @@ assert saved["node"]["shoulder_bands"] is False
 assert saved["node"]["min_corner_offset"] == 12.0
 assert round(saved["styles"]["markings"]["SOLID_WHITE"]["paint_width"], 3) == 0.15
 assert round(saved["styles"]["markings"]["SOLID_WHITE"]["region_width"], 3) == 0.4
+assert [round(value, 3) for value in saved["styles"]["surface"]["road_color"]] == [
+    0.20, 0.25, 0.30,
+]
 assert [round(value, 3) for value in saved["styles"]["imt_preview"]["cracks"]] == [0.7, 0.4]
 assert [round(value, 3) for value in saved["styles"]["imt_preview"]["voids"]] == [0.2, 1.0]
 assert saved["styles"]["imt_preview"]["dash_length"] == 6.0
@@ -913,11 +920,13 @@ assert [lane["direction"] for lane in saved["lanes"]] == ["BACKWARD", "BACKWARD"
 assert len({lane["id"] for lane in saved["lanes"]}) == 4
 assert all(lane["surface_strip_id"] for lane in saved["lanes"])
 
+props.road_color = (0.8, 0.8, 0.8)
 assert bpy.ops.cs1_road.import_spec(filepath=str(spec_output)) == {"FINISHED"}
 roundtrip_boundaries = {item.boundary_id: item for item in props.boundaries}
 assert roundtrip_boundaries["boundary-left-carriageway"].marking_enabled is False
 assert roundtrip_boundaries["boundary-right-carriageway"].marking_enabled is True
 assert props.node_min_corner_offset == 12.0
+assert [round(value, 3) for value in props.road_color] == [0.20, 0.25, 0.30]
 
 example = ROOT / "specs" / "example-road.json"
 assert bpy.ops.cs1_road.import_spec(filepath=str(example)) == {"FINISHED"}
@@ -927,11 +936,13 @@ assert props.lanes[0].lane_type == "PEDESTRIAN"
 assert props.lanes[1].direction == "BACKWARD"
 assert props.lanes[2].direction == "FORWARD"
 assert props.node_min_corner_offset == 0.0
+assert [round(value, 3) for value in props.road_color] == [0.12, 0.14, 0.16]
 assert props.imt_appearance_preset == "JP_WEATHERED"
 props.imt_texture = 0.30
 assert props.imt_appearance_preset == "CUSTOM"
 props.imt_appearance_preset = "JP_WEATHERED"
 assert round(props.imt_texture, 2) == 0.25
+props.road_color = (0.31, 0.32, 0.33)
 
 runtime_output = ROOT / "build" / "smoke" / "runtime-preview"
 props.runtime_output_dir = str(runtime_output)
@@ -999,6 +1010,10 @@ for mode, entries in mode_entries.items():
     ), mode
     for entry in entries:
         exported = entry["mesh"]
+        if exported["material"]["name"] == road_builder.SHARED_SURFACE_MATERIAL:
+            assert [round(value, 3) for value in exported["material"]["color"]] == [
+                0.31, 0.32, 0.33, 1.0,
+            ]
         assert exported["material"]["textures"] == [{
             "name": "_MainTex",
             "value_json": json.dumps(

@@ -146,7 +146,7 @@ MARKING_TEXTURE_REGIONS = {
 SHARED_SURFACE_MATERIAL = "CS1 Road Shared Surface"
 SHARED_STRUCTURE_MATERIAL = "CS1 Road Shared Structure"
 SHARED_TUNNEL_MATERIAL = "CS1 Road Shared Tunnel"
-SHARED_SURFACE_COLOR = (0.12, 0.14, 0.16, 1.0)
+DEFAULT_ROAD_COLOR = (0.12, 0.14, 0.16)
 FACE_KIND_VALUES = {"surface": 0, "marking": 1, "structure": 2}
 UV_REGION_NAMES = (
     "authored",
@@ -373,15 +373,14 @@ def _image_texture_material(
 
 
 def _material(
-    paint_width: float,
-    region_width: float,
+    paint_width: float, region_width: float, road_color,
     force_texture_reload: bool = False,
 ) -> bpy.types.Material:
     material = (
         bpy.data.materials.get(SHARED_SURFACE_MATERIAL)
         or bpy.data.materials.new(SHARED_SURFACE_MATERIAL)
     )
-    material.diffuse_color = SHARED_SURFACE_COLOR
+    material.diffuse_color = (*tuple(road_color), 1.0)
     material.use_nodes = True
     nodes = material.node_tree.nodes
     links = material.node_tree.links
@@ -1589,6 +1588,12 @@ def _on_geometry_update(props, context) -> None:
     _schedule_live_preview(props, context)
 
 
+def _on_road_color_update(props, context) -> None:
+    material = bpy.data.materials.get(SHARED_SURFACE_MATERIAL)
+    if material is not None:
+        material.diffuse_color = (*tuple(props.road_color), 1.0)
+
+
 def _on_cross_section_update(props, context) -> None:
     _sync_boundaries(props)
     _schedule_live_preview(props, context)
@@ -1827,7 +1832,7 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
     collection = _mode_collection(scene, mode)
     _clear_collection(collection)
     material = _material(
-        props.marking_paint_width, props.marking_region_width,
+        props.marking_paint_width, props.marking_region_width, props.road_color,
     )
     structure_material = _structure_material()
     tunnel_material = _tunnel_material()
@@ -2074,6 +2079,12 @@ class CS1RoadBuilderProperties(PropertyGroup):
         name="Min corner offset", default=0.0, min=0.0, max=128.0,
         unit="LENGTH",
         description="CS1 NetInfo.m_minCornerOffset; increases node corner smoothing",
+    )
+    road_color: FloatVectorProperty(
+        name="Road color", subtype="COLOR_GAMMA", size=3,
+        default=DEFAULT_ROAD_COLOR, min=0.0, max=1.0,
+        description="Road color applied through the surface Road mask in every mode",
+        update=_on_road_color_update,
     )
     imt_appearance_preset: EnumProperty(
         name="Appearance preset", items=IMT_APPEARANCE_PRESET_ITEMS,
@@ -2336,7 +2347,13 @@ class CS1ROAD_OT_reload_surface_texture(Operator):
 
     def execute(self, context):
         try:
-            _material(0.15, 0.4, force_texture_reload=True)
+            props = context.scene.cs1_road_builder
+            _material(
+                props.marking_paint_width,
+                props.marking_region_width,
+                props.road_color,
+                force_texture_reload=True,
+            )
             _structure_material(force_reload=True)
             _tunnel_material(force_reload=True)
         except (OSError, RuntimeError, ValueError) as error:
@@ -2450,7 +2467,7 @@ def _authoring_fingerprint(props):
         props.road_name, lanes, boundaries, props.shoulder_width,
         props.sidewalk_width, props.depress_roadway, props.marking_paint_width,
         props.marking_region_width, props.node_shoulder_bands,
-        props.node_min_corner_offset,
+        props.node_min_corner_offset, tuple(props.road_color),
         tuple(props.imt_white_color), tuple(props.imt_yellow_color),
         props.imt_center_line_yellow,
         props.imt_texture, props.imt_cracks_density, props.imt_cracks_scale,
@@ -2497,6 +2514,7 @@ def _runtime_auto_export_timer():
                 _material(
                     props.marking_paint_width,
                     props.marking_region_width,
+                    props.road_color,
                     force_texture_reload=True,
                 )
                 _structure_material(force_reload=True)
@@ -2661,6 +2679,12 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
         props = context.scene.cs1_road_builder
         props.road_name = data.get("name", props.road_name)
         schema_version = int(data.get("schema_version", 2))
+        surface_style = data.get("styles", {}).get("surface", {})
+        road_color = surface_style.get("road_color", DEFAULT_ROAD_COLOR)
+        if not isinstance(road_color, (list, tuple)) or len(road_color) != 3:
+            self.report({"ERROR"}, "styles.surface.road_color must contain three values")
+            return {"CANCELLED"}
+        props.road_color = tuple(float(value) for value in road_color)
         cross = data.get("shared_geometry", data.get("cross_section", {}))
         profile = str(cross.get("surface_profile", "DEPRESSED")).upper()
         props.depress_roadway = bool(cross.get("depress_roadway", profile == "DEPRESSED"))
@@ -2794,6 +2818,9 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
                 },
             },
             "styles": {
+                "surface": {
+                    "road_color": list(props.road_color),
+                },
                 "markings": {"SOLID_WHITE": {
                     "paint_width": props.marking_paint_width,
                     "region_width": props.marking_region_width,
@@ -2867,6 +2894,7 @@ class CS1ROAD_PT_shared(_CS1RoadChildPanel, Panel):
         layout, props = self.layout, context.scene.cs1_road_builder
         layout.prop(props, "depress_roadway")
         layout.prop(props, "node_min_corner_offset")
+        layout.prop(props, "road_color")
         row = layout.row(align=True)
         row.prop(props, "marking_paint_width")
         row.prop(props, "marking_region_width")

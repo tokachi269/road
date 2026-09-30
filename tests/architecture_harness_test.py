@@ -54,6 +54,24 @@ class ArchitectureHarnessTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         self.assertEqual(len(result.classified), len(result.files))
 
+    def test_runtime_imt_new_segments_use_one_event_hook_without_polling(self) -> None:
+        entry = (ROOT / "src" / "RoadRuntimeHost.Runtime" / "RuntimeEntry.cs").read_text(
+            encoding="utf-8"
+        )
+        service = (
+            ROOT / "src" / "RoadRuntimeHost.Runtime" / "ImtPreviewService.cs"
+        ).read_text(encoding="utf-8")
+        hook = (
+            ROOT / "src" / "RoadRuntimeHost.Runtime" / "NetSegmentCreationHook.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("_imtPreview.Poll()", entry)
+        self.assertNotIn("public void Poll()", service)
+        self.assertIn("ProcessPendingSegments", service)
+        self.assertEqual(hook.count("_harmony.Patch("), 1)
+        self.assertIn("typeof(TreeInfo)", hook)
+        self.assertIn("if (__result && segment != 0)", hook)
+
 
 if __name__ == "__main__":
     unittest.main()

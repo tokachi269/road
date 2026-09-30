@@ -19,6 +19,9 @@
     }
   },
   "styles": {
+    "surface": {
+      "road_color": [0.12, 0.14, 0.16]
+    },
     "markings": {
       "SOLID_WHITE": {
         "paint_width": 0.15,

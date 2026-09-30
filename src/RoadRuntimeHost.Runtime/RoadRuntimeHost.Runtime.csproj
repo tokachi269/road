@@ -13,6 +13,9 @@
     <Deterministic>false</Deterministic>
     <NoWarn>0649</NoWarn>
     <IntersectionMarkingToolApiPath Condition=" '$(IntersectionMarkingToolApiPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\IntersectionMarkingTool.API.dll</IntersectionMarkingToolApiPath>
+    <IntersectionMarkingToolPath Condition=" '$(IntersectionMarkingToolPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\IntersectionMarkingTool.dll</IntersectionMarkingToolPath>
+    <CitiesHarmonyApiPath Condition=" '$(CitiesHarmonyApiPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\CitiesHarmony.API.dll</CitiesHarmonyApiPath>
+    <CitiesHarmonyPath Condition=" '$(CitiesHarmonyPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2040656402\CitiesHarmony.Harmony.dll</CitiesHarmonyPath>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols><DebugType>full</DebugType><Optimize>false</Optimize>
@@ -25,6 +28,9 @@
   <ItemGroup>
     <Reference Include="Assembly-CSharp"><HintPath>$(CitiesSkylinesManagedDir)\Assembly-CSharp.dll</HintPath></Reference>
     <Reference Include="ColossalManaged"><HintPath>$(CitiesSkylinesManagedDir)\ColossalManaged.dll</HintPath></Reference>
+    <Reference Include="CitiesHarmony.API"><HintPath>$(CitiesHarmonyApiPath)</HintPath><Private>false</Private></Reference>
+    <Reference Include="CitiesHarmony.Harmony"><HintPath>$(CitiesHarmonyPath)</HintPath><Private>false</Private></Reference>
+    <Reference Include="IntersectionMarkingTool"><HintPath>$(IntersectionMarkingToolPath)</HintPath><Private>false</Private></Reference>
     <Reference Include="IntersectionMarkingTool.API"><HintPath>$(IntersectionMarkingToolApiPath)</HintPath><Private>false</Private></Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -33,10 +39,14 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BundleModels.cs" />
+    <Compile Include="CrosswalkTrajectoryGeometry.cs" />
     <Compile Include="DiagnosticLog.cs" />
     <Compile Include="JsonFiles.cs" />
     <Compile Include="ImtPreviewService.cs" />
+    <Compile Include="ImtInternalAdapter.cs" />
+    <Compile Include="ImtCrosswalkTrajectoryHook.cs" />
     <Compile Include="LaneContractValidator.cs" />
+    <Compile Include="NetSegmentCreationHook.cs" />
     <Compile Include="PrefabInspectionService.cs" />
     <Compile Include="PrefabUpdater.cs" />
     <Compile Include="RuntimeEntry.cs" />
@@ -45,6 +55,9 @@
   </ItemGroup>
   <Target Name="RequireIntersectionMarkingToolApi" BeforeTargets="ResolveReferences" Condition="!Exists('$(IntersectionMarkingToolApiPath)')">
     <Error Text="Intersection Marking Tool API was not found at $(IntersectionMarkingToolApiPath). Install Workshop item 2140418403 or pass IntersectionMarkingToolApiPath." />
+  </Target>
+  <Target Name="RequireImtCrosswalkHookDependencies" BeforeTargets="ResolveReferences" Condition="!Exists('$(IntersectionMarkingToolPath)') Or !Exists('$(CitiesHarmonyApiPath)') Or !Exists('$(CitiesHarmonyPath)')">
+    <Error Text="IMT 1.15 and CitiesHarmony were not found. Install Workshop items 2140418403 and 2040656402 or pass their assembly paths." />
   </Target>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
