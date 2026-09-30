@@ -6,8 +6,8 @@ namespace RoadRuntimeHost.Runtime
 {
     // IMT 1.15's public API cannot retrieve an existing crosswalk provider.
     // Keep this adapter limited to that compatibility gap and a one-time
-    // native recalculation used to discard geometry produced by older Runtime
-    // versions. It must not own or continuously rewrite IMT geometry.
+    // recalculation after the pre-dash wall hook is installed. It must not own
+    // or continuously rewrite IMT geometry.
     internal sealed class ImtInternalAdapter
     {
         public ulong GetCrosswalkLineId(ICrosswalkData crosswalk)
@@ -51,8 +51,9 @@ namespace RoadRuntimeHost.Runtime
             object internalCrosswalk = PublicProperty(internalCrosswalkLine, "Crosswalk");
             object internalMarking = PrivateProperty(marking, "Marking");
 
-            // Rebuild exclusively from IMT's persisted state. This queues the
-            // normal IMT render rebuild without changing points, borders, or styles.
+            // Rebuild exclusively from IMT's persisted state. The version-gated
+            // pre-dash hook may adjust the generated trajectory, but this adapter
+            // never changes points, borders, styles, or final decal polygons.
             Invoke(internalCrosswalk, "Update", true);
             InvokeNoArguments(internalMarking, "RecalculateAllStyleData");
         }

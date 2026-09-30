@@ -29,7 +29,8 @@ namespace RoadRuntimeHost.ContractSmoke
                     throw new InvalidOperationException("hot runtime reflection contract is incomplete");
                 ValidatePrefabInspectionContract(runtime.Assembly);
                 ValidatePackedTextureContract(runtime.Assembly);
-                ValidateCrosswalkTrajectoryContract(runtime.Assembly);
+                ValidateCrosswalkWallRenderingContract(runtime.Assembly);
+                ValidateImtNodePolicyContract(runtime.Assembly);
                 string temp = Path.Combine(Path.GetTempPath(), "RoadRuntimeHost.ContractSmoke." + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(temp);
                 try
@@ -159,77 +160,92 @@ namespace RoadRuntimeHost.ContractSmoke
                 throw new InvalidOperationException("XYS default channels are invalid");
         }
 
-        private static void ValidateCrosswalkTrajectoryContract(Assembly runtimeAssembly)
+        private static void ValidateCrosswalkWallRenderingContract(Assembly runtimeAssembly)
         {
-            Type geometry = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.CrosswalkTrajectoryGeometry", true);
-            MethodInfo extend = geometry.GetMethod("ExtendPolygonToBoundaries", BindingFlags.Static | BindingFlags.Public);
-            if (extend == null) throw new InvalidOperationException("crosswalk trajectory extension contract is missing");
+            if (runtimeAssembly.GetType("RoadRuntimeHost.Runtime.ImtCrosswalkTrajectoryPatch", false) != null)
+                throw new InvalidOperationException(
+                    "the removed per-decal crosswalk extension returned");
 
-            object[] arguments =
+            Type hook = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.ImtCrosswalkWallPatch", true);
+            MethodInfo prefix = hook.GetMethod(
+                "Prefix", BindingFlags.Static | BindingFlags.NonPublic);
+            if (prefix == null)
+                throw new InvalidOperationException(
+                    "pre-dash IMT wall-alignment hook is missing");
+
+            Type geometry = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.CrosswalkWallGeometry", true);
+            MethodInfo tryGetSpan = geometry.GetMethod(
+                "TryGetSpan", BindingFlags.Static | BindingFlags.Public);
+            if (tryGetSpan == null)
+                throw new InvalidOperationException(
+                    "crosswalk wall span calculation is missing");
+
+            object[] values = new object[]
             {
-                new Vector3[]
-                {
-                    new Vector3(-3f, 0f, -0.2f),
-                    new Vector3(3f, 0f, -0.2f),
-                    new Vector3(3f, 0f, 0.2f),
-                    new Vector3(-3f, 0f, 0.2f),
-                },
-                Vector3.zero,
-                new Vector3(-4f, 0f, 0f),
-                new Vector3(4f, 0f, 0f),
+                new Vector3(-1f, 0f, 0f),
                 new Vector3(1f, 0f, 0f),
+                new Vector3(-3f, 0f, 2f),
+                new Vector3(3f, 0f, 2f),
                 new Vector3(0f, 0f, 1f),
+                0f,
+                0f
             };
-            if (!(bool)extend.Invoke(null, arguments))
-                throw new InvalidOperationException("crosswalk trajectory did not extend to both road boundaries");
-            Vector3[] extended = (Vector3[])arguments[0];
-            if (!Approximately(extended[0], new Vector3(-4f, 0f, -0.2f))
-                || !Approximately(extended[1], new Vector3(4f, 0f, -0.2f))
-                || !Approximately(extended[2], new Vector3(4f, 0f, 0.2f))
-                || !Approximately(extended[3], new Vector3(-4f, 0f, 0.2f)))
-                throw new InvalidOperationException("crosswalk polygon endpoints disagree with the road boundaries");
+            if (!(bool)tryGetSpan.Invoke(null, values)
+                || Math.Abs((float)values[5] + 1f) > 0.0001f
+                || Math.Abs((float)values[6] - 2f) > 0.0001f)
+                throw new InvalidOperationException(
+                    "crosswalk trajectory was not extended to both wall lines before dash generation");
 
-            Vector3[] wide =
+            object[] parallel = new object[]
             {
-                new Vector3(-5f, 0f, -0.2f),
-                new Vector3(5f, 0f, -0.2f),
-                new Vector3(5f, 0f, 0.2f),
-                new Vector3(-5f, 0f, 0.2f),
-            };
-            object[] noShrink =
-            {
-                wide,
                 Vector3.zero,
-                new Vector3(-4f, 0f, 0f),
-                new Vector3(4f, 0f, 0f),
+                new Vector3(2f, 0f, 0f),
+                Vector3.zero,
+                new Vector3(2f, 0f, 0f),
                 new Vector3(1f, 0f, 0f),
-                new Vector3(0f, 0f, 1f),
+                0f,
+                0f
             };
-            if ((bool)extend.Invoke(null, noShrink)
-                || !Approximately(wide[0], new Vector3(-5f, 0f, -0.2f))
-                || !Approximately(wide[1], new Vector3(5f, 0f, -0.2f)))
-                throw new InvalidOperationException("crosswalk trajectory extension shortened native IMT geometry");
+            if ((bool)tryGetSpan.Invoke(null, parallel))
+                throw new InvalidOperationException(
+                    "parallel wall directions must fall back to native IMT geometry");
 
-            MethodInfo decodeColor = geometry.GetMethod("DecodeSourceColor", BindingFlags.Static | BindingFlags.Public);
-            if (decodeColor == null) throw new InvalidOperationException("crosswalk decal color preservation contract is missing");
-            Color source = new Color(0.8f, 0.6f, 0.4f, 0.7f);
-            Color rendered = new Color(
-                Mathf.Pow(source.r, 4f),
-                Mathf.Pow(source.g, 4f),
-                Mathf.Pow(source.b, 4f),
-                source.a * source.a);
-            Color32 decoded = (Color32)decodeColor.Invoke(null, new object[] { rendered, false });
-            Color32 expected = (Color32)source;
-            if (Math.Abs(decoded.r - expected.r) > 1
-                || Math.Abs(decoded.g - expected.g) > 1
-                || Math.Abs(decoded.b - expected.b) > 1
-                || Math.Abs(decoded.a - expected.a) > 1)
-                throw new InvalidOperationException("crosswalk decal reconstruction changed the IMT style color");
+            if (runtimeAssembly.GetType(
+                    "RoadRuntimeHost.Runtime.ImtRestoreDefaultsPatch", false) == null)
+                throw new InvalidOperationException(
+                    "IMT road-default restore action is missing");
         }
 
-        private static bool Approximately(Vector3 left, Vector3 right)
+        private static void ValidateImtNodePolicyContract(Assembly runtimeAssembly)
         {
-            return (left - right).sqrMagnitude < 0.000001f;
+            Type policy = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.ImtNodePolicy", true);
+            MethodInfo corner = policy.GetMethod(
+                "ShouldConnectRoadLines", BindingFlags.Static | BindingFlags.Public);
+            MethodInfo crosswalk = policy.GetMethod(
+                "ShouldCreateCrosswalk", BindingFlags.Static | BindingFlags.Public);
+            MethodInfo stopLine = policy.GetMethod(
+                "ShouldCreateStopLine", BindingFlags.Static | BindingFlags.Public);
+            if (corner == null || crosswalk == null || stopLine == null)
+                throw new InvalidOperationException("IMT node policy contract is incomplete");
+
+            if (!(bool)corner.Invoke(null, new object[] { 2 })
+                || (bool)corner.Invoke(null, new object[] { 3 }))
+                throw new InvalidOperationException("only two-segment nodes may connect road lines");
+            if ((bool)crosswalk.Invoke(null, new object[] { 2, true, true })
+                || (bool)crosswalk.Invoke(null, new object[] { 3, false, true })
+                || (bool)crosswalk.Invoke(null, new object[] { 3, true, false })
+                || !(bool)crosswalk.Invoke(null, new object[] { 3, true, true }))
+                throw new InvalidOperationException("crosswalk policy must require a junction, pedestrian lane, and crossing permission");
+            if ((bool)stopLine.Invoke(null, new object[] { 3, true, false, false, false })
+                || (bool)stopLine.Invoke(null, new object[] { 3, false, false, false, true })
+                || (bool)stopLine.Invoke(null, new object[] { 2, true, false, false, true })
+                || !(bool)stopLine.Invoke(null, new object[] { 3, true, true, false, false })
+                || !(bool)stopLine.Invoke(null, new object[] { 3, true, false, true, false })
+                || !(bool)stopLine.Invoke(null, new object[] { 3, true, false, false, true }))
+                throw new InvalidOperationException(
+                    "stop-line policy must require a junction and a signal, stop sign, or blocked-junction wait rule");
         }
 
         private static void ValidatePrefabInspectionContract(Assembly runtimeAssembly)

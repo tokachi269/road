@@ -8,6 +8,7 @@
     "node_slices": 8,
     "curb_height": 0.3,
     "surface_profile": "DEPRESSED",
+    "line_mesh_enabled": false,
     "median": {
       "enabled": false,
       "width": 1.0,

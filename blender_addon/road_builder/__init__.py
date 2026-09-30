@@ -1837,7 +1837,8 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
     structure_material = _structure_material()
     tunnel_material = _tunnel_material()
     road_half = roadway_width * 0.5
-    segment_markings, edge_centers, median_range = _marking_layout(props)
+    configured_markings, edge_centers, median_range = _marking_layout(props)
+    segment_markings = configured_markings if props.line_mesh_enabled else []
     road_uv_spans = _road_uv_spans(props, road_half)
     texture_boundaries = _surface_texture_boundaries(road_uv_spans)
     segment_boundaries = _segment_boundaries(
@@ -2125,6 +2126,9 @@ class CS1RoadBuilderProperties(PropertyGroup):
     marking_region_width: FloatProperty(
         name="Texture band width", default=0.4, min=0.2, max=1.0,
         unit="LENGTH", update=_on_geometry_update,
+    )
+    line_mesh_enabled: BoolProperty(
+        name="Generate line mesh", default=False, update=_on_geometry_update,
     )
     node_shoulder_bands: BoolProperty(
         name="Node shoulder bands", default=False, update=_on_geometry_update,
@@ -2466,7 +2470,8 @@ def _authoring_fingerprint(props):
     return repr((
         props.road_name, lanes, boundaries, props.shoulder_width,
         props.sidewalk_width, props.depress_roadway, props.marking_paint_width,
-        props.marking_region_width, props.node_shoulder_bands,
+        props.marking_region_width, props.line_mesh_enabled,
+        props.node_shoulder_bands,
         props.node_min_corner_offset, tuple(props.road_color),
         tuple(props.imt_white_color), tuple(props.imt_yellow_color),
         props.imt_center_line_yellow,
@@ -2688,6 +2693,9 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
         cross = data.get("shared_geometry", data.get("cross_section", {}))
         profile = str(cross.get("surface_profile", "DEPRESSED")).upper()
         props.depress_roadway = bool(cross.get("depress_roadway", profile == "DEPRESSED"))
+        props.line_mesh_enabled = bool(
+            cross.get("line_mesh_enabled", props.line_mesh_enabled)
+        )
         median_present = "median" in cross
         median = cross.get("median", {})
         props.median_enabled = bool(median.get("enabled", props.median_enabled))
@@ -2807,6 +2815,7 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
                 "segment_slices": SEGMENT_SLICES, "node_slices": NODE_SLICES,
                 "curb_height": ROADWAY_DEPRESSION,
                 "surface_profile": "DEPRESSED" if props.depress_roadway else "FLUSH",
+                "line_mesh_enabled": props.line_mesh_enabled,
                 "median": {
                     "enabled": props.median_enabled,
                     "width": props.median_width,
@@ -2985,6 +2994,7 @@ class CS1ROAD_PT_markings(_CS1RoadChildPanel, Panel):
 
     def draw(self, context):
         layout, props = self.layout, context.scene.cs1_road_builder
+        layout.prop(props, "line_mesh_enabled")
         layout.label(text="Lines on road sections; intersections have none.")
         layout.template_list("CS1ROAD_UL_boundaries", "", props, "boundaries", props, "active_boundary_index", rows=6)
         layout.operator("cs1_road.boundaries_sync", text="Refresh line positions", icon="FILE_REFRESH")

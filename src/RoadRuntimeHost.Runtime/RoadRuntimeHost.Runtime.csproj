@@ -39,18 +39,21 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BundleModels.cs" />
-    <Compile Include="CrosswalkTrajectoryGeometry.cs" />
+    <Compile Include="CrosswalkWallGeometry.cs" />
     <Compile Include="DiagnosticLog.cs" />
     <Compile Include="JsonFiles.cs" />
+    <Compile Include="ImtCrosswalkWallHook.cs" />
     <Compile Include="ImtPreviewService.cs" />
     <Compile Include="ImtInternalAdapter.cs" />
-    <Compile Include="ImtCrosswalkTrajectoryHook.cs" />
+    <Compile Include="ImtNodePolicy.cs" />
+    <Compile Include="ImtRestoreDefaultsHook.cs" />
     <Compile Include="LaneContractValidator.cs" />
     <Compile Include="NetSegmentCreationHook.cs" />
     <Compile Include="PrefabInspectionService.cs" />
     <Compile Include="PrefabUpdater.cs" />
     <Compile Include="RuntimeEntry.cs" />
     <Compile Include="TestLayoutManager.cs" />
+    <Compile Include="TmpeTrafficPolicy.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Target Name="RequireIntersectionMarkingToolApi" BeforeTargets="ResolveReferences" Condition="!Exists('$(IntersectionMarkingToolApiPath)')">

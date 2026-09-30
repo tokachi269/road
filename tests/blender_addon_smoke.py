@@ -233,6 +233,7 @@ props.sidewalk_width = 3.0
 props.depress_roadway = True
 props.node_shoulder_bands = False
 props.road_color = (0.20, 0.25, 0.30)
+props.line_mesh_enabled = True
 props.elevated_edge_mesh = create_elevated_edge_source(
     "ElevatedEdge", -0.6, 0.15
 )
@@ -773,6 +774,17 @@ assert bpy.ops.cs1_road.build_all() == {"FINISHED"}
 basic_segment = bpy.data.objects["basic_segment"]
 marked_polygon_count = len(basic_segment.data.polygons)
 
+# The global switch removes only generated line bands. Boundary definitions
+# remain enabled so IMT/export can keep using their semantic roles.
+props.line_mesh_enabled = False
+road_builder.build_mode(bpy.context.scene, "basic")
+meshless_lines_segment = bpy.data.objects["basic_segment"]
+assert len(polygons_of_kind(meshless_lines_segment, "marking")) == 0
+assert sum(item.marking_enabled for item in props.boundaries) == 5
+assert len(meshless_lines_segment.data.polygons) < marked_polygon_count
+props.line_mesh_enabled = True
+road_builder.build_mode(bpy.context.scene, "basic")
+
 assert len(props.boundaries) == 7
 assert sum(item.marking_enabled for item in props.boundaries) == 5
 saved_marking_states = {item.boundary_id: item.marking_enabled for item in props.boundaries}
@@ -890,6 +902,7 @@ assert -0.3 in tunnel_z and 0.0 in tunnel_z and 4.7 in tunnel_z, tunnel_z
 
 left_edge_boundary = next(item for item in props.boundaries if item.boundary_id == "boundary-left-carriageway")
 left_edge_boundary.marking_enabled = False
+props.line_mesh_enabled = False
 props.node_min_corner_offset = 12.0
 spec_output = ROOT / "build" / "smoke" / "roundtrip-road.json"
 spec_output.parent.mkdir(parents=True, exist_ok=True)
@@ -897,6 +910,7 @@ assert bpy.ops.cs1_road.export_spec(filepath=str(spec_output)) == {"FINISHED"}
 saved = json.loads(spec_output.read_text(encoding="utf-8"))
 assert saved["schema_version"] == 3
 assert saved["shared_geometry"]["segment_length"] == 64.0
+assert saved["shared_geometry"]["line_mesh_enabled"] is False
 assert saved["node"]["length"] == 64.0
 assert saved["node"]["center_split"] is True
 assert saved["node"]["shoulder_bands"] is False
@@ -921,11 +935,13 @@ assert len({lane["id"] for lane in saved["lanes"]}) == 4
 assert all(lane["surface_strip_id"] for lane in saved["lanes"])
 
 props.road_color = (0.8, 0.8, 0.8)
+props.line_mesh_enabled = True
 assert bpy.ops.cs1_road.import_spec(filepath=str(spec_output)) == {"FINISHED"}
 roundtrip_boundaries = {item.boundary_id: item for item in props.boundaries}
 assert roundtrip_boundaries["boundary-left-carriageway"].marking_enabled is False
 assert roundtrip_boundaries["boundary-right-carriageway"].marking_enabled is True
 assert props.node_min_corner_offset == 12.0
+assert props.line_mesh_enabled is False
 assert [round(value, 3) for value in props.road_color] == [0.20, 0.25, 0.30]
 
 example = ROOT / "specs" / "example-road.json"
