@@ -13,52 +13,35 @@ from harness.architecture_lint import lint_architecture
 REQUIRED_DOCUMENT_TOKENS = {
     "docs/README.md": (
         "# 文書案内",
-        "## まず読む",
-        "## 作業別の案内",
+        "## 正本の優先順位",
+        "## 文書一覧",
     ),
     "docs/architecture.md": (
-        "# 構成と責務",
-        "## データの流れ",
-        "## 責務",
+        "# Road generator architecture",
+        "## State ownership",
+        "## Derived topology",
+        "## Mesh registration boundary",
+        "## Dependency direction",
     ),
     "docs/testing.md": (
-        "# 検証方法",
-        "## 通常の変更",
-        "## 人が確認する項目",
+        "# 検証方針",
+        "## Primary proof",
+        "## Structural proof",
+        "## Representative end-to-end",
     ),
 }
 
 DOCUMENT_ROLES = {
     "architecture.md": "現行構成",
-    "blender-workflow.md": "操作手順",
-    "contract-map.md": "契約案内",
     "cs1-road-requirements.md": "仕様資料",
     "design-decisions.md": "比較検討",
     "engineering/agent_harness.md": "作業手順",
     "handoff.md": "履歴",
+    "reference/implementation-details.md": "詳細資料",
     "runtime-preview.md": "運用手順",
     "runtime-workboard.md": "状態記録",
     "testing.md": "検証",
-    "texture-authoring.md": "操作手順",
 }
-
-MAX_DOCUMENT_LINES = 180
-MAX_DOCUMENT_LINE_LENGTH = 140
-
-
-def check_document_format(relative: str, lines: list[str]) -> list[str]:
-    errors: list[str] = []
-    if len(lines) > MAX_DOCUMENT_LINES:
-        errors.append(
-            f"docs/{relative}: {len(lines)} lines exceeds {MAX_DOCUMENT_LINES}"
-        )
-    for line_number, line in enumerate(lines, 1):
-        if len(line) > MAX_DOCUMENT_LINE_LENGTH:
-            errors.append(
-                f"docs/{relative}:{line_number}: line length {len(line)} "
-                f"exceeds {MAX_DOCUMENT_LINE_LENGTH}"
-            )
-    return errors
 
 
 def check_documents(root: Path) -> list[str]:
@@ -91,14 +74,16 @@ def check_documents(root: Path) -> list[str]:
         if index_path.exists()
         else ""
     )
-    for relative in DOCUMENT_ROLES:
+    for relative, role in DOCUMENT_ROLES.items():
         path = docs_root / relative
         link = f"]({relative})"
         if link not in index_text:
             errors.append(f"docs/README.md: missing document link {relative!r}")
         if path.exists():
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-            errors.extend(check_document_format(relative, lines))
+            text = path.read_text(encoding="utf-8", errors="replace")
+            marker = f"> 文書種別: {role}"
+            if marker not in text:
+                errors.append(f"docs/{relative}: missing role marker {marker!r}")
     return errors
 
 

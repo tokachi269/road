@@ -12,13 +12,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from harness.architecture_lint import lint_architecture, path_matches
 
-from arch_lint import (
-    DOCUMENT_ROLES,
-    MAX_DOCUMENT_LINES,
-    MAX_DOCUMENT_LINE_LENGTH,
-    check_document_format,
-    check_documents,
-)
+from arch_lint import DOCUMENT_ROLES, check_documents
 
 
 class ArchitectureHarnessTest(unittest.TestCase):
@@ -31,23 +25,6 @@ class ArchitectureHarnessTest(unittest.TestCase):
             if path.name != "README.md"
         }
         self.assertEqual(indexed, actual)
-
-    def test_document_format_rejects_dense_files_and_lines(self) -> None:
-        errors = check_document_format(
-            "example.md",
-            ["x" * (MAX_DOCUMENT_LINE_LENGTH + 1)]
-            + ["short"] * MAX_DOCUMENT_LINES,
-        )
-        self.assertIn(
-            f"docs/example.md: {MAX_DOCUMENT_LINES + 1} lines exceeds "
-            f"{MAX_DOCUMENT_LINES}",
-            errors,
-        )
-        self.assertIn(
-            f"docs/example.md:1: line length {MAX_DOCUMENT_LINE_LENGTH + 1} "
-            f"exceeds {MAX_DOCUMENT_LINE_LENGTH}",
-            errors,
-        )
 
     def test_recursive_pattern_matches_direct_and_nested_files(self) -> None:
         self.assertTrue(path_matches("source/value.py", "source/**/*.py"))

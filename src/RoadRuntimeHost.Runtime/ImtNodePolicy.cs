@@ -7,6 +7,11 @@ namespace RoadRuntimeHost.Runtime
             return connectedSegments == 2;
         }
 
+        public static int OppositePointOrdinal(int pointOrdinal, int pointCount)
+        {
+            return pointCount - 1 - pointOrdinal;
+        }
+
         public static bool ShouldCreateCrosswalk(
             int connectedSegments,
             bool hasPedestrianLane,

@@ -31,6 +31,7 @@ namespace RoadRuntimeHost.ContractSmoke
                 ValidatePackedTextureContract(runtime.Assembly);
                 ValidateCrosswalkWallRenderingContract(runtime.Assembly);
                 ValidateImtNodePolicyContract(runtime.Assembly);
+                ValidateRoadPlacementMarkingContract(runtime.Assembly);
                 string temp = Path.Combine(Path.GetTempPath(), "RoadRuntimeHost.ContractSmoke." + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(temp);
                 try
@@ -276,7 +277,9 @@ namespace RoadRuntimeHost.ContractSmoke
                 "ShouldCreateCrosswalk", BindingFlags.Static | BindingFlags.Public);
             MethodInfo stopLine = policy.GetMethod(
                 "ShouldCreateStopLine", BindingFlags.Static | BindingFlags.Public);
-            if (corner == null || crosswalk == null || stopLine == null)
+            MethodInfo oppositePoint = policy.GetMethod(
+                "OppositePointOrdinal", BindingFlags.Static | BindingFlags.Public);
+            if (corner == null || crosswalk == null || stopLine == null || oppositePoint == null)
                 throw new InvalidOperationException("IMT node policy contract is incomplete");
 
             if (!(bool)corner.Invoke(null, new object[] { 2 })
@@ -295,6 +298,92 @@ namespace RoadRuntimeHost.ContractSmoke
                 || !(bool)stopLine.Invoke(null, new object[] { 3, true, false, false, true }))
                 throw new InvalidOperationException(
                     "stop-line policy must require a junction and a signal, stop sign, or blocked-junction wait rule");
+            if ((int)oppositePoint.Invoke(null, new object[] { 0, 5 }) != 4
+                || (int)oppositePoint.Invoke(null, new object[] { 1, 5 }) != 3
+                || (int)oppositePoint.Invoke(null, new object[] { 4, 5 }) != 0)
+                throw new InvalidOperationException(
+                    "two-segment node boundaries must connect in opposite entrance order");
+        }
+
+        private static void ValidateRoadPlacementMarkingContract(Assembly runtimeAssembly)
+        {
+            Type styleType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.ImtMarkingStyleBundle", true);
+            Type selectionType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RoadPlacementMarkingSelection", true);
+            Type panelType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RoadPlacementMarkingPanel", true);
+            Type previewType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.ImtPreviewService", true);
+            if (!typeof(ColossalFramework.UI.UIPanel).IsAssignableFrom(panelType))
+                throw new InvalidOperationException(
+                    "road placement markings are not exposed through a CS1 UI panel");
+            MethodInfo panelUpdate = panelType.GetMethod(
+                "Update",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly);
+            if (panelUpdate == null || CallsMethod(
+                    panelUpdate,
+                    "ColossalFramework.UI.UIPanel",
+                    "Update"))
+                throw new InvalidOperationException(
+                    "road placement panel calls the unavailable UIPanel.Update method");
+            if (previewType.GetMethod(
+                    "Scan", BindingFlags.Instance | BindingFlags.NonPublic) != null)
+                throw new InvalidOperationException(
+                    "road placement markings still depend on a full segment scan");
+
+            object defaults = Activator.CreateInstance(styleType, true);
+            styleType.GetField("RoadsideLines").SetValue(defaults, true);
+            styleType.GetField("LaneSeparatorStyle").SetValue(
+                defaults, "DASHED_WHITE");
+            styleType.GetField("CenterLineStyle").SetValue(
+                defaults, "DASHED_WHITE");
+            MethodInfo fromStyle = selectionType.GetMethod(
+                "FromStyle", BindingFlags.Static | BindingFlags.Public);
+            MethodInfo applyTo = selectionType.GetMethod(
+                "ApplyTo", BindingFlags.Instance | BindingFlags.Public);
+            if (fromStyle == null || applyTo == null)
+                throw new InvalidOperationException(
+                    "road placement marking selection contract is incomplete");
+
+            object selection = fromStyle.Invoke(null, new object[] { defaults });
+            selectionType.GetField("RoadsideLines").SetValue(selection, false);
+            selectionType.GetField("LaneSeparatorStyle").SetValue(
+                selection, "SOLID_WHITE");
+            selectionType.GetField("CenterLineStyle").SetValue(
+                selection, "SOLID_YELLOW");
+            object captured = Activator.CreateInstance(styleType, true);
+            applyTo.Invoke(selection, new object[] { captured });
+            if ((bool)styleType.GetField("RoadsideLines").GetValue(captured)
+                || (string)styleType.GetField("LaneSeparatorStyle").GetValue(captured)
+                    != "SOLID_WHITE"
+                || (string)styleType.GetField("CenterLineStyle").GetValue(captured)
+                    != "SOLID_YELLOW"
+                || !(bool)styleType.GetField("CenterLineYellow").GetValue(captured))
+                throw new InvalidOperationException(
+                    "placement-time choices were not converted into one segment style snapshot");
+        }
+
+        private static bool CallsMethod(
+            MethodInfo caller,
+            string declaringType,
+            string methodName)
+        {
+            byte[] il = caller.GetMethodBody().GetILAsByteArray();
+            for (int index = 0; index + 4 < il.Length; ++index)
+            {
+                if (il[index] != 0x28 && il[index] != 0x6f) continue;
+                int token = BitConverter.ToInt32(il, index + 1);
+                try
+                {
+                    MethodBase called = caller.Module.ResolveMethod(token);
+                    if (called.DeclaringType != null
+                        && called.DeclaringType.FullName == declaringType
+                        && called.Name == methodName) return true;
+                }
+                catch (ArgumentException) { }
+            }
+            return false;
         }
 
         private static void ValidatePrefabInspectionContract(Assembly runtimeAssembly)

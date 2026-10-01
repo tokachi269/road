@@ -128,7 +128,8 @@ class FakeLayout:
 
         return method
 
-props = bpy.context.scene.cs1_road_builder
+road_builder._initialize_scene_lanes()
+props = road_builder.active_road(bpy.context.scene)
 props.lanes.clear()
 road_builder._add_default_lanes(props)
 default_lane_offsets = {lane.lane_id: lane.vertical_offset for lane in props.lanes}
@@ -1221,18 +1222,30 @@ panel_layout = FakeLayout()
 panel = type("FakePanel", (), {"layout": panel_layout})()
 road_builder.CS1ROAD_PT_main.draw(panel, bpy.context)
 assert panel_layout.property_names.count("mode") == 1
-for panel_type in (
-    road_builder.CS1ROAD_PT_shared,
-    road_builder.CS1ROAD_PT_cross_section,
-    road_builder.CS1ROAD_PT_markings,
-    road_builder.CS1ROAD_PT_mode,
-    road_builder.CS1ROAD_PT_files,
-    road_builder.CS1ROAD_PT_runtime,
-    road_builder.CS1ROAD_PT_development,
-):
-    panel_type.draw(panel, bpy.context)
+original_cross_section_sync = road_builder._sync_cross_section_state
+def fail_if_panel_mutates_cross_section(_props):
+    raise AssertionError("panel draw must not mutate cross-section state")
+road_builder._sync_cross_section_state = fail_if_panel_mutates_cross_section
+try:
+    for panel_type in (
+        road_builder.CS1ROAD_PT_shared,
+        road_builder.CS1ROAD_PT_cross_section,
+        road_builder.CS1ROAD_PT_markings,
+        road_builder.CS1ROAD_PT_mode,
+        road_builder.CS1ROAD_PT_files,
+        road_builder.CS1ROAD_PT_runtime,
+        road_builder.CS1ROAD_PT_development,
+    ):
+        panel_type.draw(panel, bpy.context)
+finally:
+    road_builder._sync_cross_section_state = original_cross_section_sync
 assert "script.reload" in panel_layout.operator_ids
 assert "cs1_road.reload_surface_texture" in panel_layout.operator_ids
+assert "cs1_road.road_add" in panel_layout.operator_ids
+assert "cs1_road.road_duplicate" in panel_layout.operator_ids
+assert "cs1_road.road_remove" in panel_layout.operator_ids
+assert "cs1_road.import_spec_new" in panel_layout.operator_ids
+assert "cs1_road.export_all_specs" in panel_layout.operator_ids
 assert panel_layout.property_names.count("sidewalk_width") == 2
 assert panel_layout.property_names.count("shoulder_width") == 0
 assert "between_sidewalks_width" in panel_layout.property_names
@@ -1264,14 +1277,54 @@ for panel_type in (
 ):
     assert "DEFAULT_CLOSED" in panel_type.bl_options
 
+scene = bpy.context.scene
+original_count = len(scene.cs1_roads)
+source_index = scene.cs1_active_road_index
+source_name = road_builder.active_road(scene).road_name
+source_lane_ids = [lane.lane_id for lane in road_builder.active_road(scene).lanes]
+assert bpy.ops.cs1_road.road_duplicate() == {"FINISHED"}
+assert len(scene.cs1_roads) == original_count + 1
+duplicate = road_builder.active_road(scene)
+assert duplicate.road_name == f"{source_name} Copy"
+assert [lane.lane_id for lane in duplicate.lanes] == source_lane_ids
+assert duplicate.runtime_auto_export is False
+first_duplicate_id = duplicate.runtime_road_id
+first_duplicate_prefab = duplicate.runtime_prefab_name
+scene.cs1_active_road_index = source_index
+assert bpy.ops.cs1_road.road_duplicate() == {"FINISHED"}
+second_duplicate = road_builder.active_road(scene)
+assert len(scene.cs1_roads) == original_count + 2
+assert second_duplicate.runtime_road_id != first_duplicate_id
+assert second_duplicate.runtime_prefab_name != first_duplicate_prefab
+assert bpy.ops.cs1_road.road_remove() == {"FINISHED"}
+assert bpy.ops.cs1_road.road_remove() == {"FINISHED"}
+assert len(scene.cs1_roads) == original_count
+assert bpy.ops.cs1_road.road_add() == {"FINISHED"}
+assert len(road_builder.active_road(scene).lanes) == 4
+assert bpy.ops.cs1_road.road_remove() == {"FINISHED"}
+assert len(scene.cs1_roads) == original_count
+assert bpy.ops.cs1_road.import_spec_new(filepath=str(spec_output)) == {"FINISHED"}
+assert len(scene.cs1_roads) == original_count + 1
+assert road_builder.active_road(scene).road_name == saved["name"]
+assert bpy.ops.cs1_road.road_remove() == {"FINISHED"}
+all_specs = ROOT / "build" / "smoke" / "all-road-specs"
+if all_specs.exists():
+    shutil.rmtree(all_specs)
+assert bpy.ops.cs1_road.export_all_specs(directory=str(all_specs)) == {"FINISHED"}
+assert len(list(all_specs.glob("*.json"))) == original_count
+before_reload_count = len(scene.cs1_roads)
+before_reload_name = road_builder.active_road(scene).road_name
+
 # Match Blender's Reload Scripts lifecycle. The package must refresh its
 # child modules and register cleanly again without restarting Blender.
 road_builder.unregister()
 road_builder = importlib.reload(road_builder)
 road_builder.register()
 road_builder._initialize_scene_lanes()
-reloaded_props = bpy.context.scene.cs1_road_builder
+reloaded_props = road_builder.active_road(bpy.context.scene)
 assert reloaded_props is not None
+assert len(bpy.context.scene.cs1_roads) == before_reload_count
+assert reloaded_props.road_name == before_reload_name
 road_builder.build_mode(bpy.context.scene, "elevated")
 _, reloaded_total_width, _ = road_builder._cross_section(reloaded_props)
 reloaded_layout = road_builder.plan_main_girders(reloaded_total_width)

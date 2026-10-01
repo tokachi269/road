@@ -3,10 +3,10 @@ from __future__ import annotations
 bl_info = {
     "name": "CS1 Road Builder",
     "author": "Local project",
-    "version": (0, 7, 0),
+    "version": (0, 8, 0),
     "blender": (5, 1, 0),
     "location": "3D View > Sidebar > Road",
-    "description": "Edit and preview standalone Cities: Skylines 1 road modes",
+    "description": "Manage, edit, and preview Cities: Skylines 1 road definitions",
     "category": "Object",
 }
 
@@ -129,7 +129,8 @@ def _on_lane_zone_update(lane, context) -> None:
     elif lane.lane_type == "PEDESTRIAN":
         lane.lane_type = "VEHICLE"
         lane.vehicle_type = "CAR"
-    props = getattr(getattr(context, "scene", None), "cs1_road_builder", None)
+    scene = getattr(context, "scene", None)
+    props = active_road(scene) if scene is not None else None
     if props is not None:
         _sync_lane_derived_values(props)
         _sync_cross_section_state(props)
@@ -1618,8 +1619,17 @@ def _sync_cross_section_state(props):
         _CROSS_SECTION_SYNCING = False
 
 
+def _cross_section_allocation(props):
+    """Read the current width budget without mutating Blender properties."""
+    return allocate_cross_section(
+        props.lanes,
+        props.between_sidewalks_width,
+        _active_median_width(props),
+    )
+
+
 def _cross_section_warning(props) -> str | None:
-    allocation = _sync_cross_section_state(props)
+    allocation = _cross_section_allocation(props)
     if allocation.overflow > 1e-8:
         return (
             f"Cross-section exceeds the sidewalk span by "
@@ -1685,7 +1695,7 @@ def _schedule_live_preview(props, context) -> None:
     if _LIVE_PREVIEW_REBUILDING:
         return
     scene = getattr(context, "scene", None)
-    scene_props = getattr(scene, "cs1_road_builder", None) if scene is not None else None
+    scene_props = active_road(scene) if scene is not None else None
     if (
         scene_props is None
         or scene_props.as_pointer() != props.as_pointer()
@@ -1786,21 +1796,24 @@ def _on_depress_roadway_update(props, context) -> None:
 
 def _on_lane_width_update(lane, context) -> None:
     if lane.zone == "ROAD":
-        props = getattr(getattr(context, "scene", None), "cs1_road_builder", None)
+        scene = getattr(context, "scene", None)
+        props = active_road(scene) if scene is not None else None
         if props is not None:
             _sync_cross_section_state(props)
             _schedule_live_preview(props, context)
 
 
 def _on_lane_direction_update(lane, context) -> None:
-    props = getattr(getattr(context, "scene", None), "cs1_road_builder", None)
+    scene = getattr(context, "scene", None)
+    props = active_road(scene) if scene is not None else None
     if props is not None:
         _sync_cross_section_state(props)
         _schedule_live_preview(props, context)
 
 
 def _on_boundary_marking_update(boundary, context) -> None:
-    props = getattr(getattr(context, "scene", None), "cs1_road_builder", None)
+    scene = getattr(context, "scene", None)
+    props = active_road(scene) if scene is not None else None
     if props is not None:
         _schedule_live_preview(props, context)
 
@@ -1984,14 +1997,59 @@ def _initialize_scene_lanes():
     except AttributeError:
         return 0.1
     for scene in scenes:
-        _ensure_default_lanes(scene.cs1_road_builder)
+        legacy = scene.cs1_road_builder
+        _ensure_default_lanes(legacy)
+        if not scene.cs1_roads:
+            road = scene.cs1_roads.add()
+            _copy_property_group(legacy, road)
+            scene.cs1_active_road_index = 0
+        _ensure_default_lanes(active_road(scene))
     return None
 
 
+def active_road(scene):
+    roads = scene.cs1_roads
+    if not roads:
+        return scene.cs1_road_builder
+    index = max(0, min(scene.cs1_active_road_index, len(roads) - 1))
+    return roads[index]
+
+
+def _copy_property_group(source, target) -> None:
+    global _LIVE_PREVIEW_REBUILDING
+    previous = _LIVE_PREVIEW_REBUILDING
+    _LIVE_PREVIEW_REBUILDING = True
+    try:
+        for definition in source.bl_rna.properties:
+            name = definition.identifier
+            if name in {"rna_type", "lanes", "boundaries"} or definition.is_readonly:
+                continue
+            try:
+                setattr(target, name, getattr(source, name))
+            except (AttributeError, TypeError, ValueError):
+                pass
+        for collection_name in ("lanes", "boundaries"):
+            source_items = getattr(source, collection_name)
+            target_items = getattr(target, collection_name)
+            target_items.clear()
+            for source_item in source_items:
+                target_item = target_items.add()
+                for definition in source_item.bl_rna.properties:
+                    name = definition.identifier
+                    if name == "rna_type" or definition.is_readonly:
+                        continue
+                    try:
+                        setattr(target_item, name, getattr(source_item, name))
+                    except (AttributeError, TypeError, ValueError):
+                        pass
+    finally:
+        _LIVE_PREVIEW_REBUILDING = previous
+
+
 def _cross_section(props) -> tuple[float, float, float]:
-    _sync_cross_section_state(props)
+    allocation = _cross_section_allocation(props)
     return cross_section_widths(
-        props.lanes, props.shoulder_width, props.sidewalk_width,
+        props.lanes, allocation.shoulder_width, props.sidewalk_width,
         props.median_width if props.median_enabled else 0.0,
     )
 
@@ -2017,7 +2075,8 @@ def _lane_positions(props):
 
 
 def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
-    props = scene.cs1_road_builder
+    props = active_road(scene)
+    _sync_cross_section_state(props)
     _sync_lane_derived_values(props)
     roadway_width, _, total_half = _cross_section(props)
     custom_edge_segments = None
@@ -2416,6 +2475,96 @@ class CS1RoadBuilderProperties(PropertyGroup):
     runtime_prop_shader: StringProperty(name="Prop shader", default="Custom/Props/Decal/Blend")
 
 
+class CS1ROAD_UL_roads(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        if self.layout_type not in {"DEFAULT", "COMPACT"}:
+            layout.label(text=item.road_name)
+            return
+        road_lanes = sum(lane.zone == "ROAD" for lane in item.lanes)
+        pedestrian_lanes = sum(lane.lane_type == "PEDESTRIAN" for lane in item.lanes)
+        _, total_width, _ = _cross_section(item)
+        median = "M" if item.median_enabled else "-"
+        row = layout.row(align=True)
+        row.label(text=item.road_name or "Unnamed road", icon="MESH_GRID")
+        row.label(text=f"{road_lanes}R {pedestrian_lanes}P {total_width:.1f}m {median}")
+
+
+def _unique_road_value(scene, attribute: str, requested: str, exclude=None) -> str:
+    base = requested.strip() or "Road"
+    existing = {
+        str(getattr(road, attribute)).strip().lower()
+        for road in scene.cs1_roads
+        if exclude is None or road.as_pointer() != exclude.as_pointer()
+    }
+    if base.lower() not in existing:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}".lower() in existing:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
+class CS1ROAD_OT_road_add(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.road_add", "Add road", {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        road = scene.cs1_roads.add()
+        number = len(scene.cs1_roads)
+        road.road_name = _unique_road_value(scene, "road_name", f"Road {number}", road)
+        road.runtime_road_id = _unique_road_value(
+            scene, "runtime_road_id", f"road-{number}", road,
+        )
+        road.runtime_prefab_name = _unique_road_value(
+            scene, "runtime_prefab_name", f"Road {number}", road,
+        )
+        _ensure_default_lanes(road)
+        scene.cs1_active_road_index = number - 1
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_road_duplicate(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.road_duplicate", "Duplicate road", {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        source = active_road(scene)
+        target = scene.cs1_roads.add()
+        _copy_property_group(source, target)
+        target.road_name = _unique_road_value(
+            scene, "road_name", f"{source.road_name} Copy", target,
+        )
+        target.runtime_road_id = _unique_road_value(
+            scene, "runtime_road_id",
+            f"{safe_road_id(source.runtime_road_id)}-copy", target,
+        )
+        target.runtime_prefab_name = _unique_road_value(
+            scene, "runtime_prefab_name",
+            f"{source.runtime_prefab_name} Copy", target,
+        )
+        target.runtime_auto_export = False
+        scene.cs1_active_road_index = len(scene.cs1_roads) - 1
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_road_remove(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.road_remove", "Remove road", {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return len(context.scene.cs1_roads) > 1
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        scene = context.scene
+        index = max(0, min(scene.cs1_active_road_index, len(scene.cs1_roads) - 1))
+        scene.cs1_roads.remove(index)
+        scene.cs1_active_road_index = min(index, len(scene.cs1_roads) - 1)
+        return {"FINISHED"}
+
+
 class CS1ROAD_UL_boundaries(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if self.layout_type in {"DEFAULT", "COMPACT"}:
@@ -2434,7 +2583,7 @@ class CS1ROAD_OT_lane_add(Operator):
     bl_idname, bl_label, bl_options = "cs1_road.lane_add", "Add lane", {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         lane = props.lanes.add()
         _ensure_lane_ids(props)
         lane.name = f"Lane {len(props.lanes)}"
@@ -2448,7 +2597,7 @@ class CS1ROAD_OT_lanes_reset(Operator):
     bl_idname, bl_label, bl_options = "cs1_road.lanes_reset", "Create default lanes", {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         props.lanes.clear()
         _add_default_lanes(props)
         props.active_lane_index = 0
@@ -2462,7 +2611,7 @@ class CS1ROAD_OT_lane_remove(Operator):
     index: IntProperty(default=-1)
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         if props.lanes:
             index = self.index if 0 <= self.index < len(props.lanes) else props.active_lane_index
             props.lanes.remove(min(index, len(props.lanes) - 1))
@@ -2478,7 +2627,7 @@ class CS1ROAD_OT_lane_move(Operator):
     index: IntProperty(default=-1)
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         source = self.index if 0 <= self.index < len(props.lanes) else props.active_lane_index
         if not 0 <= source < len(props.lanes):
             return {"FINISHED"}
@@ -2556,7 +2705,7 @@ class CS1ROAD_OT_boundaries_sync(Operator):
     bl_idname, bl_label, bl_options = "cs1_road.boundaries_sync", "Synchronize boundaries", {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         _sync_boundaries(props)
         _schedule_live_preview(props, context)
         return {"FINISHED"}
@@ -2580,7 +2729,7 @@ class CS1ROAD_OT_build_preview(Operator):
     bl_idname, bl_label, bl_options = "cs1_road.build_preview", "Build active mode", {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         try:
             build_mode(context.scene, props.mode)
         except ValueError as error:
@@ -2596,7 +2745,7 @@ class CS1ROAD_OT_build_all(Operator):
     bl_idname, bl_label, bl_options = "cs1_road.build_all", "Build all modes", {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         try:
             for mode, _, _ in MODE_ITEMS:
                 build_mode(context.scene, mode)
@@ -2616,7 +2765,7 @@ class CS1ROAD_OT_reload_surface_texture(Operator):
 
     def execute(self, context):
         try:
-            props = context.scene.cs1_road_builder
+            props = active_road(context.scene)
             _material(
                 props.marking_paint_width,
                 props.marking_region_width,
@@ -2671,7 +2820,8 @@ def _runtime_output_path(props) -> Path:
 
 
 def _export_runtime_scene(scene):
-    props = scene.cs1_road_builder
+    props = active_road(scene)
+    _sync_cross_section_state(props)
     _ensure_lane_ids(props)
     _, _, half_width = _cross_section(props)
     modes = _runtime_mode_objects()
@@ -2775,7 +2925,7 @@ def _runtime_texture_fingerprint():
 
 def _runtime_auto_export_timer():
     for scene in bpy.data.scenes:
-        props = getattr(scene, "cs1_road_builder", None)
+        props = active_road(scene)
         if props is None or not props.runtime_auto_export:
             continue
         scene_key = scene.as_pointer()
@@ -2830,7 +2980,7 @@ class CS1ROAD_OT_export_runtime(Operator):
                 build_mode(context.scene, mode)
             payload = _export_runtime_scene(context.scene)
             _AUTO_EXPORT_STATE[context.scene.as_pointer()] = (
-                _authoring_fingerprint(context.scene.cs1_road_builder),
+                _authoring_fingerprint(active_road(context.scene)),
                 _runtime_geometry_fingerprint(),
                 _runtime_texture_fingerprint(),
             )
@@ -2845,7 +2995,7 @@ class CS1ROAD_OT_export_runtime_prop(Operator):
     bl_idname, bl_label = "cs1_road.export_runtime_prop", "Export selected Prop/Decal mesh"
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         obj = context.active_object
         if obj is None or obj.type != "MESH":
             self.report({"ERROR"}, "Select one Mesh object to export")
@@ -2953,7 +3103,7 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
 
     def execute(self, context):
         data = json.loads(Path(self.filepath).read_text(encoding="utf-8"))
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         props.road_name = data.get("name", props.road_name)
         schema_version = int(data.get("schema_version", 2))
         surface_style = data.get("styles", {}).get("surface", {})
@@ -3118,7 +3268,7 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
     filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
 
     def execute(self, context):
-        props = context.scene.cs1_road_builder
+        props = active_road(context.scene)
         _sync_cross_section_state(props)
         _ensure_lane_ids(props)
         _sync_boundaries(props)
@@ -3199,12 +3349,91 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
         return {"FINISHED"}
 
 
+class CS1ROAD_OT_import_spec_new(Operator, ImportHelper):
+    bl_idname, bl_label, filename_ext = "cs1_road.import_spec_new", "Import road as new", ".json"
+    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
+
+    def execute(self, context):
+        scene = context.scene
+        previous_index = scene.cs1_active_road_index
+        scene.cs1_roads.add()
+        scene.cs1_active_road_index = len(scene.cs1_roads) - 1
+        result = bpy.ops.cs1_road.import_spec(filepath=self.filepath)
+        if result != {"FINISHED"}:
+            scene.cs1_roads.remove(len(scene.cs1_roads) - 1)
+            scene.cs1_active_road_index = previous_index
+            return {"CANCELLED"}
+        road = active_road(scene)
+        if not road.runtime_road_id or road.runtime_road_id == "example-road":
+            road.runtime_road_id = _unique_road_value(
+                scene, "runtime_road_id",
+                safe_road_id(Path(self.filepath).stem), road,
+            )
+        if not road.runtime_prefab_name or road.runtime_prefab_name == "Road Runtime Example":
+            road.runtime_prefab_name = _unique_road_value(
+                scene, "runtime_prefab_name", road.road_name, road,
+            )
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_export_all_specs(Operator):
+    bl_idname, bl_label = "cs1_road.export_all_specs", "Export all roads"
+    directory: StringProperty(name="Directory", subtype="DIR_PATH")
+
+    def invoke(self, context, event):
+        self.directory = str(Path(__file__).resolve().parents[2] / "specs")
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        scene = context.scene
+        output = Path(bpy.path.abspath(self.directory)).resolve()
+        output.mkdir(parents=True, exist_ok=True)
+        previous_index = scene.cs1_active_road_index
+        try:
+            for index, road in enumerate(scene.cs1_roads):
+                scene.cs1_active_road_index = index
+                filename = f"{safe_road_id(road.runtime_road_id or road.road_name)}.json"
+                result = bpy.ops.cs1_road.export_spec(filepath=str(output / filename))
+                if result != {"FINISHED"}:
+                    self.report({"ERROR"}, f"Failed to export {road.road_name}")
+                    return {"CANCELLED"}
+        finally:
+            scene.cs1_active_road_index = min(previous_index, len(scene.cs1_roads) - 1)
+        self.report({"INFO"}, f"Exported {len(scene.cs1_roads)} roads")
+        return {"FINISHED"}
+
+
 class CS1ROAD_PT_main(Panel):
     bl_label, bl_idname = "CS1 Road Builder", "CS1ROAD_PT_main"
     bl_space_type, bl_region_type, bl_category = "VIEW_3D", "UI", "Road"
 
     def draw(self, context):
-        layout, props = self.layout, context.scene.cs1_road_builder
+        layout, props = self.layout, active_road(context.scene)
+        library = layout.row()
+        library.template_list(
+            "CS1ROAD_UL_roads", "",
+            context.scene, "cs1_roads",
+            context.scene, "cs1_active_road_index",
+            rows=4,
+        )
+        buttons = library.column(align=True)
+        buttons.operator("cs1_road.road_add", text="", icon="ADD")
+        buttons.operator("cs1_road.road_duplicate", text="", icon="DUPLICATE")
+        buttons.operator("cs1_road.road_remove", text="", icon="REMOVE")
+        summary = layout.box()
+        road_lanes = sum(lane.zone == "ROAD" for lane in props.lanes)
+        pedestrian_lanes = sum(lane.lane_type == "PEDESTRIAN" for lane in props.lanes)
+        _, total_width, _ = _cross_section(props)
+        summary.label(text=props.runtime_road_id or "No runtime road ID", icon="KEYTYPE_KEYFRAME_VEC")
+        summary.label(text=(
+            f"{road_lanes} roadway / {pedestrian_lanes} pedestrian lanes | "
+            f"{total_width:.2f} m total"
+        ))
+        summary.label(text=(
+            ("Median" if props.median_enabled else "No median")
+            + (" | depressed roadway" if props.depress_roadway else " | flush roadway")
+        ))
         layout.prop(props, "road_name")
         tabs = layout.row(align=True)
         tabs.prop(props, "mode", expand=True)
@@ -3225,7 +3454,7 @@ class CS1ROAD_PT_shared(_CS1RoadChildPanel, Panel):
     bl_idname = "CS1ROAD_PT_shared"
 
     def draw(self, context):
-        layout, props = self.layout, context.scene.cs1_road_builder
+        layout, props = self.layout, active_road(context.scene)
         layout.prop(props, "depress_roadway")
         layout.prop(props, "node_min_corner_offset")
         layout.prop(props, "road_color")
@@ -3241,8 +3470,8 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
     bl_idname = "CS1ROAD_PT_cross_section"
 
     def draw(self, context):
-        box, props = self.layout, context.scene.cs1_road_builder
-        allocation = _sync_cross_section_state(props)
+        box, props = self.layout, active_road(context.scene)
+        allocation = _cross_section_allocation(props)
         primary = box.box()
         primary.label(text="Width budget")
         primary.prop(props, "between_sidewalks_width")
@@ -3329,7 +3558,7 @@ class CS1ROAD_PT_markings(_CS1RoadChildPanel, Panel):
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
-        layout, props = self.layout, context.scene.cs1_road_builder
+        layout, props = self.layout, active_road(context.scene)
         rules = layout.box()
         rules.label(text="Default lines for this road")
         rules.prop(props, "roadside_lines")
@@ -3372,10 +3601,10 @@ class CS1ROAD_PT_mode(_CS1RoadChildPanel, Panel):
 
     def draw_header(self, context):
         labels = {key: label for key, label, _ in MODE_ITEMS}
-        self.layout.label(text=labels.get(context.scene.cs1_road_builder.mode, ""))
+        self.layout.label(text=labels.get(active_road(context.scene).mode, ""))
 
     def draw(self, context):
-        mode_box, props = self.layout, context.scene.cs1_road_builder
+        mode_box, props = self.layout, active_road(context.scene)
         if props.mode == "elevated":
             mode_box.prop(props, "elevated_height"); mode_box.prop(props, "deck_depth")
             mode_box.prop(props, "elevated_edge_mesh")
@@ -3411,9 +3640,13 @@ class CS1ROAD_PT_files(_CS1RoadChildPanel, Panel):
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
-        row = self.layout.row(align=True)
-        row.operator("cs1_road.import_spec", icon="IMPORT")
-        row.operator("cs1_road.export_spec", icon="EXPORT")
+        layout = self.layout
+        row = layout.row(align=True)
+        row.operator("cs1_road.import_spec_new", text="Import as new", icon="IMPORT")
+        row.operator("cs1_road.import_spec", text="Replace active", icon="FILE_REFRESH")
+        row = layout.row(align=True)
+        row.operator("cs1_road.export_spec", text="Export active", icon="EXPORT")
+        row.operator("cs1_road.export_all_specs", text="Export all", icon="EXPORT")
 
 
 class CS1ROAD_PT_runtime(_CS1RoadChildPanel, Panel):
@@ -3422,7 +3655,7 @@ class CS1ROAD_PT_runtime(_CS1RoadChildPanel, Panel):
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
-        runtime, props = self.layout, context.scene.cs1_road_builder
+        runtime, props = self.layout, active_road(context.scene)
         runtime.prop(props, "runtime_road_id")
         runtime.prop(props, "runtime_prefab_name")
         runtime.prop(props, "runtime_template_name")
@@ -3454,11 +3687,14 @@ class CS1ROAD_PT_development(_CS1RoadChildPanel, Panel):
 
 
 CLASSES = (
-    CS1RoadLane, CS1RoadBoundary, CS1RoadBuilderProperties, CS1ROAD_UL_boundaries,
+    CS1RoadLane, CS1RoadBoundary, CS1RoadBuilderProperties,
+    CS1ROAD_UL_roads, CS1ROAD_UL_boundaries,
+    CS1ROAD_OT_road_add, CS1ROAD_OT_road_duplicate, CS1ROAD_OT_road_remove,
     CS1ROAD_OT_lane_add, CS1ROAD_OT_lanes_reset, CS1ROAD_OT_lane_remove, CS1ROAD_OT_lane_move,
     CS1ROAD_OT_boundaries_sync,
     CS1ROAD_OT_build_preview, CS1ROAD_OT_build_all, CS1ROAD_OT_reload_surface_texture,
     CS1ROAD_OT_import_spec, CS1ROAD_OT_export_spec, CS1ROAD_OT_export_runtime,
+    CS1ROAD_OT_import_spec_new, CS1ROAD_OT_export_all_specs,
     CS1ROAD_OT_export_runtime_prop,
     CS1ROAD_PT_main, CS1ROAD_PT_shared, CS1ROAD_PT_cross_section,
     CS1ROAD_PT_markings, CS1ROAD_PT_mode, CS1ROAD_PT_files,
@@ -3470,6 +3706,8 @@ def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.cs1_road_builder = PointerProperty(type=CS1RoadBuilderProperties)
+    bpy.types.Scene.cs1_roads = CollectionProperty(type=CS1RoadBuilderProperties)
+    bpy.types.Scene.cs1_active_road_index = IntProperty(default=0, min=0)
     if not bpy.app.timers.is_registered(_initialize_scene_lanes):
         bpy.app.timers.register(_initialize_scene_lanes, first_interval=0.0)
     if not bpy.app.timers.is_registered(_runtime_auto_export_timer):
@@ -3486,6 +3724,8 @@ def unregister():
     _AUTO_EXPORT_STATE.clear()
     _AUTO_EXPORT_ERRORS.clear()
     _LIVE_PREVIEW_PENDING.clear()
+    del bpy.types.Scene.cs1_active_road_index
+    del bpy.types.Scene.cs1_roads
     del bpy.types.Scene.cs1_road_builder
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
