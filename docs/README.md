@@ -1,51 +1,39 @@
 # 文書案内
 
-> 文書種別: 入口
+このページは、目的に合う文書を探すための入口です。
+最初から全ファイルを読む必要はありません。
 
-このページを文書の入口とする。仕様の正しさは文書だけでは保証しない。
-実装コード、テスト、lint、実ゲームでの観測結果を根拠にする。
+## まず読む
 
-## 正本の優先順位
+実装を変更する前に、次の3文書を確認してください。
 
-判断が食い違う場合は、次の順で確認する。
+1. [構成と責務](architecture.md)
+2. [契約と検証の対応](contract-map.md)
+3. [検証方法](testing.md)
 
-1. 実行可能なテストとハーネス
-2. Decision ownerとして指定された実装コードとデータ
-3. [現在の構成と責務](architecture.md)
-4. 個別の仕様資料と運用手順
-5. 比較検討、作業表、引き継ぎ記録
+## 作業別の案内
 
-文書にしかない規則は、実装済みとはみなさない。未検証の説明も確定仕様にしない。
-ただし、文書と実装の不一致を見つけた場合は、文書を無視せず差異として扱う。
+| 作業 | 読む文書 |
+| --- | --- |
+| Blenderで道路を編集する | [Blenderでの作業](blender-workflow.md) |
+| テクスチャを制作する | [テクスチャ制作](texture-authoring.md) |
+| 通常マップで差分確認する | [Runtime preview](runtime-preview.md) |
+| CS1固有の前提を確認する | [CS1連携の前提](cs1-road-requirements.md) |
+| 未確定の設計を検討する | [設計判断](design-decisions.md) |
+| 現在の進捗を確認する | [作業状況](runtime-workboard.md) |
+| 過去の経緯を調べる | [履歴](handoff.md) |
+| agent作業の進め方を確認する | [Agent作業手順](engineering/agent_harness.md) |
 
-## 最初に読む文書
+## 文書と実装の関係
 
-実装前は次の2文書を読む。
+文書は、全体像、操作方法、判断理由、未検証事項を説明します。
+固定値や分岐条件の正しさは、コードとテストで保証します。
 
-- [現在の構成と責務](architecture.md)
-- [検証方針](testing.md)
+文書と実装が食い違う場合は、実装を自動的に正しいと扱いません。
+該当するテストと観測結果を確認し、どちらを直すか判断します。
 
-agent支援で設計や実装を行う場合は、
-[Agent Engineering Harness](engineering/agent_harness.md)も読む。
+## 更新するとき
 
-## 文書一覧
-
-| 文書 | 種別 | 用途 |
-| --- | --- | --- |
-| [現在の構成と責務](architecture.md) | 現行構成 | owner、依存方向、実装境界を確認する |
-| [検証方針](testing.md) | 検証 | 変更に必要な証拠とコマンドを選ぶ |
-| [CS1道路生成仕様](cs1-road-requirements.md) | 仕様資料 | CS1、RoadImporter、プロジェクト判断を区別して調べる |
-| [Runtime preview](runtime-preview.md) | 運用手順 | 通常マップ向けpreviewの入出力と制約を調べる |
-| [設計判断](design-decisions.md) | 比較検討 | 採用候補、不採用案、実証待ちを確認する |
-| [実装詳細](reference/implementation-details.md) | 詳細資料 | UV、geometry、Runtimeの現在の詳細を調べる |
-| [Runtime preview作業表](runtime-workboard.md) | 状態記録 | 過去の進捗と未検証事項を確認する |
-| [これまでの経緯](handoff.md) | 履歴 | 過去の要求、試作、未確定論点を追跡する |
-| [Agent Engineering Harness](engineering/agent_harness.md) | 作業手順 | agent作業の証拠、停止条件、独立検証を確認する |
-
-## 更新規則
-
-- 仕様変更は、先にDecision ownerと検証方法を決める。
-- 現行契約を変えた場合は、対応するテストまたはハーネスも更新する。
-- 調査結果や候補案は、現行構成へ混ぜず比較検討か履歴へ記録する。
-- 古い情報は削除せず、履歴へ移して現行文書からリンクする。
-- 文書一覧は`tools/arch_lint.py`で検査する。
+同じ規則を複数文書へ書き写さないでください。
+契約を追加した場合は、[契約と検証の対応](contract-map.md)へownerと検証先を追加します。
+操作手順を変えた場合は、利用者向け文書だけを更新します。

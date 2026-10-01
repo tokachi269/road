@@ -1,119 +1,61 @@
-# 検証方針
+# 検証方法
 
-> 文書種別: 検証
+この文書は、変更に応じて実行する検証を示します。
+各テストが守る契約は[契約と検証の対応](contract-map.md)を参照してください。
 
-道路定義、導出規則、Blender生成、Runtime、CS1表示を別の証拠で確認する。
-テスト数は完成条件にしない。異なるfault classを同じsmoke testで代用しない。
-
-## 変更と必要な証拠
-
-| 変更対象 | 最低限の検証 | 証明しないこと |
-| --- | --- | --- |
-| domainの導出規則 | domain contract test | Blender meshとCS1表示 |
-| geometry plan | geometry plan test | Blender APIによる生成結果 |
-| dependencyとowner | architecture lint | 実行時の正しさ |
-| Blender UI、mesh、UV | Blender background smoke | Asset Editorとゲーム内shader |
-| RoadImporter | importer build | CRPのゲーム内表示 |
-| Runtime bundleとreader | Runtime contract smoke | Prefab登録、map再読込 |
-| CS1描画と接続 | 実ゲーム確認 | 未確認の他modeや他MOD連携 |
-
-## Primary proof
-
-Blenderに依存しない判断は、次のテストで確認する。
-
-```powershell
-python -m unittest tests.domain_contract_test tests.geometry_plan_test
-```
-
-主な検証対象は次のとおり。
-
-- 2、3、4車線の幅をlane入力から導出する。
-- boundary identityをstable lane IDと隣接関係から導出する。
-- lane追加時も無関係なedge boundary IDを維持する。
-- segmentとnodeの長さ、slice数にownerが一つだけ存在する。
-- 主桁は偶数本で、JIS標準の2.6、3.2、3.8 m間隔から選ぶ。
-- 主桁中心は左右対称で、床版内に収める。
-
-## Structural proof
-
-`tools/arch_manifest.json`はsourceをlayerへ一度だけ分類する。
-`tools/arch_lint.py`は依存方向、主要定数のowner、文書一覧を検査する。
+## 通常の変更
 
 ```powershell
 python tools/arch_lint.py
-python tools/harness/test_architecture_lint.py
-python -m unittest tests.architecture_harness_test
+python -m unittest discover -s tests -p '*_test.py'
 ```
 
-portable self-testは合成fixtureを使う。
-manifest validation、required root、分類、再帰pattern、禁止tokenを確認する。
-token guardはbehaviorを証明しないため、geometry testの代用にはしない。
+architecture lintは、依存方向、owner、文書構成を確認します。
+behaviorの正しさはunit testで確認します。
 
-## Representative end-to-end
-
-Blenderの代表経路はbackground Blenderで確認する。
+## Blenderを変更した場合
 
 ```powershell
 .\scripts\run-blender.ps1 -Script .\tests\blender_addon_smoke.py
 ```
 
-このsmokeは次の経路を対象にする。
-
-- JSON importとround-trip
-- 全5 modeの生成
-- 64 m長、slice、node中央分割
-- UV範囲とmarking切替
-- Elevatedの主桁とカスタム端部
-- texture fixtureとRuntime bundle
-
-texture fixtureは`textures/atlas_bases`を
-`build/smoke/texture-fixture`へ複写して使う。
-Photoshop Generatorの保存処理とは競合させない。
-
-形状確認用renderは補助証拠として生成できる。
+smokeはJSON、全mode、mesh、UV、material、Runtime bundleを確認します。
+形状を目で確認するときは、補助renderを生成できます。
 
 ```powershell
 .\scripts\run-blender.ps1 -Script .\tests\render_geometry_preview.py
 ```
 
-render画像だけで寸法、topology、UVの正しさを判定しない。
+render画像だけで寸法やtopologyの正しさを判定しません。
 
-## RoadImporter
-
-RoadImporterを変更した場合はbuildを実行する。
+## RoadImporterを変更した場合
 
 ```powershell
-Set-Location <repository-root>
 .\scripts\build-road-importer.ps1
 ```
 
-build成功はAsset Editorへのimportや、ゲーム内表示を証明しない。
+build成功は、Asset Editorでのimport成功を保証しません。
 
-## Runtime preview
-
-Runtime変更ではcatalog、Blender bundle、.NET reader、CS1参照build、stagingを分けて確認する。
+## Runtimeを変更した場合
 
 ```powershell
-python -m unittest tests.runtime_catalog_test
-.\scripts\run-blender.ps1 -Script .\tests\blender_addon_smoke.py
 $previewPath = Join-Path $PWD 'build\smoke\runtime-preview'
 .\scripts\stage-runtime-host.ps1 -PreviewPath $previewPath
 .\scripts\test-runtime-contract.ps1 -PreviewPath $previewPath
 ```
 
-`RUNTIME_CONTRACT_OK`は、BlenderのJSONを.NET 3.5 readerで読めることを示す。
-成功事象と意図的な型不一致が、専用JSON Linesログへ分類されることも確認する。
-catalogとbundleのlane不一致は`lane_contract_mismatch`として拒否する。
+このcontractは、JSON reader、catalog、bundle、診断ログを確認します。
+Prefab登録、shader表示、map再読込は実ゲームで確認します。
 
-このcontract smokeは次を証明しない。
+## 人が確認する項目
 
-- `runtime.current`による実ゲーム中の差し替え
-- Prefab登録とshader描画
-- map save後の再読込
-- Adaptive Roads条件の反映
-- 実際の接続形状
+次の項目は自動テストだけでは判定できません。
 
-## 最終確認
+- Blender上の見た目と編集しやすさ
+- Asset Editorへのimport
+- shader、AO、normalの見え方
+- カーブ、交差点、transitionの接続
+- IMT、TM:PE、Move Itとの操作競合
+- save後に道路が正しく復元されるか
 
-Asset Editor、shader、AO、selector、カーブ接続は実ゲームで確認する。
-ゲームを起動していない作業では、これらを完了扱いにしない。
+実ゲームを起動していない場合は、これらを完了扱いにしません。
