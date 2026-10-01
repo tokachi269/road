@@ -36,6 +36,78 @@ class DomainContractTest(unittest.TestCase):
             self.assertAlmostEqual(total, roadway + 4.0)
             self.assertAlmostEqual(half, total * 0.5)
 
+    def test_fixed_span_allocates_the_remainder_to_both_shoulders(self) -> None:
+        lanes = [
+            Lane("lane-backward", "Backward", "ROAD", 3.0, "BACKWARD"),
+            Lane("lane-forward", "Forward", "ROAD", 3.0, "FORWARD"),
+        ]
+        allocation = domain.allocate_cross_section(lanes, 8.0)
+        self.assertAlmostEqual(allocation.lane_width, 6.0)
+        self.assertAlmostEqual(allocation.shoulder_width, 1.0)
+        self.assertAlmostEqual(allocation.actual_width, 8.0)
+        self.assertAlmostEqual(allocation.overflow, 0.0)
+        self.assertTrue(allocation.fits)
+
+        with_median = domain.allocate_cross_section(lanes, 8.0, 1.0)
+        self.assertAlmostEqual(with_median.shoulder_width, 0.5)
+        self.assertAlmostEqual(with_median.actual_width, 8.0)
+
+    def test_fixed_span_reports_overflow_without_shrinking_explicit_widths(self) -> None:
+        lanes = [
+            Lane("lane-backward", "Backward", "ROAD", 3.0, "BACKWARD"),
+            Lane("lane-forward", "Forward", "ROAD", 3.0, "FORWARD"),
+        ]
+        allocation = domain.allocate_cross_section(lanes, 8.0, 3.0)
+        self.assertAlmostEqual(allocation.shoulder_width, 0.0)
+        self.assertAlmostEqual(allocation.actual_width, 9.0)
+        self.assertAlmostEqual(allocation.overflow, 1.0)
+        self.assertFalse(allocation.fits)
+
+    def test_parking_requires_room_for_the_configured_width_on_both_sides(self) -> None:
+        lanes = [
+            Lane("lane-backward", "Backward", "ROAD", 3.0, "BACKWARD"),
+            Lane("lane-forward", "Forward", "ROAD", 3.0, "FORWARD"),
+        ]
+        self.assertTrue(domain.parking_fits(lanes, 10.0, 0.0, 2.0))
+        self.assertFalse(domain.parking_fits(lanes, 9.9, 0.0, 2.0))
+
+    def test_road_level_marking_policy_resolves_each_boundary_role(self) -> None:
+        self.assertEqual(
+            domain.marking_rule(
+                "CURB", "CARRIAGEWAY_EDGE", True,
+                "SOLID_WHITE", "SOLID_YELLOW", False,
+            ),
+            (False, "SOLID_WHITE"),
+        )
+        self.assertEqual(
+            domain.marking_rule(
+                "CURB", "CARRIAGEWAY_EDGE", True,
+                "SOLID_WHITE", "SOLID_YELLOW", True,
+            ),
+            (True, "SOLID_WHITE"),
+        )
+        self.assertEqual(
+            domain.marking_rule(
+                "LANE_DIVIDER", "LANE_SEPARATOR", True,
+                "SOLID_WHITE", "SOLID_YELLOW",
+            ),
+            (True, "SOLID_WHITE"),
+        )
+        self.assertEqual(
+            domain.marking_rule(
+                "LANE_DIVIDER", "CENTER_LINE", True,
+                "DASHED_WHITE", "SOLID_YELLOW",
+            ),
+            (True, "SOLID_YELLOW"),
+        )
+        self.assertEqual(
+            domain.marking_rule(
+                "MEDIAN_EDGE", "CENTER_LINE", True,
+                "DASHED_WHITE", "SOLID_YELLOW",
+            ),
+            (False, "SOLID_WHITE"),
+        )
+
     def test_median_width_and_boundary_replace_the_opposing_lane_divider(self) -> None:
         lanes = [
             road_lane(10, "BACKWARD"),

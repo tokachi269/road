@@ -13,7 +13,8 @@ Cities: Skylines 1向けの独自道路ジェネレータ開発環境です。CS
 - `references/RoadImporter/`: upstream参照用submodule
 - `references/CSUR/`: XMLと全モード実装の参照用submodule。生成処理には使わない
 - `scripts/`: 環境確認、Blender起動、Importerビルド・配置、生成物配置
-- `docs/cs1-road-requirements.md`: importer・サンプル・CSURを照合した実装基準
+- `docs/README.md`: 文書の入口、正本の優先順位、文書一覧
+- `docs/cs1-road-requirements.md`: importer・サンプル・CSURを照合した仕様資料
 - `docs/engineering/agent_harness.md`: agent支援作業のscope・証拠・停止条件
 
 ## 確認済みツール

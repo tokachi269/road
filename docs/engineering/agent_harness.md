@@ -1,5 +1,7 @@
 # 移植可能なAgent Engineering Harness
 
+> 文書種別: 作業手順
+
 このplaybookはagent支援engineeringのproject非依存workflowである。境界と検証の規律を定めるが、product semanticsの正本は各projectのarchitecture文書に置く。
 
 ## 新しい概念を導入する手順

@@ -12,8 +12,20 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from harness.architecture_lint import lint_architecture, path_matches
 
+from arch_lint import DOCUMENT_ROLES, check_documents
+
 
 class ArchitectureHarnessTest(unittest.TestCase):
+    def test_document_index_covers_every_document_once(self) -> None:
+        self.assertEqual(check_documents(ROOT), [])
+        indexed = set(DOCUMENT_ROLES)
+        actual = {
+            path.relative_to(ROOT / "docs").as_posix()
+            for path in (ROOT / "docs").rglob("*.md")
+            if path.name != "README.md"
+        }
+        self.assertEqual(indexed, actual)
+
     def test_recursive_pattern_matches_direct_and_nested_files(self) -> None:
         self.assertTrue(path_matches("source/value.py", "source/**/*.py"))
         self.assertTrue(path_matches("source/nested/value.py", "source/**/*.py"))

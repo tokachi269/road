@@ -1,5 +1,7 @@
 # 通常マップRuntime preview
 
+> 文書種別: 運用手順
+
 ## 目的
 
 Asset Editorを往復せず、Blenderで作った道路・Prop・Decal meshと表形式metadataを通常マップへ反映する開発用Hostである。最終CRPを作る機能ではない。

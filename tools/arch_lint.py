@@ -11,6 +11,11 @@ from harness.architecture_lint import lint_architecture
 
 
 REQUIRED_DOCUMENT_TOKENS = {
+    "docs/README.md": (
+        "# 文書案内",
+        "## 正本の優先順位",
+        "## 文書一覧",
+    ),
     "docs/architecture.md": (
         "# Road generator architecture",
         "## State ownership",
@@ -26,6 +31,18 @@ REQUIRED_DOCUMENT_TOKENS = {
     ),
 }
 
+DOCUMENT_ROLES = {
+    "architecture.md": "現行構成",
+    "cs1-road-requirements.md": "仕様資料",
+    "design-decisions.md": "比較検討",
+    "engineering/agent_harness.md": "作業手順",
+    "handoff.md": "履歴",
+    "reference/implementation-details.md": "詳細資料",
+    "runtime-preview.md": "運用手順",
+    "runtime-workboard.md": "状態記録",
+    "testing.md": "検証",
+}
+
 
 def check_documents(root: Path) -> list[str]:
     errors: list[str] = []
@@ -38,6 +55,35 @@ def check_documents(root: Path) -> list[str]:
         for token in tokens:
             if token not in text:
                 errors.append(f"{source}: required contract is missing {token!r}")
+
+    docs_root = root / "docs"
+    actual_documents = {
+        path.relative_to(docs_root).as_posix()
+        for path in docs_root.rglob("*.md")
+        if path.name != "README.md"
+    }
+    expected_documents = set(DOCUMENT_ROLES)
+    for missing in sorted(expected_documents - actual_documents):
+        errors.append(f"docs/{missing}: indexed document is missing")
+    for unindexed in sorted(actual_documents - expected_documents):
+        errors.append(f"docs/{unindexed}: document is not listed in DOCUMENT_ROLES")
+
+    index_path = docs_root / "README.md"
+    index_text = (
+        index_path.read_text(encoding="utf-8", errors="replace")
+        if index_path.exists()
+        else ""
+    )
+    for relative, role in DOCUMENT_ROLES.items():
+        path = docs_root / relative
+        link = f"]({relative})"
+        if link not in index_text:
+            errors.append(f"docs/README.md: missing document link {relative!r}")
+        if path.exists():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            marker = f"> 文書種別: {role}"
+            if marker not in text:
+                errors.append(f"docs/{relative}: missing role marker {marker!r}")
     return errors
 
 

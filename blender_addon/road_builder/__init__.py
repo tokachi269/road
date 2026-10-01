@@ -38,13 +38,17 @@ from .domain import (
     MEDIAN_END_OVERHANG,
     MEDIAN_Z_FIGHT_EPSILON,
     NODE_SLICES,
+    PARKING_LANE_DEFAULT_WIDTH,
     ROADWAY_DEPRESSION,
     SIDEWALK_LANE_TOTAL_INSET,
     SEGMENT_SLICES,
+    allocate_cross_section,
     cross_section_widths,
     expected_boundaries,
     lane_vertical_offset,
+    marking_rule,
     median_split_index,
+    parking_fits,
     roadway_depression,
     sidewalk_lane_width,
     strip_id,
@@ -84,6 +88,16 @@ LANE_TYPE_ITEMS = (
     ("PARKING", "Parking", "Parking lane"),
     ("NONE", "None", "Metadata or prop lane such as a median"),
 )
+MEDIAN_PROFILE_ITEMS = (
+    ("NONE", "None", "No median"),
+    ("MESH", "Small / mesh", "Fit the selected mesh to the median dimensions"),
+    ("CURB", "Large / generated curb", "Generate a curb-surrounded median"),
+)
+ROADSIDE_USE_ITEMS = (
+    ("SHOULDER", "Shoulder", "Keep the remaining width as non-lane roadside space"),
+    ("PARKING", "Parking", "Create symmetric parking lanes when both sides fit"),
+)
+AUTO_PARKING_LANE_IDS = {"lane-auto-parking-left", "lane-auto-parking-right"}
 VEHICLE_TYPE_ITEMS = (
     ("NONE", "None", "No vehicle type"),
     ("CAR", "Car", "Car-compatible traffic"),
@@ -118,7 +132,7 @@ def _on_lane_zone_update(lane, context) -> None:
     props = getattr(getattr(context, "scene", None), "cs1_road_builder", None)
     if props is not None:
         _sync_lane_derived_values(props)
-        _sync_boundaries(props)
+        _sync_cross_section_state(props)
         _schedule_live_preview(props, context)
 BOUNDARY_ROLE_ITEMS = (
     ("CURB", "Curb", "Boundary between sidewalk and the road body"),
@@ -134,7 +148,12 @@ MARKING_ROLE_ITEMS = (
 MARKING_STYLE_ITEMS = (
     ("SOLID_WHITE", "Solid white", "Shared solid white marking style"),
     ("DASHED_WHITE", "Dashed white", "Shared dashed white marking style"),
+    ("SOLID_YELLOW", "Solid yellow", "Solid yellow centre-line style"),
 )
+LANE_SEPARATOR_STYLE_ITEMS = tuple(
+    item for item in MARKING_STYLE_ITEMS if item[0] in {"SOLID_WHITE", "DASHED_WHITE"}
+)
+CENTER_LINE_STYLE_ITEMS = MARKING_STYLE_ITEMS
 IMT_APPEARANCE_PRESET_ITEMS = (
     ("JP_WEATHERED", "JP weathered", "Shared worn-paint baseline used by this project"),
     ("CUSTOM", "Custom", "Keep the editable appearance values below"),
@@ -142,6 +161,9 @@ IMT_APPEARANCE_PRESET_ITEMS = (
 MARKING_TEXTURE_REGIONS = {
     "SOLID_WHITE": "line.solid.white",
     "DASHED_WHITE": "line.dashed.white",
+    # The surface atlas supplies the paint mask. IMT applies the configured
+    # yellow colour at runtime for this semantic style.
+    "SOLID_YELLOW": "line.solid.white",
 }
 SHARED_SURFACE_MATERIAL = "CS1 Road Shared Surface"
 SHARED_STRUCTURE_MATERIAL = "CS1 Road Shared Structure"
@@ -167,6 +189,7 @@ _LIVE_PREVIEW_DELAY = 0.15
 _LIVE_PREVIEW_SETTLE_DELAY = 0.60
 _LIVE_PREVIEW_REBUILDING = False
 _IMT_PRESET_APPLYING = False
+_CROSS_SECTION_SYNCING = False
 DEFAULT_RUNTIME_OUTPUT = str(Path(__file__).resolve().parents[2] / "build" / "runtime-preview")
 DEFAULT_TEXTURE_LAYOUT = (
     Path(__file__).resolve().parents[2]
@@ -1463,6 +1486,163 @@ def _add_default_lanes(props) -> None:
         lane.vertical_offset = lane_vertical_offset(zone, props.depress_roadway)
 
 
+def _active_median_width(props) -> float:
+    return props.median_width if props.median_enabled else 0.0
+
+
+def _remove_automatic_parking_lanes(props) -> None:
+    for index in range(len(props.lanes) - 1, -1, -1):
+        if props.lanes[index].lane_id in AUTO_PARKING_LANE_IDS:
+            props.lanes.remove(index)
+
+
+def _add_automatic_parking_lane(props, lane_id, name, direction, speed_limit):
+    lane = props.lanes.add()
+    lane.lane_id = lane_id
+    lane.name = name
+    lane.zone = "ROAD"
+    lane.width = props.parking_lane_width
+    lane.direction = direction
+    lane.lane_type = "PARKING"
+    lane.vehicle_type = "CAR"
+    lane.speed_limit = speed_limit
+    lane.allow_connect = True
+    return lane
+
+
+def _sync_cross_section_state(props):
+    """Resolve profile, optional parking lanes, and derived shoulders."""
+    global _CROSS_SECTION_SYNCING
+    if _CROSS_SECTION_SYNCING:
+        return allocate_cross_section(
+            props.lanes, props.between_sidewalks_width, _active_median_width(props),
+        )
+    _CROSS_SECTION_SYNCING = True
+    try:
+        if (
+            hasattr(props, "is_property_set")
+            and not props.is_property_set("median_profile")
+            and props.median_enabled
+        ):
+            props.median_profile = "CURB" if props.median_with_curb else "MESH"
+        profile = props.median_profile
+        props.median_enabled = profile != "NONE"
+        props.median_with_curb = profile == "CURB"
+
+        if (
+            hasattr(props, "is_property_set")
+            and not props.is_property_set("between_sidewalks_width")
+        ):
+            legacy_lane_width = sum(
+                lane.width for lane in props.lanes if lane.zone == "ROAD"
+            )
+            props.between_sidewalks_width = max(
+                legacy_lane_width
+                + 2.0 * props.shoulder_width
+                + _active_median_width(props),
+                0.01,
+            )
+
+        base_road_lanes = [
+            lane for lane in props.lanes
+            if lane.zone == "ROAD" and lane.lane_id not in AUTO_PARKING_LANE_IDS
+        ]
+        median_width = _active_median_width(props)
+        create_parking = (
+            props.roadside_use == "PARKING"
+            and base_road_lanes
+            and parking_fits(
+                base_road_lanes,
+                props.between_sidewalks_width,
+                median_width,
+                props.parking_lane_width,
+            )
+        )
+        existing_parking = {
+            lane.lane_id: lane for lane in props.lanes
+            if lane.lane_id in AUTO_PARKING_LANE_IDS
+        }
+        road_lane_ids = [lane.lane_id for lane in props.lanes if lane.zone == "ROAD"]
+        parking_is_current = bool(
+            create_parking
+            and len(existing_parking) == 2
+            and existing_parking["lane-auto-parking-left"].zone == "ROAD"
+            and existing_parking["lane-auto-parking-right"].zone == "ROAD"
+            and existing_parking["lane-auto-parking-left"].lane_type == "PARKING"
+            and existing_parking["lane-auto-parking-right"].lane_type == "PARKING"
+            and existing_parking["lane-auto-parking-left"].vehicle_type == "CAR"
+            and existing_parking["lane-auto-parking-right"].vehicle_type == "CAR"
+            and abs(
+                existing_parking["lane-auto-parking-left"].width
+                - props.parking_lane_width
+            ) <= 1e-6
+            and abs(
+                existing_parking["lane-auto-parking-right"].width
+                - props.parking_lane_width
+            ) <= 1e-6
+            and existing_parking["lane-auto-parking-left"].direction
+                == base_road_lanes[0].direction
+            and existing_parking["lane-auto-parking-right"].direction
+                == base_road_lanes[-1].direction
+            and road_lane_ids[0] == "lane-auto-parking-left"
+            and road_lane_ids[-1] == "lane-auto-parking-right"
+        )
+        if not parking_is_current:
+            _remove_automatic_parking_lanes(props)
+        if create_parking and not parking_is_current:
+            left_reference = base_road_lanes[0]
+            right_reference = base_road_lanes[-1]
+            left = _add_automatic_parking_lane(
+                props, "lane-auto-parking-left", "Parking L",
+                left_reference.direction, left_reference.speed_limit,
+            )
+            _add_automatic_parking_lane(
+                props, "lane-auto-parking-right", "Parking R",
+                right_reference.direction, right_reference.speed_limit,
+            )
+            first_road_index = next(
+                index for index, lane in enumerate(props.lanes)
+                if lane.zone == "ROAD" and lane.as_pointer() != left.as_pointer()
+            )
+            props.lanes.move(len(props.lanes) - 2, first_road_index)
+
+        allocation = allocate_cross_section(
+            props.lanes, props.between_sidewalks_width, median_width,
+        )
+        if abs(props.shoulder_width - allocation.shoulder_width) > 1e-6:
+            props.shoulder_width = allocation.shoulder_width
+        _ensure_lane_ids(props)
+        _sync_boundaries(props)
+        return allocation
+    finally:
+        _CROSS_SECTION_SYNCING = False
+
+
+def _cross_section_warning(props) -> str | None:
+    allocation = _sync_cross_section_state(props)
+    if allocation.overflow > 1e-8:
+        return (
+            f"Cross-section exceeds the sidewalk span by "
+            f"{allocation.overflow:.2f} m; explicit lane and median widths were kept"
+        )
+    base_lanes = [
+        lane for lane in props.lanes
+        if lane.zone == "ROAD" and lane.lane_id not in AUTO_PARKING_LANE_IDS
+    ]
+    if (
+        props.roadside_use == "PARKING"
+        and not parking_fits(
+            base_lanes, props.between_sidewalks_width,
+            _active_median_width(props), props.parking_lane_width,
+        )
+    ):
+        return (
+            f"Parking needs {props.parking_lane_width:.2f} m on both sides; "
+            "the remaining width stays as shoulders"
+        )
+    return None
+
+
 def _sync_lane_derived_values(props) -> None:
     sidewalk_counts = {
         zone: sum(lane.zone == zone for lane in props.lanes)
@@ -1595,7 +1775,7 @@ def _on_road_color_update(props, context) -> None:
 
 
 def _on_cross_section_update(props, context) -> None:
-    _sync_boundaries(props)
+    _sync_cross_section_state(props)
     _schedule_live_preview(props, context)
 
 
@@ -1608,13 +1788,14 @@ def _on_lane_width_update(lane, context) -> None:
     if lane.zone == "ROAD":
         props = getattr(getattr(context, "scene", None), "cs1_road_builder", None)
         if props is not None:
+            _sync_cross_section_state(props)
             _schedule_live_preview(props, context)
 
 
 def _on_lane_direction_update(lane, context) -> None:
     props = getattr(getattr(context, "scene", None), "cs1_road_builder", None)
     if props is not None:
-        _sync_boundaries(props)
+        _sync_cross_section_state(props)
         _schedule_live_preview(props, context)
 
 
@@ -1622,6 +1803,12 @@ def _on_boundary_marking_update(boundary, context) -> None:
     props = getattr(getattr(context, "scene", None), "cs1_road_builder", None)
     if props is not None:
         _schedule_live_preview(props, context)
+
+
+def _on_marking_rules_update(props, context) -> None:
+    _sync_boundaries(props)
+    props.imt_center_line_yellow = props.center_line_style == "SOLID_YELLOW"
+    _schedule_live_preview(props, context)
 
 
 def _on_imt_appearance_preset_update(props, context) -> None:
@@ -1664,10 +1851,26 @@ def _load_imt_appearance(props, source) -> None:
         return
     _IMT_PRESET_APPLYING = True
     try:
+        props.roadside_lines = bool(
+            source.get("roadside_lines", props.roadside_lines)
+        )
+        props.lane_separator_style = _enum_value(
+            str(source.get("lane_separator_style", props.lane_separator_style)),
+            LANE_SEPARATOR_STYLE_ITEMS, props.lane_separator_style,
+        )
+        center_fallback = (
+            "SOLID_YELLOW"
+            if source.get("center_line_yellow", False)
+            else props.center_line_style
+        )
+        props.center_line_style = _enum_value(
+            str(source.get("center_line_style", center_fallback)),
+            CENTER_LINE_STYLE_ITEMS, center_fallback,
+        )
         props.imt_appearance_preset = preset
         props.imt_white_color = tuple(source.get("white_color", props.imt_white_color))
         props.imt_yellow_color = tuple(source.get("yellow_color", props.imt_yellow_color))
-        props.imt_center_line_yellow = bool(source.get("center_line_yellow", props.imt_center_line_yellow))
+        props.imt_center_line_yellow = props.center_line_style == "SOLID_YELLOW"
         props.imt_texture = float(source.get("texture", props.imt_texture))
         cracks = source.get("cracks", [props.imt_cracks_density, props.imt_cracks_scale])
         voids = source.get("voids", [props.imt_voids_density, props.imt_voids_scale])
@@ -1688,7 +1891,7 @@ def _ensure_default_lanes(props) -> None:
     if not props.lanes:
         _add_default_lanes(props)
     _ensure_lane_ids(props)
-    _sync_boundaries(props)
+    _sync_cross_section_state(props)
 
 
 def _ensure_lane_ids(props) -> None:
@@ -1727,6 +1930,8 @@ def _sync_boundaries(props, legacy_edge_lines=None, legacy_lane_lines=None) -> N
     previous = {
         item.boundary_id: {
             "boundary_role": item.role,
+            "left_strip_id": item.left_strip_id,
+            "right_strip_id": item.right_strip_id,
             "enabled": item.marking_enabled,
             "role": item.marking_role,
             "style": item.marking_style,
@@ -1739,10 +1944,18 @@ def _sync_boundaries(props, legacy_edge_lines=None, legacy_lane_lines=None) -> N
         item.boundary_id, item.name = boundary_id, name
         item.left_strip_id, item.right_strip_id = left_strip, right_strip
         saved = previous.get(boundary_id)
-        item.role = saved["boundary_role"] if saved else role
-        item.marking_enabled = saved["enabled"] if saved else default_enabled
+        same_topology = bool(
+            saved
+            and saved["boundary_role"] == role
+            and saved["left_strip_id"] == left_strip
+            and saved["right_strip_id"] == right_strip
+        )
+        item.role = role
+        item.marking_enabled = (
+            saved["enabled"] if same_topology else default_enabled
+        )
         role_is_unchanged = bool(
-            saved and saved["role"] == default_marking_role
+            same_topology and saved["role"] == default_marking_role
         )
         item.marking_role = default_marking_role
         item.marking_style = saved["style"] if role_is_unchanged else (
@@ -1754,6 +1967,14 @@ def _sync_boundaries(props, legacy_edge_lines=None, legacy_lane_lines=None) -> N
             item.marking_enabled = bool(legacy_edge_lines)
         if legacy_lane_lines is not None and item.role == "LANE_DIVIDER":
             item.marking_enabled = bool(legacy_lane_lines)
+        item.marking_enabled, item.marking_style = marking_rule(
+            item.role,
+            item.marking_role,
+            props.roadside_lines,
+            props.lane_separator_style,
+            props.center_line_style,
+            default_enabled,
+        )
 
 
 def _initialize_scene_lanes():
@@ -1768,6 +1989,7 @@ def _initialize_scene_lanes():
 
 
 def _cross_section(props) -> tuple[float, float, float]:
+    _sync_cross_section_state(props)
     return cross_section_widths(
         props.lanes, props.shoulder_width, props.sidewalk_width,
         props.median_width if props.median_enabled else 0.0,
@@ -2038,16 +2260,33 @@ class CS1RoadBuilderProperties(PropertyGroup):
     boundaries: CollectionProperty(type=CS1RoadBoundary)
     active_boundary_index: IntProperty(default=0, min=0)
     half_width: FloatProperty(name="Half width", default=5.75, min=0.01, max=128.0, unit="LENGTH")
-    shoulder_width: FloatProperty(
-        name="Shoulder width", default=0.5, min=0.0, max=8.0,
+    between_sidewalks_width: FloatProperty(
+        name="Between sidewalks", default=7.0, min=0.01, max=128.0,
         unit="LENGTH", update=_on_cross_section_update,
+        description="Fixed horizontal span between the two sidewalk surfaces",
+    )
+    shoulder_width: FloatProperty(
+        name="Derived shoulder width", default=0.5, min=0.0, max=64.0,
+        unit="LENGTH", options={"HIDDEN"},
+    )
+    roadside_use: EnumProperty(
+        name="Remaining width", items=ROADSIDE_USE_ITEMS, default="SHOULDER",
+        update=_on_cross_section_update,
+    )
+    parking_lane_width: FloatProperty(
+        name="Parking lane width", default=PARKING_LANE_DEFAULT_WIDTH,
+        min=1.0, max=5.0, unit="LENGTH", update=_on_cross_section_update,
     )
     sidewalk_width: FloatProperty(
         name="Sidewalk width", default=2.5, min=0.0, max=16.0,
         unit="LENGTH", update=_on_sidewalk_width_update,
     )
     median_enabled: BoolProperty(
-        name="Median", default=False, update=_on_cross_section_update,
+        name="Median", default=False, options={"HIDDEN"},
+    )
+    median_profile: EnumProperty(
+        name="Median", items=MEDIAN_PROFILE_ITEMS, default="NONE",
+        update=_on_cross_section_update,
     )
     median_width: FloatProperty(
         name="Median width", default=1.0, min=0.1, max=32.0,
@@ -2059,7 +2298,7 @@ class CS1RoadBuilderProperties(PropertyGroup):
     )
     median_with_curb: BoolProperty(
         name="Generated curb surround", default=True,
-        update=_on_geometry_update,
+        options={"HIDDEN"},
     )
     median_curb_width: FloatProperty(
         name="Curb top width", default=0.15, min=0.01, max=2.0,
@@ -2087,6 +2326,17 @@ class CS1RoadBuilderProperties(PropertyGroup):
         description="Road color applied through the surface Road mask in every mode",
         update=_on_road_color_update,
     )
+    roadside_lines: BoolProperty(
+        name="Roadside lines", default=True, update=_on_marking_rules_update,
+    )
+    lane_separator_style: EnumProperty(
+        name="Lane separators", items=LANE_SEPARATOR_STYLE_ITEMS,
+        default="DASHED_WHITE", update=_on_marking_rules_update,
+    )
+    center_line_style: EnumProperty(
+        name="Center line", items=CENTER_LINE_STYLE_ITEMS,
+        default="DASHED_WHITE", update=_on_marking_rules_update,
+    )
     imt_appearance_preset: EnumProperty(
         name="Appearance preset", items=IMT_APPEARANCE_PRESET_ITEMS,
         default="JP_WEATHERED", update=_on_imt_appearance_preset_update,
@@ -2103,7 +2353,7 @@ class CS1RoadBuilderProperties(PropertyGroup):
     )
     imt_center_line_yellow: BoolProperty(
         name="Opposing center line: yellow", default=False,
-        update=_on_imt_appearance_value_update,
+        options={"HIDDEN"},
     )
     imt_texture: FloatProperty(name="Texture", default=0.25, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
     imt_cracks_density: FloatProperty(name="Cracks density", default=0.70, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
@@ -2189,7 +2439,7 @@ class CS1ROAD_OT_lane_add(Operator):
         _ensure_lane_ids(props)
         lane.name = f"Lane {len(props.lanes)}"
         props.active_lane_index = len(props.lanes) - 1
-        _sync_boundaries(props)
+        _sync_cross_section_state(props)
         _schedule_live_preview(props, context)
         return {"FINISHED"}
 
@@ -2202,7 +2452,7 @@ class CS1ROAD_OT_lanes_reset(Operator):
         props.lanes.clear()
         _add_default_lanes(props)
         props.active_lane_index = 0
-        _sync_boundaries(props)
+        _sync_cross_section_state(props)
         _schedule_live_preview(props, context)
         return {"FINISHED"}
 
@@ -2217,7 +2467,7 @@ class CS1ROAD_OT_lane_remove(Operator):
             index = self.index if 0 <= self.index < len(props.lanes) else props.active_lane_index
             props.lanes.remove(min(index, len(props.lanes) - 1))
             props.active_lane_index = max(0, min(props.active_lane_index, len(props.lanes) - 1))
-            _sync_boundaries(props)
+            _sync_cross_section_state(props)
             _schedule_live_preview(props, context)
         return {"FINISHED"}
 
@@ -2240,7 +2490,7 @@ class CS1ROAD_OT_lane_move(Operator):
             target = peers[target_peer]
             props.lanes.move(source, target)
             props.active_lane_index = target
-            _sync_boundaries(props)
+            _sync_cross_section_state(props)
             _schedule_live_preview(props, context)
         return {"FINISHED"}
 
@@ -2263,9 +2513,18 @@ def _cross_section_table_cells(layout):
 
 def _draw_lane_table_row(layout, props, lane, index: int) -> None:
     cells = _cross_section_table_cells(layout)
-    cells[0].prop(lane, "zone", text="")
+    automatic_parking = lane.lane_id in AUTO_PARKING_LANE_IDS
     width_cell = cells[1].row(align=True)
-    if lane.zone in {"LEFT_SIDEWALK", "RIGHT_SIDEWALK"}:
+    if automatic_parking:
+        cells[0].label(text=lane.name)
+        width_cell.label(text=f"{lane.width:.2f} m")
+        cells[2].label(text=lane.direction.title())
+        cells[3].label(text="Parking")
+    else:
+        cells[0].prop(lane, "zone", text="")
+    if automatic_parking:
+        pass
+    elif lane.zone in {"LEFT_SIDEWALK", "RIGHT_SIDEWALK"}:
         width_cell.prop(props, "sidewalk_width", text="")
         cells[2].label(text="Both")
         cells[3].label(text="Pedestrian")
@@ -2275,6 +2534,7 @@ def _draw_lane_table_row(layout, props, lane, index: int) -> None:
         cells[3].prop(lane, "vehicle_type", text="")
     cells[4].prop(lane, "speed_limit", text="")
     actions = cells[5].row(align=True)
+    actions.enabled = not automatic_parking
     up = actions.operator("cs1_road.lane_move", text="", icon="TRIA_UP")
     up.direction, up.index = "UP", index
     down = actions.operator("cs1_road.lane_move", text="", icon="TRIA_DOWN")
@@ -2286,7 +2546,7 @@ def _draw_lane_table_row(layout, props, lane, index: int) -> None:
 def _draw_shoulder_table_row(layout, props, side: str) -> None:
     cells = _cross_section_table_cells(layout)
     cells[0].label(text=f"Shoulder {side}")
-    cells[1].prop(props, "shoulder_width", text="")
+    cells[1].label(text=f"{props.shoulder_width:.2f} m")
     cells[2].label(text="-")
     cells[3].label(text="Not lane")
     cells[4].label(text="-")
@@ -2326,6 +2586,8 @@ class CS1ROAD_OT_build_preview(Operator):
         except ValueError as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
+        if warning := _cross_section_warning(props):
+            self.report({"WARNING"}, warning)
         _show_only_mode(props.mode)
         return {"FINISHED"}
 
@@ -2334,12 +2596,15 @@ class CS1ROAD_OT_build_all(Operator):
     bl_idname, bl_label, bl_options = "cs1_road.build_all", "Build all modes", {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        props = context.scene.cs1_road_builder
         try:
             for mode, _, _ in MODE_ITEMS:
                 build_mode(context.scene, mode)
         except ValueError as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
+        if warning := _cross_section_warning(props):
+            self.report({"WARNING"}, warning)
         _show_all_modes()
         return {"FINISHED"}
 
@@ -2424,6 +2689,9 @@ def _export_runtime_scene(scene):
             "white_color": list(props.imt_white_color),
             "yellow_color": list(props.imt_yellow_color),
             "center_line_yellow": props.imt_center_line_yellow,
+            "roadside_lines": props.roadside_lines,
+            "lane_separator_style": props.lane_separator_style,
+            "center_line_style": props.center_line_style,
             "texture": props.imt_texture,
             "cracks": [props.imt_cracks_density, props.imt_cracks_scale],
             "voids": [props.imt_voids_density, props.imt_voids_scale],
@@ -2468,7 +2736,10 @@ def _authoring_fingerprint(props):
     median = props.median_mesh
     median_fingerprint = geometry_fingerprint([median]) if median is not None else ""
     return repr((
-        props.road_name, lanes, boundaries, props.shoulder_width,
+        props.road_name, lanes, boundaries, props.between_sidewalks_width,
+        props.shoulder_width, props.roadside_use, props.parking_lane_width,
+        props.roadside_lines, props.lane_separator_style,
+        props.center_line_style,
         props.sidewalk_width, props.depress_roadway, props.marking_paint_width,
         props.marking_region_width, props.line_mesh_enabled,
         props.node_shoulder_bands,
@@ -2481,7 +2752,8 @@ def _authoring_fingerprint(props):
         props.imt_crosswalk_gap_length, props.imt_crosswalk_offset,
         props.imt_stop_line_width,
         props.imt_dash_length, props.imt_dash_gap,
-        props.median_enabled, props.median_width, props.median_height,
+        props.median_profile, props.median_enabled,
+        props.median_width, props.median_height,
         props.median_with_curb, props.median_curb_width,
         props.median_no_split_group, median_fingerprint,
         props.elevated_height, props.bridge_height, props.deck_depth,
@@ -2691,6 +2963,16 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
             return {"CANCELLED"}
         props.road_color = tuple(float(value) for value in road_color)
         cross = data.get("shared_geometry", data.get("cross_section", {}))
+        requested_span = cross.get("between_sidewalks_width")
+        if requested_span is not None:
+            props.between_sidewalks_width = float(requested_span)
+        props.roadside_use = _enum_value(
+            str(cross.get("roadside_use", props.roadside_use)),
+            ROADSIDE_USE_ITEMS, "SHOULDER",
+        )
+        props.parking_lane_width = float(
+            cross.get("parking_lane_width", props.parking_lane_width)
+        )
         profile = str(cross.get("surface_profile", "DEPRESSED")).upper()
         props.depress_roadway = bool(cross.get("depress_roadway", profile == "DEPRESSED"))
         props.line_mesh_enabled = bool(
@@ -2698,12 +2980,23 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
         )
         median_present = "median" in cross
         median = cross.get("median", {})
-        props.median_enabled = bool(median.get("enabled", props.median_enabled))
-        props.median_width = float(median.get("width", props.median_width))
-        props.median_height = float(median.get("height", props.median_height))
-        props.median_with_curb = bool(
+        imported_median_enabled = bool(
+            median.get("enabled", props.median_enabled)
+        )
+        imported_median_width = float(
+            median.get("width", props.median_width)
+        )
+        imported_median_with_curb = bool(
             median.get("with_curb", props.median_with_curb)
         )
+        props.median_width = imported_median_width
+        props.median_height = float(median.get("height", props.median_height))
+        imported_median_profile = str(median.get("profile", "")).upper()
+        if not imported_median_profile:
+            imported_median_profile = (
+                "NONE" if not imported_median_enabled
+                else "CURB" if imported_median_with_curb else "MESH"
+            )
         props.median_curb_width = float(
             median.get("curb_top_width", props.median_curb_width)
         )
@@ -2713,6 +3006,7 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
         median_mesh_name = str(median.get("mesh_object", "")).strip()
         props.median_mesh = bpy.data.objects.get(median_mesh_name) if median_mesh_name else None
         legacy_markings = data.get("markings", {})
+        imported_shoulder_width = props.shoulder_width
         if schema_version >= 3:
             layout = data.get("layout", {})
             strips = {str(item.get("id", "")): item for item in layout.get("strips", [])}
@@ -2724,8 +3018,9 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
                 self.report({"ERROR"}, "Current Blender editor supports symmetric sidewalk and shoulder widths only")
                 return {"CANCELLED"}
             props.sidewalk_width, props.shoulder_width = left_sidewalk, left_shoulder
+            imported_shoulder_width = left_shoulder
             has_median_strip = "strip-median" in strips
-            if median_present and props.median_enabled != has_median_strip:
+            if median_present and imported_median_enabled != has_median_strip:
                 self.report(
                     {"ERROR"},
                     "shared_geometry.median enabled state and strip-median disagree",
@@ -2733,11 +3028,11 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
                 return {"CANCELLED"}
             if has_median_strip:
                 strip_median_width = float(
-                    strips["strip-median"].get("width", props.median_width)
+                    strips["strip-median"].get("width", imported_median_width)
                 )
                 if (
                     median_present
-                    and abs(strip_median_width - props.median_width) > 1e-6
+                    and abs(strip_median_width - imported_median_width) > 1e-6
                 ):
                     self.report(
                         {"ERROR"},
@@ -2745,18 +3040,34 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
                     )
                     return {"CANCELLED"}
                 if not median_present:
-                    props.median_enabled = True
+                    imported_median_enabled = True
+                    imported_median_width = strip_median_width
                     props.median_width = strip_median_width
+                    imported_median_profile = "CURB"
             elif not median_present:
-                props.median_enabled = False
+                imported_median_enabled = False
+                imported_median_profile = "NONE"
             marking_styles = data.get("styles", {}).get("markings", {})
             solid = marking_styles.get("SOLID_WHITE", {})
             props.marking_paint_width = solid.get("paint_width", props.marking_paint_width)
             props.marking_region_width = solid.get("region_width", props.marking_region_width)
+            rules = marking_styles.get("rules", {})
+            props.roadside_lines = bool(
+                rules.get("roadside_lines", True)
+            )
+            props.lane_separator_style = _enum_value(
+                str(rules.get("lane_separator_style", "DASHED_WHITE")),
+                LANE_SEPARATOR_STYLE_ITEMS, "DASHED_WHITE",
+            )
+            props.center_line_style = _enum_value(
+                str(rules.get("center_line_style", "DASHED_WHITE")),
+                CENTER_LINE_STYLE_ITEMS, "DASHED_WHITE",
+            )
             imt = data.get("styles", {}).get("imt_preview", {})
             _load_imt_appearance(props, imt)
         else:
             props.shoulder_width = cross.get("shoulder_width", props.shoulder_width)
+            imported_shoulder_width = props.shoulder_width
             props.sidewalk_width = cross.get("sidewalk_width", props.sidewalk_width)
             props.edge_lines = legacy_markings.get("edge_lines", props.edge_lines)
             props.lane_lines = legacy_markings.get("lane_lines", props.lane_lines)
@@ -2774,20 +3085,22 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
                 if lane_source["width"] <= 0.0:
                     lane_source["width"] = strip.get("width", 3.0)
             _load_lane(props.lanes.add(), lane_source)
+        props.median_profile = _enum_value(
+            imported_median_profile, MEDIAN_PROFILE_ITEMS, "NONE",
+        )
+        if requested_span is None:
+            imported_road_width = sum(
+                lane.width for lane in props.lanes if lane.zone == "ROAD"
+            )
+            props.between_sidewalks_width = (
+                imported_road_width
+                + 2.0 * imported_shoulder_width
+                + (imported_median_width if imported_median_enabled else 0.0)
+            )
         _ensure_default_lanes(props)
         _sync_lane_derived_values(props)
         if schema_version >= 3:
-            saved_boundaries = {str(item.get("id", "")): item for item in data.get("layout", {}).get("boundaries", [])}
-            for item in props.boundaries:
-                source = saved_boundaries.get(item.boundary_id)
-                if source is None:
-                    continue
-                item.role = _enum_value(str(source.get("role", item.role)), BOUNDARY_ROLE_ITEMS, item.role)
-                marking = source.get("marking")
-                item.marking_enabled = marking is not None
-                if marking is not None:
-                    item.marking_role = _enum_value(str(marking.get("role", item.marking_role)), MARKING_ROLE_ITEMS, item.marking_role)
-                    item.marking_style = _enum_value(str(marking.get("style_id", item.marking_style)), MARKING_STYLE_ITEMS, item.marking_style)
+            _sync_boundaries(props)
         else:
             _sync_boundaries(props, props.edge_lines, props.lane_lines)
         modes = data.get("modes", {})
@@ -2806,6 +3119,7 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
 
     def execute(self, context):
         props = context.scene.cs1_road_builder
+        _sync_cross_section_state(props)
         _ensure_lane_ids(props)
         _sync_boundaries(props)
         data = {
@@ -2816,8 +3130,12 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
                 "curb_height": ROADWAY_DEPRESSION,
                 "surface_profile": "DEPRESSED" if props.depress_roadway else "FLUSH",
                 "line_mesh_enabled": props.line_mesh_enabled,
+                "between_sidewalks_width": props.between_sidewalks_width,
+                "roadside_use": props.roadside_use,
+                "parking_lane_width": props.parking_lane_width,
                 "median": {
                     "enabled": props.median_enabled,
+                    "profile": props.median_profile,
                     "width": props.median_width,
                     "height": props.median_height,
                     "with_curb": props.median_with_curb,
@@ -2834,12 +3152,19 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
                     "paint_width": props.marking_paint_width,
                     "region_width": props.marking_region_width,
                     "texture_tile": "solid_white",
+                }, "rules": {
+                    "roadside_lines": props.roadside_lines,
+                    "lane_separator_style": props.lane_separator_style,
+                    "center_line_style": props.center_line_style,
                 }},
                 "imt_preview": {
                     "preset": props.imt_appearance_preset,
                     "white_color": list(props.imt_white_color),
                     "yellow_color": list(props.imt_yellow_color),
                     "center_line_yellow": props.imt_center_line_yellow,
+                    "roadside_lines": props.roadside_lines,
+                    "lane_separator_style": props.lane_separator_style,
+                    "center_line_style": props.center_line_style,
                     "texture": props.imt_texture,
                     "cracks": [props.imt_cracks_density, props.imt_cracks_scale],
                     "voids": [props.imt_voids_density, props.imt_voids_scale],
@@ -2917,6 +3242,19 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
 
     def draw(self, context):
         box, props = self.layout, context.scene.cs1_road_builder
+        allocation = _sync_cross_section_state(props)
+        primary = box.box()
+        primary.label(text="Width budget")
+        primary.prop(props, "between_sidewalks_width")
+        primary.prop(props, "roadside_use")
+        if props.roadside_use == "PARKING":
+            primary.prop(props, "parking_lane_width")
+        primary.prop(props, "median_profile")
+        warning = _cross_section_warning(props)
+        if warning:
+            primary.label(text=warning, icon="INFO")
+        elif props.roadside_use == "PARKING":
+            primary.label(text="Symmetric parking lanes fit and are generated", icon="CHECKMARK")
         if not props.lanes:
             box.label(text="No lanes. Initialize the road definition.", icon="INFO")
             box.operator("cs1_road.lanes_reset", icon="FILE_REFRESH")
@@ -2946,16 +3284,13 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
             _draw_lane_table_row(box, props, lane, index)
             if road_index == median_after:
                 median_row = _cross_section_table_cells(box)
-                median_row[0].prop(props, "median_enabled", text="Median")
+                median_row[0].label(text="Median")
                 width_cell = median_row[1]
-                width_cell.enabled = props.median_enabled
                 width_cell.prop(props, "median_width", text="")
                 height_cell = median_row[2]
-                height_cell.enabled = props.median_enabled
                 height_cell.prop(props, "median_height", text="")
                 type_cell = median_row[3]
-                type_cell.enabled = props.median_enabled
-                type_cell.prop(props, "median_with_curb", text="Curb")
+                type_cell.label(text="Curb" if props.median_with_curb else "Mesh")
                 median_row[4].label(
                     text="Generated" if props.median_with_curb else "Mesh"
                 )
@@ -2983,7 +3318,8 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
         roadway_width, total_width, _ = _cross_section(props)
         box.label(text=(
             f"{len(props.lanes)} lanes (F{counts['FORWARD']} / B{counts['BACKWARD']} / P{counts['BOTH']}) | "
-            f"{roadway_width:.2f} m road / {total_width:.2f} m total | 64 m / 20 slices"
+            f"{roadway_width:.2f} m road / {total_width:.2f} m total | "
+            f"target {allocation.target_width:.2f} m | 64 m / 20 slices"
         ))
 
 
@@ -2994,17 +3330,21 @@ class CS1ROAD_PT_markings(_CS1RoadChildPanel, Panel):
 
     def draw(self, context):
         layout, props = self.layout, context.scene.cs1_road_builder
+        rules = layout.box()
+        rules.label(text="Default lines for this road")
+        rules.prop(props, "roadside_lines")
+        rules.prop(props, "lane_separator_style")
+        rules.prop(props, "center_line_style")
         layout.prop(props, "line_mesh_enabled")
-        layout.label(text="Lines on road sections; intersections have none.")
-        layout.template_list("CS1ROAD_UL_boundaries", "", props, "boundaries", props, "active_boundary_index", rows=6)
-        layout.operator("cs1_road.boundaries_sync", text="Refresh line positions", icon="FILE_REFRESH")
+        layout.label(text="Applied to every matching boundary; no per-line editing.")
+        if props.center_line_style == "SOLID_YELLOW" and props.line_mesh_enabled:
+            layout.label(text="Blender uses the white paint mask; IMT applies yellow.", icon="INFO")
         preview = layout.box()
         preview.label(text="IMT preview: shared appearance")
         preview.prop(props, "imt_appearance_preset")
         colors = preview.row(align=True)
         colors.prop(props, "imt_white_color")
         colors.prop(props, "imt_yellow_color")
-        preview.prop(props, "imt_center_line_yellow")
         preview.prop(props, "imt_texture")
         cracks = preview.row(align=True)
         cracks.prop(props, "imt_cracks_density")

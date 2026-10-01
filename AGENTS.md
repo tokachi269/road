@@ -1,6 +1,6 @@
 # Road repository working contract
 
-実装前に`docs/architecture.md`と`docs/testing.md`を読む。agent支援で設計・実装する場合は`docs/engineering/agent_harness.md`も読む。`docs/design-decisions.md`は比較評価であり、確定contractとして扱わない。
+文書の入口は`docs/README.md`とする。実装前に`docs/architecture.md`と`docs/testing.md`を読む。agent支援で設計・実装する場合は`docs/engineering/agent_harness.md`も読む。文書だけを正本とせず、コード、テスト、lint、実ゲームの観測結果で確認する。`docs/design-decisions.md`は比較評価であり、確定contractとして扱わない。
 
 - 正本と派生物を増やす変更では、先にDecision ownerを明示する。
 - Blender UI、JSON、mesh生成で同じ判断を再実装しない。

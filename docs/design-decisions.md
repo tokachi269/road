@@ -1,5 +1,7 @@
 # 連携会話の設計判断
 
+> 文書種別: 比較検討
+
 この文書は確定仕様ではなく、連携された会話の主張を現在の要求、`wire`のowner/derived分離、RoadImporterとCSURの実装、現行prototypeに照らして判定したreview記録である。ここに書いた候補をarchitecture lintは強制しない。
 
 ## 判定の要点

@@ -381,6 +381,12 @@ namespace RoadRuntimeHost.Runtime
             // Schema 1/2 bundles created before IMT appearance authoring use
             // the runtime default. New Blender exports always include this.
             if (style == null) return;
+            if (string.IsNullOrEmpty(style.LaneSeparatorStyle))
+                style.LaneSeparatorStyle = "DASHED_WHITE";
+            if (string.IsNullOrEmpty(style.CenterLineStyle))
+                style.CenterLineStyle = style.CenterLineYellow
+                    ? "SOLID_YELLOW"
+                    : "DASHED_WHITE";
             if (!ValidColor(style.WhiteColor) || !ValidColor(style.YellowColor)
                 || !ValidPair(style.Cracks) || !ValidPair(style.Voids)
                 || !Unit(style.Texture)
@@ -391,11 +397,21 @@ namespace RoadRuntimeHost.Runtime
                 || style.StopLineWidth <= 0f
                 || style.LineWidth <= 0f
                 || style.DashLength <= 0f
-                || style.DashGap <= 0f)
+                || style.DashGap <= 0f
+                || !ValidLineStyle(style.LaneSeparatorStyle, false)
+                || !ValidLineStyle(style.CenterLineStyle, true))
                 throw new DiagnosticException(
                     "DATA_INVALID",
                     "road_imt_style_invalid",
                     "Road bundle IMT marking appearance is invalid for " + roadId);
+        }
+
+        private static bool ValidLineStyle(string value, bool allowYellow)
+        {
+            return string.Equals(value, "DASHED_WHITE", StringComparison.Ordinal)
+                || string.Equals(value, "SOLID_WHITE", StringComparison.Ordinal)
+                || (allowYellow && string.Equals(
+                    value, "SOLID_YELLOW", StringComparison.Ordinal));
         }
 
         private static bool ValidColor(float[] value)

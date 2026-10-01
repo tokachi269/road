@@ -765,8 +765,16 @@ namespace RoadRuntimeHost.Runtime
                 if (_initializedSegmentDefaults.Contains(pairKey)) continue;
 
                 bool edge = index == 0 || index == starts.Count - 1;
-                bool yellow = !edge && appearance.CenterLineYellow && IsOpposingBoundary(segmentId, start.Source);
-                IRegularLineStyleData style = edge ? CreateSolidStyle(provider, appearance) : CreateDashedStyle(provider, appearance, yellow);
+                if (edge && !appearance.RoadsideLines) continue;
+                bool opposing = !edge && IsOpposingBoundary(segmentId, start.Source);
+                IRegularLineStyleData style = edge
+                    ? CreateSolidStyle(provider, appearance)
+                    : CreateConfiguredLineStyle(
+                        provider,
+                        appearance,
+                        opposing
+                            ? appearance.CenterLineStyle
+                            : appearance.LaneSeparatorStyle);
                 marking.AddRegularLine(start, end, style);
                 _initializedSegmentDefaults.Add(pairKey);
                 ++added;
@@ -951,8 +959,13 @@ namespace RoadRuntimeHost.Runtime
                 if (_initializedNodeDefaults.Contains(defaultKey)) continue;
 
                 bool edge = IsEdgeBoundary(start.Source);
-                bool yellow = !edge && appearance.CenterLineYellow
-                    && IsOpposingBoundary(entrances[0].Id, start.Source);
+                if (edge && !appearance.RoadsideLines) continue;
+                bool yellow = !edge
+                    && IsOpposingBoundary(entrances[0].Id, start.Source)
+                    && string.Equals(
+                        appearance.CenterLineStyle,
+                        "SOLID_YELLOW",
+                        StringComparison.OrdinalIgnoreCase);
                 // IMT connects node entrance points with a straight trajectory.
                 // A dashed style therefore produces detached transverse-looking
                 // pieces on a bend. Keep every two-segment corner connector solid;
@@ -1195,6 +1208,18 @@ namespace RoadRuntimeHost.Runtime
             return style;
         }
 
+        private static IRegularLineStyleData CreateConfiguredLineStyle(
+            IDataProviderV1 provider,
+            ImtMarkingStyleBundle appearance,
+            string styleId)
+        {
+            if (string.Equals(styleId, "SOLID_YELLOW", StringComparison.OrdinalIgnoreCase))
+                return CreateSolidStyle(provider, appearance, true);
+            if (string.Equals(styleId, "SOLID_WHITE", StringComparison.OrdinalIgnoreCase))
+                return CreateSolidStyle(provider, appearance);
+            return CreateDashedStyle(provider, appearance, false);
+        }
+
         private static IStopLineStyleData CreateStopLineStyle(IDataProviderV1 provider, ImtMarkingStyleBundle appearance)
         {
             ISolidStopLineStyle style = provider.SolidStopLineStyle;
@@ -1229,12 +1254,28 @@ namespace RoadRuntimeHost.Runtime
 
         private static ImtMarkingStyleBundle EffectiveStyle(ImtMarkingStyleBundle style)
         {
-            if (style != null) return style;
+            if (style != null)
+            {
+                if (string.IsNullOrEmpty(style.LaneSeparatorStyle))
+                    style.LaneSeparatorStyle = "DASHED_WHITE";
+                if (string.IsNullOrEmpty(style.CenterLineStyle))
+                    style.CenterLineStyle = style.CenterLineYellow
+                        ? "SOLID_YELLOW"
+                        : "DASHED_WHITE";
+                style.CenterLineYellow = string.Equals(
+                    style.CenterLineStyle,
+                    "SOLID_YELLOW",
+                    StringComparison.OrdinalIgnoreCase);
+                return style;
+            }
             return new ImtMarkingStyleBundle
             {
                 WhiteColor = new float[] { 245f / 255f, 245f / 255f, 235f / 255f, 1f },
                 YellowColor = new float[] { 1f, 0.72f, 0f, 1f },
                 CenterLineYellow = false,
+                RoadsideLines = true,
+                LaneSeparatorStyle = "DASHED_WHITE",
+                CenterLineStyle = "DASHED_WHITE",
                 Texture = 0.25f,
                 Cracks = new float[] { 0.70f, 0.40f },
                 Voids = new float[] { 0.20f, 1f },

@@ -5,6 +5,24 @@ namespace RoadRuntimeHost.Runtime
     internal static class CrosswalkWallGeometry
     {
         private const float Epsilon = 0.00001f;
+        private const float IntegerRatioTolerance = 0.001f;
+
+        public static int GetStableDashCount(
+            float wallWidth,
+            float dashLength,
+            float spaceLength)
+        {
+            float period = dashLength + spaceLength;
+            if (wallWidth <= 0f || dashLength <= 0f || spaceLength < 0f
+                || period <= 0f)
+                return 0;
+
+            float ratio = wallWidth / period;
+            int nearest = Mathf.RoundToInt(ratio);
+            if (Mathf.Abs(ratio - nearest) <= IntegerRatioTolerance)
+                return Mathf.Max(0, nearest);
+            return Mathf.Max(0, Mathf.FloorToInt(ratio));
+        }
 
         public static bool TryGetSpan(
             Vector3 trajectoryStart,

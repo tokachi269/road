@@ -228,7 +228,7 @@ for index, direction in enumerate(("BACKWARD", "BACKWARD", "FORWARD", "FORWARD")
     lane.direction = direction
     lane.lane_type = "VEHICLE"
     lane.vehicle_type = "CAR"
-props.shoulder_width = 1.0
+props.between_sidewalks_width = 15.0
 props.sidewalk_width = 3.0
 props.depress_roadway = True
 props.node_shoulder_bands = False
@@ -237,6 +237,26 @@ props.line_mesh_enabled = True
 props.elevated_edge_mesh = create_elevated_edge_source(
     "ElevatedEdge", -0.6, 0.15
 )
+
+# Remaining width can become real symmetric Parking lanes.  If the requested
+# width cannot fit both, no one-sided lane is left behind and the UI reports a
+# warning instead of rejecting generation.
+props.roadside_use = "PARKING"
+props.parking_lane_width = 2.0
+props.between_sidewalks_width = 17.0
+parking_lanes = [lane for lane in props.lanes if lane.lane_type == "PARKING"]
+assert {lane.lane_id for lane in parking_lanes} == road_builder.AUTO_PARKING_LANE_IDS
+assert road_builder._cross_section_warning(props) is None
+props.between_sidewalks_width = 16.9
+assert not [lane for lane in props.lanes if lane.lane_type == "PARKING"]
+assert "Parking needs" in road_builder._cross_section_warning(props)
+props.roadside_use = "SHOULDER"
+props.between_sidewalks_width = 15.0
+
+props.between_sidewalks_width = 12.5
+assert "exceeds the sidewalk span by 0.50 m" in road_builder._cross_section_warning(props)
+assert bpy.ops.cs1_road.build_preview() == {"FINISHED"}
+props.between_sidewalks_width = 15.0
 
 result = bpy.ops.cs1_road.build_all()
 assert result == {"FINISHED"}
@@ -621,9 +641,8 @@ for region_id in surface_region_ids:
     assert round(u_min, 6) in node_uv_x, (region_id, u_min, sorted(node_uv_x))
     assert round(u_max, 6) in node_uv_x, (region_id, u_max, sorted(node_uv_x))
 
-enabled_boundaries = [item for item in props.boundaries if item.marking_enabled]
-styled_boundary_id = enabled_boundaries[0].boundary_id
-enabled_boundaries[0].marking_style = "DASHED_WHITE"
+props.lane_separator_style = "SOLID_WHITE"
+props.center_line_style = "DASHED_WHITE"
 road_builder.build_mode(bpy.context.scene, "basic")
 styled_segment = bpy.data.objects["basic_segment"]
 styled_regions = assert_exact_uv_regions(styled_segment)
@@ -639,17 +658,14 @@ assert abs((road_builder._texture_region("line.dashed.white")[1] - road_builder.
 assert abs(sum(road_builder._texture_region("line.dashed.white")[:2]) * 0.5 * 2048.0 - 2032.0) < 1e-6
 assert any(min(values) == solid_u[0] and max(values) == solid_u[1] for values in marking_ranges)
 assert any(min(values) == dashed_u[0] and max(values) == dashed_u[1] for values in marking_ranges)
-next(
-    item for item in props.boundaries if item.boundary_id == styled_boundary_id
-).marking_style = "SOLID_WHITE"
+props.lane_separator_style = "DASHED_WHITE"
 road_builder.build_mode(bpy.context.scene, "basic")
 
 # A generated median replaces the opposing-lane marking and the road surface
 # beneath it.  Its two curb tops and unsplit centre top remain distinct faces.
-props.median_enabled = True
+props.median_profile = "CURB"
 props.median_width = 1.2
 props.median_height = 0.2
-props.median_with_curb = True
 props.median_curb_width = 0.15
 assert bpy.ops.cs1_road.build_all() == {"FINISHED"}
 for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
@@ -705,6 +721,7 @@ assert bpy.ops.cs1_road.export_spec(filepath=str(median_spec_path)) == {"FINISHE
 median_spec = json.loads(median_spec_path.read_text(encoding="utf-8"))
 assert median_spec["shared_geometry"]["median"] == {
     "enabled": True,
+    "profile": "CURB",
     "width": props.median_width,
     "height": props.median_height,
     "with_curb": True,
@@ -719,9 +736,10 @@ assert sum(
     boundary["role"] == "MEDIAN_EDGE"
     for boundary in median_spec["layout"]["boundaries"]
 ) == 2
-props.median_enabled = False
+props.median_profile = "NONE"
 assert bpy.ops.cs1_road.import_spec(filepath=str(median_spec_path)) == {"FINISHED"}
 assert props.median_enabled is True
+assert props.median_profile == "CURB"
 assert abs(props.median_width - 1.2) < 1e-5
 assert abs(props.median_height - 0.2) < 1e-5
 invalid_median_spec = json.loads(json.dumps(median_spec))
@@ -743,7 +761,7 @@ else:
 # Without generated curbs, one supplied mesh is fitted to the configured
 # width/height, sliced longitudinally, and has its hidden end caps removed.
 median_source = create_box_edge_source("MedianSource", -1.0, 1.0)
-props.median_with_curb = False
+props.median_profile = "MESH"
 props.median_mesh = median_source
 road_builder.build_mode(bpy.context.scene, "basic")
 custom_median = bpy.data.objects["basic_segment"]
@@ -766,8 +784,7 @@ assert all(
     > 1e-6
     for polygon in custom_median.data.polygons
 ), "custom median end cap remained"
-props.median_enabled = False
-props.median_with_curb = True
+props.median_profile = "NONE"
 props.median_mesh = None
 bpy.data.objects.remove(median_source, do_unlink=True)
 assert bpy.ops.cs1_road.build_all() == {"FINISHED"}
@@ -780,22 +797,21 @@ props.line_mesh_enabled = False
 road_builder.build_mode(bpy.context.scene, "basic")
 meshless_lines_segment = bpy.data.objects["basic_segment"]
 assert len(polygons_of_kind(meshless_lines_segment, "marking")) == 0
-assert sum(item.marking_enabled for item in props.boundaries) == 5
+assert sum(item.marking_enabled for item in props.boundaries) == 5, [
+    (item.boundary_id, item.marking_enabled) for item in props.boundaries
+]
 assert len(meshless_lines_segment.data.polygons) < marked_polygon_count
 props.line_mesh_enabled = True
 road_builder.build_mode(bpy.context.scene, "basic")
 
 assert len(props.boundaries) == 7
 assert sum(item.marking_enabled for item in props.boundaries) == 5
-saved_marking_states = {item.boundary_id: item.marking_enabled for item in props.boundaries}
-for boundary in props.boundaries:
-    boundary.marking_enabled = False
+props.roadside_lines = False
 road_builder.build_mode(bpy.context.scene, "basic")
-unmarked_segment = bpy.data.objects["basic_segment"]
-assert len(unmarked_segment.data.polygons) < marked_polygon_count
-assert len(polygons_of_kind(unmarked_segment, "marking")) == 0
-for boundary in props.boundaries:
-    boundary.marking_enabled = saved_marking_states[boundary.boundary_id]
+no_roadside_segment = bpy.data.objects["basic_segment"]
+assert len(no_roadside_segment.data.polygons) < marked_polygon_count
+assert sum(item.marking_enabled for item in props.boundaries) == 3
+props.roadside_lines = True
 road_builder.build_mode(bpy.context.scene, "basic")
 
 props.node_shoulder_bands = True
@@ -900,8 +916,9 @@ road_builder.build_mode(bpy.context.scene, "elevated")
 tunnel_z = {round(vertex.co.z, 4) for vertex in bpy.data.objects["tunnel_segment"].data.vertices}
 assert -0.3 in tunnel_z and 0.0 in tunnel_z and 4.7 in tunnel_z, tunnel_z
 
-left_edge_boundary = next(item for item in props.boundaries if item.boundary_id == "boundary-left-carriageway")
-left_edge_boundary.marking_enabled = False
+props.roadside_lines = False
+props.lane_separator_style = "SOLID_WHITE"
+props.center_line_style = "SOLID_YELLOW"
 props.line_mesh_enabled = False
 props.node_min_corner_offset = 12.0
 spec_output = ROOT / "build" / "smoke" / "roundtrip-road.json"
@@ -917,6 +934,11 @@ assert saved["node"]["shoulder_bands"] is False
 assert saved["node"]["min_corner_offset"] == 12.0
 assert round(saved["styles"]["markings"]["SOLID_WHITE"]["paint_width"], 3) == 0.15
 assert round(saved["styles"]["markings"]["SOLID_WHITE"]["region_width"], 3) == 0.4
+assert saved["styles"]["markings"]["rules"] == {
+    "roadside_lines": False,
+    "lane_separator_style": "SOLID_WHITE",
+    "center_line_style": "SOLID_YELLOW",
+}
 assert [round(value, 3) for value in saved["styles"]["surface"]["road_color"]] == [
     0.20, 0.25, 0.30,
 ]
@@ -925,10 +947,11 @@ assert [round(value, 3) for value in saved["styles"]["imt_preview"]["voids"]] ==
 assert saved["styles"]["imt_preview"]["dash_length"] == 6.0
 assert len(saved["layout"]["strips"]) == 8
 assert len(saved["layout"]["boundaries"]) == 7
-assert sum(item["marking"] is not None for item in saved["layout"]["boundaries"]) == 4
+assert sum(item["marking"] is not None for item in saved["layout"]["boundaries"]) == 3
 saved_boundaries = {item["id"]: item for item in saved["layout"]["boundaries"]}
 assert saved_boundaries["boundary-left-carriageway"]["marking"] is None
-assert saved_boundaries["boundary-right-carriageway"]["marking"]["role"] == "CARRIAGEWAY_EDGE"
+assert saved_boundaries["boundary-right-carriageway"]["marking"] is None
+assert saved_boundaries["boundary-lane-2-lane-3"]["marking"]["style_id"] == "SOLID_YELLOW"
 assert len(saved["lanes"]) == 4
 assert [lane["direction"] for lane in saved["lanes"]] == ["BACKWARD", "BACKWARD", "FORWARD", "FORWARD"]
 assert len({lane["id"] for lane in saved["lanes"]}) == 4
@@ -939,7 +962,10 @@ props.line_mesh_enabled = True
 assert bpy.ops.cs1_road.import_spec(filepath=str(spec_output)) == {"FINISHED"}
 roundtrip_boundaries = {item.boundary_id: item for item in props.boundaries}
 assert roundtrip_boundaries["boundary-left-carriageway"].marking_enabled is False
-assert roundtrip_boundaries["boundary-right-carriageway"].marking_enabled is True
+assert roundtrip_boundaries["boundary-right-carriageway"].marking_enabled is False
+assert props.roadside_lines is False
+assert props.lane_separator_style == "SOLID_WHITE"
+assert props.center_line_style == "SOLID_YELLOW"
 assert props.node_min_corner_offset == 12.0
 assert props.line_mesh_enabled is False
 assert [round(value, 3) for value in props.road_color] == [0.20, 0.25, 0.30]
@@ -954,6 +980,9 @@ assert props.lanes[2].direction == "FORWARD"
 assert props.node_min_corner_offset == 0.0
 assert [round(value, 3) for value in props.road_color] == [0.12, 0.14, 0.16]
 assert props.imt_appearance_preset == "JP_WEATHERED"
+assert props.roadside_lines is True
+assert props.lane_separator_style == "DASHED_WHITE"
+assert props.center_line_style == "DASHED_WHITE"
 props.imt_texture = 0.30
 assert props.imt_appearance_preset == "CUSTOM"
 props.imt_appearance_preset = "JP_WEATHERED"
@@ -964,6 +993,9 @@ runtime_output = ROOT / "build" / "smoke" / "runtime-preview"
 props.runtime_output_dir = str(runtime_output)
 props.runtime_road_id = "smoke-road"
 props.runtime_prefab_name = "Smoke Road"
+props.roadside_lines = False
+props.lane_separator_style = "SOLID_WHITE"
+props.center_line_style = "SOLID_YELLOW"
 assert bpy.ops.cs1_road.export_runtime() == {"FINISHED"}
 manifest = json.loads((runtime_output / "manifest.json").read_text(encoding="utf-8"))
 bundle = json.loads((runtime_output / "roads" / "smoke-road.json").read_text(encoding="utf-8"))
@@ -984,7 +1016,10 @@ assert [round(value, 3) for value in bundle["imt_marking_style"]["cracks"]] == [
 assert [round(value, 3) for value in bundle["imt_marking_style"]["voids"]] == [0.2, 1.0]
 assert round(bundle["imt_marking_style"]["line_width"], 3) == 0.15
 assert bundle["imt_marking_style"]["crosswalk_width"] == 3.0
-assert bundle["imt_marking_style"]["center_line_yellow"] is False
+assert bundle["imt_marking_style"]["center_line_yellow"] is True
+assert bundle["imt_marking_style"]["roadside_lines"] is False
+assert bundle["imt_marking_style"]["lane_separator_style"] == "SOLID_WHITE"
+assert bundle["imt_marking_style"]["center_line_style"] == "SOLID_YELLOW"
 assert len(bundle["revision"]) == 64
 assert len(bundle["structural_signature"]) == 64
 mode_entries = {item["mode"]: item["entries"] for item in bundle["modes"]}
@@ -1148,12 +1183,20 @@ assert manifest_roads["smoke-road-two"]["revision"] == second_bundle["revision"]
 props.runtime_auto_export = False
 
 # Geometry controls throttle the selected mode and settle other generated modes.
+base_span = (
+    sum(lane.width for lane in props.lanes if lane.zone == "ROAD")
+    + (props.median_width if props.median_enabled else 0.0)
+    + 2.0
+)
+props.between_sidewalks_width = base_span
+road_builder._LIVE_PREVIEW_PENDING.clear()
+road_builder.build_mode(bpy.context.scene, "basic")
 basic_before = bpy.data.objects["basic_segment"]
 half_width_before = max(vertex.co.x for vertex in basic_before.data.vertices)
-props.shoulder_width = 1.1
+props.between_sidewalks_width = base_span + 0.2
 scene_key = bpy.context.scene.as_pointer()
 first_due = road_builder._LIVE_PREVIEW_PENDING[scene_key]["live_due"]
-props.shoulder_width = 1.2
+props.between_sidewalks_width = base_span + 0.4
 assert len(road_builder._LIVE_PREVIEW_PENDING) == 1
 pending = road_builder._LIVE_PREVIEW_PENDING[scene_key]
 assert pending["live_due"] == first_due
@@ -1169,7 +1212,7 @@ pending = road_builder._LIVE_PREVIEW_PENDING[scene_key]
 assert pending["dirty"] is False
 pending["settle_due"] = 0.0
 assert road_builder._live_preview_timer() is None
-props.shoulder_width = 1.0
+props.between_sidewalks_width = base_span
 road_builder._LIVE_PREVIEW_PENDING.clear()
 
 assert bpy.ops.cs1_road.reload_surface_texture() == {"FINISHED"}
@@ -1191,9 +1234,14 @@ for panel_type in (
 assert "script.reload" in panel_layout.operator_ids
 assert "cs1_road.reload_surface_texture" in panel_layout.operator_ids
 assert panel_layout.property_names.count("sidewalk_width") == 2
-assert panel_layout.property_names.count("shoulder_width") == 2
+assert panel_layout.property_names.count("shoulder_width") == 0
+assert "between_sidewalks_width" in panel_layout.property_names
+assert "roadside_use" in panel_layout.property_names
+assert "roadside_lines" in panel_layout.property_names
+assert "lane_separator_style" in panel_layout.property_names
+assert "center_line_style" in panel_layout.property_names
 for median_field in (
-    "median_enabled", "median_width", "median_height", "median_with_curb",
+    "median_profile", "median_width", "median_height",
 ):
     assert median_field in panel_layout.property_names
 assert "zone" in panel_layout.property_names
@@ -1201,7 +1249,10 @@ assert "width" in panel_layout.property_names
 assert "direction" in panel_layout.property_names
 assert "vehicle_type" in panel_layout.property_names
 assert "speed_limit" in panel_layout.property_names
-for hidden_field in ("lane_type", "vertical_offset", "stop_offset", "allow_connect", "node_shoulder_bands"):
+for hidden_field in (
+    "lane_type", "vertical_offset", "stop_offset", "allow_connect",
+    "node_shoulder_bands", "imt_center_line_yellow",
+):
     assert hidden_field not in panel_layout.property_names
 assert "node_transition_target" not in panel_layout.property_names
 for panel_type in (

@@ -6,7 +6,7 @@ declare the current persisted schema to be the final product model.
 
 from __future__ import annotations
 
-from typing import Iterable, Protocol
+from typing import Iterable, NamedTuple, Protocol
 
 
 MODE_LENGTH = 64.0
@@ -16,6 +16,22 @@ ROADWAY_DEPRESSION = 0.30
 SIDEWALK_LANE_TOTAL_INSET = 0.50
 MEDIAN_END_OVERHANG = 0.002
 MEDIAN_Z_FIGHT_EPSILON = 0.002
+PARKING_LANE_DEFAULT_WIDTH = 2.0
+
+
+class CrossSectionAllocation(NamedTuple):
+    """Resolved use of the fixed space between the two sidewalks."""
+
+    target_width: float
+    lane_width: float
+    median_width: float
+    shoulder_width: float
+    actual_width: float
+    overflow: float
+
+    @property
+    def fits(self) -> bool:
+        return self.overflow <= 1e-8
 
 
 def roadway_depression(enabled: bool) -> float:
@@ -34,6 +50,71 @@ def sidewalk_lane_width(surface_width: float, lane_count: int = 1) -> float:
     """Fit pedestrian network lanes inside the sidewalk surface."""
     usable_width = max(surface_width - SIDEWALK_LANE_TOTAL_INSET, 0.05)
     return usable_width / max(lane_count, 1)
+
+
+def allocate_cross_section(
+    lanes: Iterable[LaneLike],
+    between_sidewalks_width: float,
+    median_width: float = 0.0,
+) -> CrossSectionAllocation:
+    """Allocate a fixed sidewalk-to-sidewalk span without hiding overflow.
+
+    Lane and median dimensions remain authoritative.  Any non-negative
+    remainder is divided equally between the two roadside shoulders.  If the
+    requested content does not fit, shoulders become zero and ``overflow``
+    tells the Blender adapter how much to warn about; generation is not
+    rejected and dimensions are not silently shrunk.
+    """
+    lane_width = max(
+        sum(lane.width for lane in lanes if lane.zone == "ROAD"), 0.01
+    )
+    target_width = max(float(between_sidewalks_width), 0.01)
+    resolved_median = max(float(median_width), 0.0)
+    required_width = lane_width + resolved_median
+    remainder = target_width - required_width
+    shoulder_width = max(remainder * 0.5, 0.0)
+    overflow = max(-remainder, 0.0)
+    return CrossSectionAllocation(
+        target_width=target_width,
+        lane_width=lane_width,
+        median_width=resolved_median,
+        shoulder_width=shoulder_width,
+        actual_width=max(target_width, required_width),
+        overflow=overflow,
+    )
+
+
+def parking_fits(
+    lanes: Iterable[LaneLike],
+    between_sidewalks_width: float,
+    median_width: float,
+    parking_lane_width: float = PARKING_LANE_DEFAULT_WIDTH,
+) -> bool:
+    """Return whether one parking lane on each side fits the fixed span."""
+    allocation = allocate_cross_section(
+        lanes, between_sidewalks_width, median_width,
+    )
+    return allocation.shoulder_width + 1e-8 >= max(parking_lane_width, 0.0)
+
+
+def marking_rule(
+    boundary_role: str,
+    marking_role: str,
+    roadside_lines: bool,
+    lane_separator_style: str,
+    center_line_style: str,
+    line_capable: bool = True,
+) -> tuple[bool, str]:
+    """Resolve one boundary from the road-level line policy."""
+    if boundary_role == "MEDIAN_EDGE":
+        return False, "SOLID_WHITE"
+    if marking_role == "CARRIAGEWAY_EDGE":
+        return bool(roadside_lines and line_capable), "SOLID_WHITE"
+    if boundary_role == "LANE_DIVIDER" and marking_role == "CENTER_LINE":
+        return True, center_line_style
+    if boundary_role == "LANE_DIVIDER" and marking_role == "LANE_SEPARATOR":
+        return True, lane_separator_style
+    return False, "SOLID_WHITE"
 
 
 class LaneLike(Protocol):

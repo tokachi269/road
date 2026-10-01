@@ -10,11 +10,15 @@
     <AssemblyName>RoadRuntimeHost.ContractSmoke</AssemblyName>
     <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
     <OutputPath>bin\Release\</OutputPath>
+    <IntersectionMarkingToolApiPath Condition=" '$(IntersectionMarkingToolApiPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\IntersectionMarkingTool.API.dll</IntersectionMarkingToolApiPath>
+    <IntersectionMarkingToolPath Condition=" '$(IntersectionMarkingToolPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\IntersectionMarkingTool.dll</IntersectionMarkingToolPath>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Assembly-CSharp"><HintPath>$(CitiesSkylinesManagedDir)\Assembly-CSharp.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="ColossalManaged"><HintPath>$(CitiesSkylinesManagedDir)\ColossalManaged.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="ICities"><HintPath>$(CitiesSkylinesManagedDir)\ICities.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="IntersectionMarkingTool"><HintPath>$(IntersectionMarkingToolPath)</HintPath><Private>true</Private></Reference>
+    <Reference Include="IntersectionMarkingTool.API"><HintPath>$(IntersectionMarkingToolApiPath)</HintPath><Private>true</Private></Reference>
     <Reference Include="System" />
     <Reference Include="UnityEngine"><HintPath>$(CitiesSkylinesManagedDir)\UnityEngine.dll</HintPath><Private>true</Private></Reference>
   </ItemGroup>

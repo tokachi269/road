@@ -170,17 +170,66 @@ namespace RoadRuntimeHost.ContractSmoke
                 "RoadRuntimeHost.Runtime.ImtCrosswalkWallPatch", true);
             MethodInfo prefix = hook.GetMethod(
                 "Prefix", BindingFlags.Static | BindingFlags.NonPublic);
-            if (prefix == null)
+            MethodInfo zebraDashesPrefix = hook.GetMethod(
+                "ZebraDashesPrefix",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            if (prefix == null || zebraDashesPrefix == null)
                 throw new InvalidOperationException(
-                    "pre-dash IMT wall-alignment hook is missing");
+                    "IMT crosswalk-boundary or stable dash-count hook is missing");
+            ParameterInfo[] prefixParameters = prefix.GetParameters();
+            if (prefixParameters.Length != 2
+                || prefixParameters[0].ParameterType.FullName
+                    != "IMT.Manager.MarkingCrosswalk"
+                || !prefixParameters[1].ParameterType.IsByRef)
+                throw new InvalidOperationException(
+                    "IMT crosswalk-boundary hook does not replace one coherent trajectory result");
+
+            Type imtCrosswalk = Type.GetType(
+                "IMT.Manager.MarkingCrosswalk, IntersectionMarkingTool", true);
+            Type zebraStyle = Type.GetType(
+                "IMT.Manager.ZebraCrosswalkStyle, IntersectionMarkingTool", true);
+            Type straightTrajectory = Type.GetType(
+                "ModsCommon.Utilities.StraightTrajectory, IntersectionMarkingTool", true);
+            MethodInfo boundaryBuilder = imtCrosswalk.GetMethod(
+                "GetTrajectory",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null, Type.EmptyTypes, null);
+            MethodInfo dashBuilder = zebraStyle.GetMethod(
+                "GetDashes",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null,
+                new Type[] { imtCrosswalk, straightTrajectory },
+                null);
+            PropertyInfo rightBorder = imtCrosswalk.GetProperty(
+                "RightBorderTrajectory",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo leftBorder = imtCrosswalk.GetProperty(
+                "LeftBorderTrajectory",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (boundaryBuilder == null || dashBuilder == null
+                || rightBorder == null || rightBorder.GetSetMethod(true) == null
+                || leftBorder == null || leftBorder.GetSetMethod(true) == null)
+                throw new InvalidOperationException(
+                    "installed IMT does not expose the version-gated coherent boundary construction contract");
 
             Type geometry = runtimeAssembly.GetType(
                 "RoadRuntimeHost.Runtime.CrosswalkWallGeometry", true);
             MethodInfo tryGetSpan = geometry.GetMethod(
                 "TryGetSpan", BindingFlags.Static | BindingFlags.Public);
-            if (tryGetSpan == null)
+            MethodInfo stableDashCount = geometry.GetMethod(
+                "GetStableDashCount", BindingFlags.Static | BindingFlags.Public);
+            if (tryGetSpan == null || stableDashCount == null)
                 throw new InvalidOperationException(
-                    "crosswalk wall span calculation is missing");
+                    "crosswalk wall span or stable dash-count calculation is missing");
+
+            if ((int)stableDashCount.Invoke(
+                    null, new object[] { 7f, 0.45f, 0.55f }) != 7
+                || (int)stableDashCount.Invoke(
+                    null, new object[] { 6.9995f, 0.45f, 0.55f }) != 7
+                || (int)stableDashCount.Invoke(
+                    null, new object[] { 6.99f, 0.45f, 0.55f }) != 6)
+                throw new InvalidOperationException(
+                    "crosswalk dash count is unstable at an exact wall-width period boundary");
 
             object[] values = new object[]
             {

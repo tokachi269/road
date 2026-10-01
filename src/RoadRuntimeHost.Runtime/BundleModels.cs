@@ -35,6 +35,9 @@ namespace RoadRuntimeHost.Runtime
         public float[] WhiteColor;
         public float[] YellowColor;
         public bool CenterLineYellow;
+        public bool RoadsideLines = true;
+        public string LaneSeparatorStyle = "DASHED_WHITE";
+        public string CenterLineStyle = "DASHED_WHITE";
         public float Texture;
         public float[] Cracks;
         public float[] Voids;
