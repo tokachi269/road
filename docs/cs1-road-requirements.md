@@ -234,19 +234,19 @@ Laneとboundaryの配列indexはidentityではない。Lane追加、削除、並
 - Marking styleのpaint幅やregion幅を変更すると、そのstyleを参照する全boundaryへ反映する。Boundaryごとに同じ15 cmを重複保存しない。
 - Node markingはsegment boundary markingから暗黙コピーしない。CS1 node selectorに必要になった時点でnode所有の別設定として追加する。
 
-### Schema version 3と現在の対応範囲
+### Schema version 4と現在の対応範囲
 
-JSON v3は`shared_geometry`、`styles`、`layout.strips`、`layout.boundaries`、`lanes`、`node`、`modes`へ分離した。Blender UIではboundary一覧から線を個別に選択できる。旧v2の`edge_lines` / `lane_lines`は読み込み時に該当boundaryへ展開する互換入力であり、v3では保存しない。
+JSON v4は`shared_geometry`、`styles`、`layout.strips`、`layout.boundaries`、`lanes`、`node`、`modes`へ分離し、共有profileは別の`profiles.json`へ置く。laneの速度、停止offset、接続可否はglobal、profile、road overrideの3段階だけで解決する。Blender UIでは道路単位の3規則からboundaryの線を導出し、個別線は編集しない。旧v2の`edge_lines` / `lane_lines`は互換入力、v3の展開済みlane値は明示overrideとして読み込み、v4では展開値を保存しない。
 
-現版の生成器は、車道lane 1本につきcarriageway strip 1本、左右対称の歩道幅・路肩幅、最初の対向方向boundaryへ置く分離帯、`SOLID_WHITE` styleに対応する。分離帯は全幅・路面からの高さを共有設定とし、生成curb囲いまたは64m基準Meshを選ぶ。生成curbでは左右curb上面と中央上面を別faceにし、中央上面を分割しない。基準Meshは設定幅・高さへfitして長手sliceへ切り、両端capを除く。V3が表現できてもBlender editorが安全に編集できない左右非対称幅は、黙って丸めずimportを拒否する。複数laneを1 stripへ割り当てる構成、線placement、transitionのID対応は次の実装範囲であり、対応済みとは扱わない。
+現版の生成器は、車道lane 1本につきcarriageway strip 1本、左右対称の歩道幅・路肩幅、最初の対向方向boundaryへ置く分離帯、`SOLID_WHITE` styleに対応する。分離帯は全幅・路面からの高さを共有設定とし、生成curb囲いまたは64m基準Meshを選ぶ。生成curbでは左右curb上面と中央上面を別faceにし、中央上面を分割しない。基準Meshは設定幅・高さへfitして長手sliceへ切り、両端capを除く。V4が表現できてもBlender editorが安全に編集できない左右非対称幅は、黙って丸めずimportを拒否する。複数laneを1 stripへ割り当てる構成、線placement、transitionのID対応は次の実装範囲であり、対応済みとは扱わない。
 
 ### Blenderでの提示
 
 - Scene内の道路一覧を最上段に表示し、道路名、Runtime road ID、車道／歩道lane数、総幅、中央分離帯の有無を選択前に確認できるようにする。
 - 一覧は道路の追加、複製、削除を提供し、選択中の1件だけを下の編集panelとpreview生成へ渡す。道路切替えのためにJSONやTSVを自動監視しない。
 - JSONはactive roadの置換、別roadとしてのimport、active roadのexport、全roadの一括exportに使用する。TSVは表計算ソフトによる一括編集とRuntime入力に引き続き使用し、Blender UIの一覧正本にはしない。
-- 順序付きlane一覧とboundary一覧を別に表示する。
-- Lane欄は交通・CS1 metadata、boundary欄はcurb・車道端・線を編集する。
+- 順序付きlaneを断面表へ表示し、線は道路単位の3規則で編集する。
+- Lane欄は交通・CS1 metadataと値のsourceを表示し、明示overrideの設定と解除を行う。
 - Stable IDは通常操作で直接入力させず、確認用に表示する。
 - 横断面previewはstrip幅に比例させる。これは未実装。
 

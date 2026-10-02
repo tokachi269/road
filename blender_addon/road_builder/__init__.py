@@ -3,7 +3,7 @@ from __future__ import annotations
 bl_info = {
     "name": "CS1 Road Builder",
     "author": "Local project",
-    "version": (0, 8, 0),
+    "version": (0, 9, 0),
     "blender": (5, 1, 0),
     "location": "3D View > Sidebar > Road",
     "description": "Manage, edit, and preview Cities: Skylines 1 road definitions",
@@ -34,11 +34,15 @@ importlib.reload(_geometry_plan)
 importlib.reload(_runtime_export)
 
 from .domain import (
+    AUTHORING_SCHEMA_VERSION,
+    DEFAULT_PROFILE_ID,
+    GLOBAL_LANE_DEFAULTS,
     MODE_LENGTH,
     MEDIAN_END_OVERHANG,
     MEDIAN_Z_FIGHT_EPSILON,
     NODE_SLICES,
     PARKING_LANE_DEFAULT_WIDTH,
+    PROFILE_SCHEMA_VERSION,
     ROADWAY_DEPRESSION,
     SIDEWALK_LANE_TOTAL_INSET,
     SEGMENT_SLICES,
@@ -47,9 +51,12 @@ from .domain import (
     expected_boundaries,
     lane_vertical_offset,
     marking_rule,
+    migrate_authoring_spec_v3_to_v4,
     median_split_index,
     parking_fits,
     roadway_depression,
+    redundant_override,
+    resolve_setting,
     sidewalk_lane_width,
     strip_id,
 )
@@ -158,6 +165,14 @@ CENTER_LINE_STYLE_ITEMS = MARKING_STYLE_ITEMS
 IMT_APPEARANCE_PRESET_ITEMS = (
     ("JP_WEATHERED", "JP weathered", "Shared worn-paint baseline used by this project"),
     ("CUSTOM", "Custom", "Keep the editable appearance values below"),
+)
+IMT_PROFILE_FIELDS = (
+    "imt_appearance_preset", "imt_white_color", "imt_yellow_color",
+    "imt_texture", "imt_cracks_density", "imt_cracks_scale",
+    "imt_voids_density", "imt_voids_scale", "imt_crosswalk_width",
+    "imt_crosswalk_dash_length", "imt_crosswalk_gap_length",
+    "imt_crosswalk_offset", "imt_stop_line_width", "imt_dash_length",
+    "imt_dash_gap",
 )
 MARKING_TEXTURE_REGIONS = {
     "SOLID_WHITE": "line.solid.white",
@@ -1864,26 +1879,28 @@ def _load_imt_appearance(props, source) -> None:
         return
     _IMT_PRESET_APPLYING = True
     try:
-        props.roadside_lines = bool(
-            source.get("roadside_lines", props.roadside_lines)
-        )
-        props.lane_separator_style = _enum_value(
-            str(source.get("lane_separator_style", props.lane_separator_style)),
-            LANE_SEPARATOR_STYLE_ITEMS, props.lane_separator_style,
-        )
-        center_fallback = (
-            "SOLID_YELLOW"
-            if source.get("center_line_yellow", False)
-            else props.center_line_style
-        )
-        props.center_line_style = _enum_value(
-            str(source.get("center_line_style", center_fallback)),
-            CENTER_LINE_STYLE_ITEMS, center_fallback,
-        )
+        if hasattr(props, "roadside_lines"):
+            props.roadside_lines = bool(
+                source.get("roadside_lines", props.roadside_lines)
+            )
+            props.lane_separator_style = _enum_value(
+                str(source.get("lane_separator_style", props.lane_separator_style)),
+                LANE_SEPARATOR_STYLE_ITEMS, props.lane_separator_style,
+            )
+            center_fallback = (
+                "SOLID_YELLOW"
+                if source.get("center_line_yellow", False)
+                else props.center_line_style
+            )
+            props.center_line_style = _enum_value(
+                str(source.get("center_line_style", center_fallback)),
+                CENTER_LINE_STYLE_ITEMS, center_fallback,
+            )
         props.imt_appearance_preset = preset
         props.imt_white_color = tuple(source.get("white_color", props.imt_white_color))
         props.imt_yellow_color = tuple(source.get("yellow_color", props.imt_yellow_color))
-        props.imt_center_line_yellow = props.center_line_style == "SOLID_YELLOW"
+        if hasattr(props, "imt_center_line_yellow"):
+            props.imt_center_line_yellow = props.center_line_style == "SOLID_YELLOW"
         props.imt_texture = float(source.get("texture", props.imt_texture))
         cracks = source.get("cracks", [props.imt_cracks_density, props.imt_cracks_scale])
         voids = source.get("voids", [props.imt_voids_density, props.imt_voids_scale])
@@ -1898,6 +1915,128 @@ def _load_imt_appearance(props, source) -> None:
         props.imt_dash_gap = float(source.get("dash_gap", props.imt_dash_gap))
     finally:
         _IMT_PRESET_APPLYING = False
+
+
+def _copy_imt_appearance(source, target) -> None:
+    global _IMT_PRESET_APPLYING
+    previous = _IMT_PRESET_APPLYING
+    _IMT_PRESET_APPLYING = True
+    try:
+        for name in IMT_PROFILE_FIELDS:
+            setattr(target, name, getattr(source, name))
+    finally:
+        _IMT_PRESET_APPLYING = previous
+
+
+def _imt_appearance_data(source) -> dict:
+    return {
+        "preset": source.imt_appearance_preset,
+        "white_color": list(source.imt_white_color),
+        "yellow_color": list(source.imt_yellow_color),
+        "texture": source.imt_texture,
+        "cracks": [source.imt_cracks_density, source.imt_cracks_scale],
+        "voids": [source.imt_voids_density, source.imt_voids_scale],
+        "crosswalk_width": source.imt_crosswalk_width,
+        "crosswalk_dash_length": source.imt_crosswalk_dash_length,
+        "crosswalk_gap_length": source.imt_crosswalk_gap_length,
+        "crosswalk_offset": source.imt_crosswalk_offset,
+        "stop_line_width": source.imt_stop_line_width,
+        "dash_length": source.imt_dash_length,
+        "dash_gap": source.imt_dash_gap,
+    }
+
+
+def _normalized_appearance(data):
+    if isinstance(data, dict):
+        return {key: _normalized_appearance(value) for key, value in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [_normalized_appearance(value) for value in data]
+    if isinstance(data, float):
+        return round(data, 6)
+    return data
+
+
+def _appearance_values_equal(left, right) -> bool:
+    left_values = dict(left)
+    right_values = dict(right)
+    left_values.pop("preset", None)
+    right_values.pop("preset", None)
+    return _normalized_appearance(left_values) == _normalized_appearance(right_values)
+
+
+def _profile_by_id(scene, profile_id: str):
+    requested = profile_id.strip()
+    return next(
+        (profile for profile in scene.cs1_road_profiles if profile.profile_id == requested),
+        None,
+    )
+
+
+def _profile_for_road(scene, road):
+    return _profile_by_id(scene, road.profile_id)
+
+
+def _active_profile(scene):
+    profiles = scene.cs1_road_profiles
+    if not profiles:
+        return None
+    index = max(0, min(scene.cs1_active_profile_index, len(profiles) - 1))
+    return profiles[index]
+
+
+def _unique_profile_id(scene, requested: str) -> str:
+    base = safe_road_id(requested) or "profile"
+    existing = {profile.profile_id.lower() for profile in scene.cs1_road_profiles}
+    if base.lower() not in existing:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}".lower() in existing:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
+def _ensure_default_profile(scene):
+    profile = _profile_by_id(scene, DEFAULT_PROFILE_ID)
+    if profile is None:
+        profile = scene.cs1_road_profiles.add()
+        profile.profile_id = DEFAULT_PROFILE_ID
+        profile.name = "Urban default"
+    return profile
+
+
+def _lane_setting(profile, lane, field: str):
+    pedestrian = lane.zone in {"LEFT_SIDEWALK", "RIGHT_SIDEWALK"}
+    if field == "speed_limit":
+        key = "pedestrian_speed_limit" if pedestrian else "road_speed_limit"
+    else:
+        key = field
+    global_value = GLOBAL_LANE_DEFAULTS[key]
+    profile_has = bool(profile and getattr(profile, f"override_{key}"))
+    profile_value = getattr(profile, key) if profile is not None else global_value
+    return resolve_setting(
+        global_value,
+        profile.profile_id if profile is not None else DEFAULT_PROFILE_ID,
+        profile_has,
+        profile_value,
+        getattr(lane, f"override_{field}"),
+        getattr(lane, field),
+    )
+
+
+def _inherited_lane_setting(profile, lane, field: str):
+    pedestrian = lane.zone in {"LEFT_SIDEWALK", "RIGHT_SIDEWALK"}
+    key = (
+        "pedestrian_speed_limit" if field == "speed_limit" and pedestrian
+        else "road_speed_limit" if field == "speed_limit"
+        else field
+    )
+    global_value = GLOBAL_LANE_DEFAULTS[key]
+    return resolve_setting(
+        global_value,
+        profile.profile_id if profile is not None else DEFAULT_PROFILE_ID,
+        bool(profile and getattr(profile, f"override_{key}")),
+        getattr(profile, key) if profile is not None else global_value,
+    )
 
 
 def _ensure_default_lanes(props) -> None:
@@ -1997,13 +2136,32 @@ def _initialize_scene_lanes():
     except AttributeError:
         return 0.1
     for scene in scenes:
+        default_profile = _ensure_default_profile(scene)
         legacy = scene.cs1_road_builder
         _ensure_default_lanes(legacy)
         if not scene.cs1_roads:
             road = scene.cs1_roads.add()
             _copy_property_group(legacy, road)
             scene.cs1_active_road_index = 0
-        _ensure_default_lanes(active_road(scene))
+        for road in scene.cs1_roads:
+            _ensure_default_lanes(road)
+            if road.provenance_version == 0:
+                legacy_data = _imt_appearance_data(road)
+                default_data = _imt_appearance_data(default_profile)
+                profile = default_profile
+                if not _appearance_values_equal(legacy_data, default_data):
+                    profile = scene.cs1_road_profiles.add()
+                    profile.profile_id = _unique_profile_id(
+                        scene, f"migrated-{road.runtime_road_id or road.road_name}",
+                    )
+                    profile.name = f"Migrated: {road.road_name}"
+                    _copy_imt_appearance(road, profile)
+                road.profile_id = profile.profile_id
+                for lane in road.lanes:
+                    lane.override_speed_limit = True
+                    lane.override_stop_offset = True
+                    lane.override_allow_connect = True
+                road.provenance_version = 1
     return None
 
 
@@ -2287,6 +2445,7 @@ class CS1RoadLane(PropertyGroup):
         name="Vehicle", items=_vehicle_type_items_for_lane,
     )
     speed_limit: FloatProperty(name="Speed limit", default=1.0, min=0.0, max=10.0)
+    override_speed_limit: BoolProperty(name="Override speed limit", default=False)
     vertical_offset: FloatProperty(
         name="Derived vertical offset", default=0.0, min=-16.0, max=16.0,
         unit="LENGTH", options={"HIDDEN"},
@@ -2295,7 +2454,9 @@ class CS1RoadLane(PropertyGroup):
         name="Stop offset", default=0.0, min=-32.0, max=32.0,
         unit="LENGTH", options={"HIDDEN"},
     )
+    override_stop_offset: BoolProperty(name="Override stop offset", default=False)
     allow_connect: BoolProperty(name="Allow connect", default=True, options={"HIDDEN"})
+    override_allow_connect: BoolProperty(name="Override allow connect", default=False)
 
 
 class CS1RoadBoundary(PropertyGroup):
@@ -2310,8 +2471,49 @@ class CS1RoadBoundary(PropertyGroup):
     marking_style: EnumProperty(name="Marking style", items=MARKING_STYLE_ITEMS, default="SOLID_WHITE")
 
 
+class CS1RoadProfile(PropertyGroup):
+    profile_id: StringProperty(name="Profile ID", default=DEFAULT_PROFILE_ID)
+    name: StringProperty(name="Profile name", default="Urban default")
+    override_road_speed_limit: BoolProperty(name="Override roadway speed", default=False)
+    road_speed_limit: FloatProperty(name="Roadway speed", default=GLOBAL_LANE_DEFAULTS["road_speed_limit"], min=0.0, max=10.0)
+    override_pedestrian_speed_limit: BoolProperty(name="Override pedestrian speed", default=False)
+    pedestrian_speed_limit: FloatProperty(name="Pedestrian speed", default=GLOBAL_LANE_DEFAULTS["pedestrian_speed_limit"], min=0.0, max=10.0)
+    override_stop_offset: BoolProperty(name="Override stop offset", default=False)
+    stop_offset: FloatProperty(name="Stop offset", default=GLOBAL_LANE_DEFAULTS["stop_offset"], min=-32.0, max=32.0, unit="LENGTH")
+    override_allow_connect: BoolProperty(name="Override allow connect", default=False)
+    allow_connect: BoolProperty(name="Allow connect", default=GLOBAL_LANE_DEFAULTS["allow_connect"])
+    imt_appearance_preset: EnumProperty(
+        name="Appearance preset", items=IMT_APPEARANCE_PRESET_ITEMS,
+        default="JP_WEATHERED", update=_on_imt_appearance_preset_update,
+    )
+    imt_white_color: FloatVectorProperty(
+        name="White paint", subtype="COLOR_GAMMA", size=4,
+        default=(245 / 255, 245 / 255, 235 / 255, 1.0), min=0.0, max=1.0,
+        update=_on_imt_appearance_value_update,
+    )
+    imt_yellow_color: FloatVectorProperty(
+        name="Yellow paint", subtype="COLOR_GAMMA", size=4,
+        default=(1.0, 0.72, 0.0, 1.0), min=0.0, max=1.0,
+        update=_on_imt_appearance_value_update,
+    )
+    imt_texture: FloatProperty(name="Texture", default=0.25, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_cracks_density: FloatProperty(name="Cracks density", default=0.70, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_cracks_scale: FloatProperty(name="Cracks scale", default=0.40, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_voids_density: FloatProperty(name="Voids density", default=0.20, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_voids_scale: FloatProperty(name="Voids scale", default=1.0, min=0.0, max=1.0, update=_on_imt_appearance_value_update)
+    imt_crosswalk_width: FloatProperty(name="Zebra width", default=3.0, min=0.1, max=16.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_crosswalk_dash_length: FloatProperty(name="Zebra stripe", default=0.45, min=0.05, max=4.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_crosswalk_gap_length: FloatProperty(name="Zebra gap", default=0.55, min=0.05, max=4.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_crosswalk_offset: FloatProperty(name="Zebra inner offset", default=0.40, min=0.0, max=8.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_stop_line_width: FloatProperty(name="Stop line width", default=0.30, min=0.05, max=2.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_dash_length: FloatProperty(name="Line dash", default=6.0, min=0.05, max=32.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+    imt_dash_gap: FloatProperty(name="Line gap", default=10.0, min=0.05, max=32.0, unit="LENGTH", update=_on_imt_appearance_value_update)
+
+
 class CS1RoadBuilderProperties(PropertyGroup):
     road_name: StringProperty(name="Road name", default="Example Road")
+    profile_id: StringProperty(name="Profile ID", default=DEFAULT_PROFILE_ID)
+    provenance_version: IntProperty(default=0, options={"HIDDEN"})
     mode: EnumProperty(name="Mode", items=MODE_ITEMS, default="basic")
     lanes: CollectionProperty(type=CS1RoadLane)
     active_lane_index: IntProperty(default=0, min=0)
@@ -2489,6 +2691,11 @@ class CS1ROAD_UL_roads(UIList):
         row.label(text=f"{road_lanes}R {pedestrian_lanes}P {total_width:.1f}m {median}")
 
 
+class CS1ROAD_UL_profiles(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        layout.label(text=f"{item.name} [{item.profile_id}]", icon="PRESET")
+
+
 def _unique_road_value(scene, attribute: str, requested: str, exclude=None) -> str:
     base = requested.strip() or "Road"
     existing = {
@@ -2509,6 +2716,7 @@ class CS1ROAD_OT_road_add(Operator):
 
     def execute(self, context):
         scene = context.scene
+        _ensure_default_profile(scene)
         road = scene.cs1_roads.add()
         number = len(scene.cs1_roads)
         road.road_name = _unique_road_value(scene, "road_name", f"Road {number}", road)
@@ -2518,6 +2726,8 @@ class CS1ROAD_OT_road_add(Operator):
         road.runtime_prefab_name = _unique_road_value(
             scene, "runtime_prefab_name", f"Road {number}", road,
         )
+        road.profile_id = DEFAULT_PROFILE_ID
+        road.provenance_version = 1
         _ensure_default_lanes(road)
         scene.cs1_active_road_index = number - 1
         return {"FINISHED"}
@@ -2544,6 +2754,94 @@ class CS1ROAD_OT_road_duplicate(Operator):
         )
         target.runtime_auto_export = False
         scene.cs1_active_road_index = len(scene.cs1_roads) - 1
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_profile_add(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.profile_add", "Add profile", {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        profile = scene.cs1_road_profiles.add()
+        profile.profile_id = _unique_profile_id(scene, f"profile-{len(scene.cs1_road_profiles)}")
+        profile.name = f"Profile {len(scene.cs1_road_profiles)}"
+        scene.cs1_active_profile_index = len(scene.cs1_road_profiles) - 1
+        active_road(scene).profile_id = profile.profile_id
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_profile_duplicate(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.profile_duplicate", "Duplicate profile", {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        source = _active_profile(scene)
+        if source is None:
+            return {"CANCELLED"}
+        source_data = _profile_export_data(source)
+        source_id = source.profile_id
+        source_name = source.name
+        new_id = _unique_profile_id(scene, f"{source_id}-copy")
+        profile = scene.cs1_road_profiles.add()
+        _load_profile_data(profile, source_data)
+        profile.profile_id = new_id
+        profile.name = f"{source_name} Copy"
+        scene.cs1_active_profile_index = len(scene.cs1_road_profiles) - 1
+        active_road(scene).profile_id = profile.profile_id
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_profile_remove(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.profile_remove", "Remove profile", {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        profile = _active_profile(scene)
+        if profile is None or len(scene.cs1_road_profiles) <= 1:
+            return {"CANCELLED"}
+        if profile.profile_id == DEFAULT_PROFILE_ID:
+            self.report({"ERROR"}, "The global fallback profile cannot be removed")
+            return {"CANCELLED"}
+        users = [road.road_name for road in scene.cs1_roads if road.profile_id == profile.profile_id]
+        if users:
+            self.report({"ERROR"}, f"Profile is used by {len(users)} road(s)")
+            return {"CANCELLED"}
+        scene.cs1_road_profiles.remove(scene.cs1_active_profile_index)
+        scene.cs1_active_profile_index = max(
+            0, min(scene.cs1_active_profile_index, len(scene.cs1_road_profiles) - 1),
+        )
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_profile_assign_active(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.profile_assign_active", "Use selected profile", {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        profile = _active_profile(context.scene)
+        if profile is None:
+            return {"CANCELLED"}
+        active_road(context.scene).profile_id = profile.profile_id
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_profile_override_toggle(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.profile_override_toggle", "Toggle profile override", {"REGISTER", "UNDO"}
+    field: EnumProperty(items=(
+        ("road_speed_limit", "Roadway speed", ""),
+        ("pedestrian_speed_limit", "Pedestrian speed", ""),
+        ("stop_offset", "Stop offset", ""),
+        ("allow_connect", "Allow connect", ""),
+    ))
+
+    def execute(self, context):
+        profile = _active_profile(context.scene)
+        if profile is None:
+            return {"CANCELLED"}
+        flag = f"override_{self.field}"
+        enabled = getattr(profile, flag)
+        if not enabled:
+            setattr(profile, self.field, GLOBAL_LANE_DEFAULTS[self.field])
+        setattr(profile, flag, not enabled)
         return {"FINISHED"}
 
 
@@ -2644,6 +2942,41 @@ class CS1ROAD_OT_lane_move(Operator):
         return {"FINISHED"}
 
 
+class CS1ROAD_OT_lane_select(Operator):
+    bl_idname, bl_label = "cs1_road.lane_select", "Inspect lane settings"
+    index: IntProperty(default=0)
+
+    def execute(self, context):
+        props = active_road(context.scene)
+        props.active_lane_index = max(0, min(self.index, len(props.lanes) - 1))
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_lane_override_toggle(Operator):
+    bl_idname, bl_label, bl_options = "cs1_road.lane_override_toggle", "Toggle lane override", {"REGISTER", "UNDO"}
+    index: IntProperty(default=0)
+    field: EnumProperty(items=(
+        ("speed_limit", "Speed limit", ""),
+        ("stop_offset", "Stop offset", ""),
+        ("allow_connect", "Allow connect", ""),
+    ))
+
+    def execute(self, context):
+        props = active_road(context.scene)
+        if not 0 <= self.index < len(props.lanes):
+            return {"CANCELLED"}
+        lane = props.lanes[self.index]
+        flag = f"override_{self.field}"
+        if getattr(lane, flag):
+            setattr(lane, flag, False)
+        else:
+            profile = _profile_for_road(context.scene, props)
+            inherited = _inherited_lane_setting(profile, lane, self.field)
+            setattr(lane, self.field, inherited.value)
+            setattr(lane, flag, True)
+        return {"FINISHED"}
+
+
 _CROSS_SECTION_COLUMN_WIDTHS = (0.18, 0.28, 0.16, 0.16, 0.10, 0.12)
 
 
@@ -2660,7 +2993,7 @@ def _cross_section_table_cells(layout):
     return cells
 
 
-def _draw_lane_table_row(layout, props, lane, index: int) -> None:
+def _draw_lane_table_row(layout, scene, props, lane, index: int) -> None:
     cells = _cross_section_table_cells(layout)
     automatic_parking = lane.lane_id in AUTO_PARKING_LANE_IDS
     width_cell = cells[1].row(align=True)
@@ -2681,9 +3014,13 @@ def _draw_lane_table_row(layout, props, lane, index: int) -> None:
         width_cell.prop(lane, "width", text="")
         cells[2].prop(lane, "direction", text="")
         cells[3].prop(lane, "vehicle_type", text="")
-    cells[4].prop(lane, "speed_limit", text="")
+    profile = _profile_for_road(scene, props)
+    speed = _lane_setting(profile, lane, "speed_limit")
+    cells[4].label(text=f"{float(speed.value):.2f}")
     actions = cells[5].row(align=True)
     actions.enabled = not automatic_parking
+    select = actions.operator("cs1_road.lane_select", text="", icon="PROPERTIES")
+    select.index = index
     up = actions.operator("cs1_road.lane_move", text="", icon="TRIA_UP")
     up.direction, up.index = "UP", index
     down = actions.operator("cs1_road.lane_move", text="", icon="TRIA_DOWN")
@@ -2699,6 +3036,65 @@ def _draw_shoulder_table_row(layout, props, side: str) -> None:
     cells[2].label(text="-")
     cells[3].label(text="Not lane")
     cells[4].label(text="-")
+
+
+def _draw_lane_provenance(layout, scene, props) -> None:
+    if not props.lanes:
+        return
+    lane_index = min(props.active_lane_index, len(props.lanes) - 1)
+    lane = props.lanes[lane_index]
+    profile = _profile_for_road(scene, props)
+    box = layout.box()
+    box.label(text=f"Lane settings: {lane.name or lane.lane_id}", icon="PROPERTIES")
+    definitions = (
+        ("speed_limit", "Speed limit"),
+        ("stop_offset", "Stop offset"),
+        ("allow_connect", "Allow connect"),
+    )
+    for field, label in definitions:
+        resolved = _lane_setting(profile, lane, field)
+        inherited = _inherited_lane_setting(profile, lane, field)
+        row = box.row(align=True)
+        value = resolved.value
+        display = str(bool(value)) if field == "allow_connect" else f"{float(value):.2f}"
+        row.label(text=f"{label}: {display} [{resolved.source}]")
+        toggle = row.operator(
+            "cs1_road.lane_override_toggle",
+            text="Reset" if getattr(lane, f"override_{field}") else "Override",
+            icon="LOOP_BACK" if getattr(lane, f"override_{field}") else "ADD",
+        )
+        toggle.index, toggle.field = lane_index, field
+        if getattr(lane, f"override_{field}"):
+            row.prop(lane, field, text="")
+            if redundant_override(getattr(lane, field), inherited.value):
+                box.label(
+                    text=f"{lane.lane_id}.{field}: override equals inherited value",
+                    icon="ERROR",
+                )
+    box.label(text="Reset removes the road override and restores inheritance.")
+
+
+def _draw_override_summary(layout, scene, props) -> None:
+    profile = _profile_for_road(scene, props)
+    box = layout.box()
+    entries = []
+    for lane in props.lanes:
+        for field in ("speed_limit", "stop_offset", "allow_connect"):
+            if not getattr(lane, f"override_{field}"):
+                continue
+            inherited = _inherited_lane_setting(profile, lane, field)
+            value = getattr(lane, field)
+            entries.append((lane, field, value, redundant_override(value, inherited.value)))
+    box.label(text=f"Explicit overrides ({len(entries)})")
+    if not entries:
+        box.label(text="No road-specific lane overrides.")
+        return
+    for lane, field, value, redundant in entries:
+        suffix = " (same as inherited)" if redundant else ""
+        box.label(
+            text=f"{lane.lane_id}.{field} = {value}{suffix}",
+            icon="ERROR" if redundant else "INFO",
+        )
 
 
 class CS1ROAD_OT_boundaries_sync(Operator):
@@ -2780,23 +3176,26 @@ class CS1ROAD_OT_reload_surface_texture(Operator):
         return {"FINISHED"}
 
 
-def _runtime_lanes(props):
+def _runtime_lanes(props, profile):
     _sync_lane_derived_values(props)
-    return [
-        {
+    lanes = []
+    for lane, position in _lane_positions(props):
+        speed = _lane_setting(profile, lane, "speed_limit")
+        stop = _lane_setting(profile, lane, "stop_offset")
+        connect = _lane_setting(profile, lane, "allow_connect")
+        lanes.append({
             "lane_id": lane.lane_id,
             "position": position,
             "width": lane.width,
             "vertical_offset": lane.vertical_offset,
-            "stop_offset": lane.stop_offset,
-            "speed_limit": lane.speed_limit,
+            "stop_offset": stop.value,
+            "speed_limit": speed.value,
             "direction": lane.direction,
             "lane_type": lane.lane_type,
             "vehicle_type": lane.vehicle_type,
-            "allow_connect": lane.allow_connect,
-        }
-        for lane, position in _lane_positions(props)
-    ]
+            "allow_connect": connect.value,
+        })
+    return lanes
 
 
 def _runtime_mode_objects():
@@ -2821,6 +3220,9 @@ def _runtime_output_path(props) -> Path:
 
 def _export_runtime_scene(scene):
     props = active_road(scene)
+    profile = _profile_for_road(scene, props)
+    if profile is None:
+        raise ValueError(f"Road profile not found: {props.profile_id}")
     _sync_cross_section_state(props)
     _ensure_lane_ids(props)
     _, _, half_width = _cross_section(props)
@@ -2836,25 +3238,25 @@ def _export_runtime_scene(scene):
         props.sidewalk_width,
         props.node_min_corner_offset,
         {
-            "white_color": list(props.imt_white_color),
-            "yellow_color": list(props.imt_yellow_color),
+            "white_color": list(profile.imt_white_color),
+            "yellow_color": list(profile.imt_yellow_color),
             "center_line_yellow": props.imt_center_line_yellow,
             "roadside_lines": props.roadside_lines,
             "lane_separator_style": props.lane_separator_style,
             "center_line_style": props.center_line_style,
-            "texture": props.imt_texture,
-            "cracks": [props.imt_cracks_density, props.imt_cracks_scale],
-            "voids": [props.imt_voids_density, props.imt_voids_scale],
-            "crosswalk_width": props.imt_crosswalk_width,
-            "crosswalk_dash_length": props.imt_crosswalk_dash_length,
-            "crosswalk_gap_length": props.imt_crosswalk_gap_length,
-            "crosswalk_offset": props.imt_crosswalk_offset,
-            "stop_line_width": props.imt_stop_line_width,
+            "texture": profile.imt_texture,
+            "cracks": [profile.imt_cracks_density, profile.imt_cracks_scale],
+            "voids": [profile.imt_voids_density, profile.imt_voids_scale],
+            "crosswalk_width": profile.imt_crosswalk_width,
+            "crosswalk_dash_length": profile.imt_crosswalk_dash_length,
+            "crosswalk_gap_length": profile.imt_crosswalk_gap_length,
+            "crosswalk_offset": profile.imt_crosswalk_offset,
+            "stop_line_width": profile.imt_stop_line_width,
             "line_width": props.marking_paint_width,
-            "dash_length": props.imt_dash_length,
-            "dash_gap": props.imt_dash_gap,
+            "dash_length": profile.imt_dash_length,
+            "dash_gap": profile.imt_dash_gap,
         },
-        _runtime_lanes(props),
+        _runtime_lanes(props, profile),
         modes,
         DEFAULT_TEXTURE_LAYOUT,
         {
@@ -2865,12 +3267,13 @@ def _export_runtime_scene(scene):
     )
 
 
-def _authoring_fingerprint(props):
+def _authoring_fingerprint(props, profile=None):
     lanes = tuple(
         (
             lane.lane_id, lane.zone, lane.width, lane.direction, lane.lane_type,
-            lane.vehicle_type, lane.speed_limit,
-            lane.stop_offset, lane.allow_connect,
+            lane.vehicle_type, lane.speed_limit, lane.override_speed_limit,
+            lane.stop_offset, lane.override_stop_offset,
+            lane.allow_connect, lane.override_allow_connect,
         )
         for lane in props.lanes
     )
@@ -2894,14 +3297,14 @@ def _authoring_fingerprint(props):
         props.marking_region_width, props.line_mesh_enabled,
         props.node_shoulder_bands,
         props.node_min_corner_offset, tuple(props.road_color),
-        tuple(props.imt_white_color), tuple(props.imt_yellow_color),
-        props.imt_center_line_yellow,
-        props.imt_texture, props.imt_cracks_density, props.imt_cracks_scale,
-        props.imt_voids_density, props.imt_voids_scale,
-        props.imt_crosswalk_width, props.imt_crosswalk_dash_length,
-        props.imt_crosswalk_gap_length, props.imt_crosswalk_offset,
-        props.imt_stop_line_width,
-        props.imt_dash_length, props.imt_dash_gap,
+        props.profile_id,
+        tuple(_imt_appearance_data(profile).items()) if profile is not None else (),
+        (
+            profile.override_road_speed_limit, profile.road_speed_limit,
+            profile.override_pedestrian_speed_limit, profile.pedestrian_speed_limit,
+            profile.override_stop_offset, profile.stop_offset,
+            profile.override_allow_connect, profile.allow_connect,
+        ) if profile is not None else (),
         props.median_profile, props.median_enabled,
         props.median_width, props.median_height,
         props.median_with_curb, props.median_curb_width,
@@ -2929,7 +3332,9 @@ def _runtime_auto_export_timer():
         if props is None or not props.runtime_auto_export:
             continue
         scene_key = scene.as_pointer()
-        current_authoring = _authoring_fingerprint(props)
+        current_authoring = _authoring_fingerprint(
+            props, _profile_for_road(scene, props),
+        )
         previous = _AUTO_EXPORT_STATE.get(scene_key)
         try:
             if previous is None or previous[0] != current_authoring:
@@ -2980,7 +3385,10 @@ class CS1ROAD_OT_export_runtime(Operator):
                 build_mode(context.scene, mode)
             payload = _export_runtime_scene(context.scene)
             _AUTO_EXPORT_STATE[context.scene.as_pointer()] = (
-                _authoring_fingerprint(active_road(context.scene)),
+                _authoring_fingerprint(
+                    active_road(context.scene),
+                    _profile_for_road(context.scene, active_road(context.scene)),
+                ),
                 _runtime_geometry_fingerprint(),
                 _runtime_texture_fingerprint(),
             )
@@ -3023,10 +3431,14 @@ def _load_lane(target, source) -> None:
     if target.zone == "ROAD" and target.lane_type == "VEHICLE" and vehicle_type == "NONE":
         vehicle_type = "CAR"
     target.vehicle_type = vehicle_type
-    target.speed_limit = float(source.get("speed_limit", target.speed_limit))
+    overrides = source.get("overrides", {})
+    target.override_speed_limit = "speed_limit" in overrides
+    target.override_stop_offset = "stop_offset" in overrides
+    target.override_allow_connect = "allow_connect" in overrides
+    target.speed_limit = float(overrides.get("speed_limit", source.get("speed_limit", target.speed_limit)))
     target.vertical_offset = float(source.get("vertical_offset", target.vertical_offset))
-    target.stop_offset = float(source.get("stop_offset", target.stop_offset))
-    target.allow_connect = bool(source.get("allow_connect", target.allow_connect))
+    target.stop_offset = float(overrides.get("stop_offset", source.get("stop_offset", target.stop_offset)))
+    target.allow_connect = bool(overrides.get("allow_connect", source.get("allow_connect", target.allow_connect)))
 
 
 def _layout_strips(props):
@@ -3058,14 +3470,22 @@ def _export_lanes(props):
         end = start + lane.width
         if lane.zone != "ROAD":
             offsets[strip_id] = end
-        lanes.append({
+        overrides = {}
+        if lane.override_speed_limit:
+            overrides["speed_limit"] = lane.speed_limit
+        if lane.override_stop_offset:
+            overrides["stop_offset"] = lane.stop_offset
+        if lane.override_allow_connect:
+            overrides["allow_connect"] = lane.allow_connect
+        exported = {
             "id": lane.lane_id, "name": lane.name, "zone": lane.zone,
             "surface_strip_id": strip_id, "lateral_start": start, "lateral_end": end,
-            "vertical_offset": lane.vertical_offset, "stop_offset": lane.stop_offset,
-            "speed_limit": lane.speed_limit, "direction": lane.direction,
+            "vertical_offset": lane.vertical_offset, "direction": lane.direction,
             "lane_type": lane.lane_type, "vehicle_type": lane.vehicle_type,
-            "allow_connect": lane.allow_connect,
-        })
+        }
+        if overrides:
+            exported["overrides"] = overrides
+        lanes.append(exported)
     return lanes
 
 
@@ -3104,8 +3524,41 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
     def execute(self, context):
         data = json.loads(Path(self.filepath).read_text(encoding="utf-8"))
         props = active_road(context.scene)
-        props.road_name = data.get("name", props.road_name)
         schema_version = int(data.get("schema_version", 2))
+        source_schema_version = schema_version
+        _ensure_default_profile(context.scene)
+        if schema_version < AUTHORING_SCHEMA_VERSION:
+            migrated_id = DEFAULT_PROFILE_ID
+            data, legacy_imt = migrate_authoring_spec_v3_to_v4(
+                data, migrated_id,
+            )
+            default_profile = _profile_by_id(context.scene, DEFAULT_PROFILE_ID)
+            if legacy_imt:
+                probe = _imt_appearance_data(default_profile)
+                legacy_probe = dict(probe)
+                for key, value in legacy_imt.items():
+                    if key in legacy_probe:
+                        legacy_probe[key] = value
+                if not _appearance_values_equal(legacy_probe, probe):
+                    profile = context.scene.cs1_road_profiles.add()
+                    profile.profile_id = _unique_profile_id(
+                        context.scene,
+                        f"imported-{safe_road_id(str(data.get('name', 'road')))}",
+                    )
+                    profile.name = f"Imported: {data.get('name', 'Road')}"
+                    _load_imt_appearance(profile, legacy_imt)
+                    data["profile_id"] = profile.profile_id
+            schema_version = AUTHORING_SCHEMA_VERSION
+        props.road_name = data.get("name", props.road_name)
+        requested_profile_id = str(data.get("profile_id", DEFAULT_PROFILE_ID))
+        if _profile_by_id(context.scene, requested_profile_id) is None:
+            self.report(
+                {"ERROR"},
+                f"Road profile not found: {requested_profile_id}. Import profiles first.",
+            )
+            return {"CANCELLED"}
+        props.profile_id = requested_profile_id
+        props.provenance_version = 1
         surface_style = data.get("styles", {}).get("surface", {})
         road_color = surface_style.get("road_color", DEFAULT_ROAD_COLOR)
         if not isinstance(road_color, (list, tuple)) or len(road_color) != 3:
@@ -3157,7 +3610,7 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
         props.median_mesh = bpy.data.objects.get(median_mesh_name) if median_mesh_name else None
         legacy_markings = data.get("markings", {})
         imported_shoulder_width = props.shoulder_width
-        if schema_version >= 3:
+        if source_schema_version >= 3:
             layout = data.get("layout", {})
             strips = {str(item.get("id", "")): item for item in layout.get("strips", [])}
             left_sidewalk = float(strips.get("strip-left-sidewalk", {}).get("width", props.sidewalk_width))
@@ -3213,8 +3666,6 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
                 str(rules.get("center_line_style", "DASHED_WHITE")),
                 CENTER_LINE_STYLE_ITEMS, "DASHED_WHITE",
             )
-            imt = data.get("styles", {}).get("imt_preview", {})
-            _load_imt_appearance(props, imt)
         else:
             props.shoulder_width = cross.get("shoulder_width", props.shoulder_width)
             imported_shoulder_width = props.shoulder_width
@@ -3229,7 +3680,7 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
         props.lanes.clear()
         for source in data.get("lanes", []):
             lane_source = dict(source)
-            if schema_version >= 3:
+            if source_schema_version >= 3:
                 strip = strips.get(str(source.get("surface_strip_id", "")), {})
                 lane_source["width"] = float(source.get("lateral_end", 0.0)) - float(source.get("lateral_start", 0.0))
                 if lane_source["width"] <= 0.0:
@@ -3249,7 +3700,7 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
             )
         _ensure_default_lanes(props)
         _sync_lane_derived_values(props)
-        if schema_version >= 3:
+        if source_schema_version >= 3:
             _sync_boundaries(props)
         else:
             _sync_boundaries(props, props.edge_lines, props.lane_lines)
@@ -3273,7 +3724,9 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
         _ensure_lane_ids(props)
         _sync_boundaries(props)
         data = {
-            "schema_version": 3, "name": props.road_name,
+            "schema_version": AUTHORING_SCHEMA_VERSION,
+            "name": props.road_name,
+            "profile_id": props.profile_id,
             "shared_geometry": {
                 "segment_length": MODE_LENGTH, "node_length": MODE_LENGTH,
                 "segment_slices": SEGMENT_SLICES, "node_slices": NODE_SLICES,
@@ -3307,26 +3760,6 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
                     "lane_separator_style": props.lane_separator_style,
                     "center_line_style": props.center_line_style,
                 }},
-                "imt_preview": {
-                    "preset": props.imt_appearance_preset,
-                    "white_color": list(props.imt_white_color),
-                    "yellow_color": list(props.imt_yellow_color),
-                    "center_line_yellow": props.imt_center_line_yellow,
-                    "roadside_lines": props.roadside_lines,
-                    "lane_separator_style": props.lane_separator_style,
-                    "center_line_style": props.center_line_style,
-                    "texture": props.imt_texture,
-                    "cracks": [props.imt_cracks_density, props.imt_cracks_scale],
-                    "voids": [props.imt_voids_density, props.imt_voids_scale],
-                    "crosswalk_width": props.imt_crosswalk_width,
-                    "crosswalk_dash_length": props.imt_crosswalk_dash_length,
-                    "crosswalk_gap_length": props.imt_crosswalk_gap_length,
-                    "crosswalk_offset": props.imt_crosswalk_offset,
-                    "stop_line_width": props.imt_stop_line_width,
-                    "line_width": props.marking_paint_width,
-                    "dash_length": props.imt_dash_length,
-                    "dash_gap": props.imt_dash_gap,
-                },
             },
             "layout": _export_layout(props),
             "node": {
@@ -3346,6 +3779,73 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
             },
         }
         Path(self.filepath).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"FINISHED"}
+
+
+def _profile_export_data(profile) -> dict:
+    lane_defaults = {}
+    for field in (
+        "road_speed_limit", "pedestrian_speed_limit", "stop_offset", "allow_connect",
+    ):
+        if getattr(profile, f"override_{field}"):
+            lane_defaults[field] = getattr(profile, field)
+    return {
+        "id": profile.profile_id,
+        "name": profile.name,
+        "lane_defaults": lane_defaults,
+        "imt": _imt_appearance_data(profile),
+    }
+
+
+def _load_profile_data(profile, source) -> None:
+    profile.profile_id = str(source["id"])
+    profile.name = str(source.get("name", profile.profile_id))
+    defaults = source.get("lane_defaults", {})
+    for field in (
+        "road_speed_limit", "pedestrian_speed_limit", "stop_offset", "allow_connect",
+    ):
+        setattr(profile, f"override_{field}", field in defaults)
+        if field in defaults:
+            setattr(profile, field, defaults[field])
+    _load_imt_appearance(profile, source.get("imt", {}))
+
+
+class CS1ROAD_OT_export_profiles(Operator, ExportHelper):
+    bl_idname, bl_label, filename_ext = "cs1_road.export_profiles", "Export profiles", ".json"
+    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
+
+    def execute(self, context):
+        data = {
+            "schema_version": PROFILE_SCHEMA_VERSION,
+            "profiles": [
+                _profile_export_data(profile)
+                for profile in context.scene.cs1_road_profiles
+            ],
+        }
+        Path(self.filepath).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_import_profiles(Operator, ImportHelper):
+    bl_idname, bl_label, filename_ext = "cs1_road.import_profiles", "Import profiles", ".json"
+    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
+
+    def execute(self, context):
+        data = json.loads(Path(self.filepath).read_text(encoding="utf-8"))
+        if int(data.get("schema_version", 0)) != PROFILE_SCHEMA_VERSION:
+            self.report({"ERROR"}, "Unsupported profile schema")
+            return {"CANCELLED"}
+        for source in data.get("profiles", []):
+            profile_id = str(source.get("id", "")).strip()
+            if not profile_id:
+                self.report({"ERROR"}, "Profile ID must not be empty")
+                return {"CANCELLED"}
+            profile = _profile_by_id(context.scene, profile_id)
+            if profile is None:
+                profile = context.scene.cs1_road_profiles.add()
+            _load_profile_data(profile, source)
         return {"FINISHED"}
 
 
@@ -3398,9 +3898,16 @@ class CS1ROAD_OT_export_all_specs(Operator):
                 if result != {"FINISHED"}:
                     self.report({"ERROR"}, f"Failed to export {road.road_name}")
                     return {"CANCELLED"}
+            profiles = {
+                "schema_version": PROFILE_SCHEMA_VERSION,
+                "profiles": [_profile_export_data(item) for item in scene.cs1_road_profiles],
+            }
+            (output / "profiles.json").write_text(
+                json.dumps(profiles, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
         finally:
             scene.cs1_active_road_index = min(previous_index, len(scene.cs1_roads) - 1)
-        self.report({"INFO"}, f"Exported {len(scene.cs1_roads)} roads")
+        self.report({"INFO"}, f"Exported {len(scene.cs1_roads)} roads and profiles.json")
         return {"FINISHED"}
 
 
@@ -3426,6 +3933,11 @@ class CS1ROAD_PT_main(Panel):
         pedestrian_lanes = sum(lane.lane_type == "PEDESTRIAN" for lane in props.lanes)
         _, total_width, _ = _cross_section(props)
         summary.label(text=props.runtime_road_id or "No runtime road ID", icon="KEYTYPE_KEYFRAME_VEC")
+        override_count = sum(
+            lane.override_speed_limit + lane.override_stop_offset + lane.override_allow_connect
+            for lane in props.lanes
+        )
+        summary.label(text=f"Profile: {props.profile_id} | {override_count} explicit lane overrides")
         summary.label(text=(
             f"{road_lanes} roadway / {pedestrian_lanes} pedestrian lanes | "
             f"{total_width:.2f} m total"
@@ -3465,6 +3977,52 @@ class CS1ROAD_PT_shared(_CS1RoadChildPanel, Panel):
             layout.label(text="Texture band must include asphalt margin.", icon="ERROR")
 
 
+class CS1ROAD_PT_profiles(_CS1RoadChildPanel, Panel):
+    bl_label = "Shared profiles"
+    bl_idname = "CS1ROAD_PT_profiles"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout, scene = self.layout, context.scene
+        road = active_road(scene)
+        library = layout.row()
+        library.template_list(
+            "CS1ROAD_UL_profiles", "", scene, "cs1_road_profiles",
+            scene, "cs1_active_profile_index", rows=3,
+        )
+        buttons = library.column(align=True)
+        buttons.operator("cs1_road.profile_add", text="", icon="ADD")
+        buttons.operator("cs1_road.profile_duplicate", text="", icon="DUPLICATE")
+        buttons.operator("cs1_road.profile_remove", text="", icon="REMOVE")
+        profile = _active_profile(scene)
+        if profile is None:
+            return
+        layout.label(text=f"Active road uses [{road.profile_id}]")
+        layout.operator("cs1_road.profile_assign_active", icon="CHECKMARK")
+        layout.prop(profile, "name")
+        layout.label(text=f"Stable ID: {profile.profile_id}")
+        users = sum(item.profile_id == profile.profile_id for item in scene.cs1_roads)
+        layout.label(text=f"Changes affect {users} road(s) using this profile.")
+        defaults = layout.box()
+        defaults.label(text="Lane defaults (unchecked values inherit [global])")
+        for toggle, value in (
+            ("override_road_speed_limit", "road_speed_limit"),
+            ("override_pedestrian_speed_limit", "pedestrian_speed_limit"),
+            ("override_stop_offset", "stop_offset"),
+            ("override_allow_connect", "allow_connect"),
+        ):
+            row = defaults.row(align=True)
+            action = row.operator(
+                "cs1_road.profile_override_toggle",
+                text="Reset" if getattr(profile, toggle) else "Override",
+                icon="LOOP_BACK" if getattr(profile, toggle) else "ADD",
+            )
+            action.field = value
+            value_row = row.row(align=True)
+            value_row.enabled = getattr(profile, toggle)
+            value_row.prop(profile, value)
+
+
 class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
     bl_label = "Cross-section"
     bl_idname = "CS1ROAD_PT_cross_section"
@@ -3498,7 +4056,7 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
         road_lanes = [(index, lane) for index, lane in indexed_lanes if lane.zone == "ROAD"]
         right_lanes = [(index, lane) for index, lane in indexed_lanes if lane.zone == "RIGHT_SIDEWALK"]
         for index, lane in left_lanes:
-            _draw_lane_table_row(box, props, lane, index)
+            _draw_lane_table_row(box, context.scene, props, lane, index)
         if not left_lanes:
             empty_left = _cross_section_table_cells(box)
             empty_left[0].label(text="Sidewalk L")
@@ -3510,7 +4068,7 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
         except ValueError:
             median_after = -1
         for road_index, (index, lane) in enumerate(road_lanes, 1):
-            _draw_lane_table_row(box, props, lane, index)
+            _draw_lane_table_row(box, context.scene, props, lane, index)
             if road_index == median_after:
                 median_row = _cross_section_table_cells(box)
                 median_row[0].label(text="Median")
@@ -3525,13 +4083,15 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
                 )
         _draw_shoulder_table_row(box, props, "R")
         for index, lane in right_lanes:
-            _draw_lane_table_row(box, props, lane, index)
+            _draw_lane_table_row(box, context.scene, props, lane, index)
         if not right_lanes:
             empty_right = _cross_section_table_cells(box)
             empty_right[0].label(text="Sidewalk R")
             empty_right[1].prop(props, "sidewalk_width", text="")
             empty_right[3].label(text="Not lane")
         box.operator("cs1_road.lane_add", text="Add network lane", icon="ADD")
+        _draw_lane_provenance(box, context.scene, props)
+        _draw_override_summary(box, context.scene, props)
         box.label(text=f"Pedestrian lane fits inside sidewalk (-{SIDEWALK_LANE_TOTAL_INSET:.2f} m)")
         if props.median_enabled:
             median_box = box.box()
@@ -3559,6 +4119,7 @@ class CS1ROAD_PT_markings(_CS1RoadChildPanel, Panel):
 
     def draw(self, context):
         layout, props = self.layout, active_road(context.scene)
+        profile = _profile_for_road(context.scene, props)
         rules = layout.box()
         rules.label(text="Default lines for this road")
         rules.prop(props, "roadside_lines")
@@ -3569,28 +4130,31 @@ class CS1ROAD_PT_markings(_CS1RoadChildPanel, Panel):
         if props.center_line_style == "SOLID_YELLOW" and props.line_mesh_enabled:
             layout.label(text="Blender uses the white paint mask; IMT applies yellow.", icon="INFO")
         preview = layout.box()
-        preview.label(text="IMT preview: shared appearance")
-        preview.prop(props, "imt_appearance_preset")
+        if profile is None:
+            preview.label(text=f"Missing profile: {props.profile_id}", icon="ERROR")
+            return
+        preview.label(text=f"IMT preview [{profile.profile_id}]")
+        preview.prop(profile, "imt_appearance_preset")
         colors = preview.row(align=True)
-        colors.prop(props, "imt_white_color")
-        colors.prop(props, "imt_yellow_color")
-        preview.prop(props, "imt_texture")
+        colors.prop(profile, "imt_white_color")
+        colors.prop(profile, "imt_yellow_color")
+        preview.prop(profile, "imt_texture")
         cracks = preview.row(align=True)
-        cracks.prop(props, "imt_cracks_density")
-        cracks.prop(props, "imt_cracks_scale")
+        cracks.prop(profile, "imt_cracks_density")
+        cracks.prop(profile, "imt_cracks_scale")
         voids = preview.row(align=True)
-        voids.prop(props, "imt_voids_density")
-        voids.prop(props, "imt_voids_scale")
+        voids.prop(profile, "imt_voids_density")
+        voids.prop(profile, "imt_voids_scale")
         zebra = preview.column(align=True)
-        zebra.prop(props, "imt_crosswalk_width")
+        zebra.prop(profile, "imt_crosswalk_width")
         row = zebra.row(align=True)
-        row.prop(props, "imt_crosswalk_dash_length")
-        row.prop(props, "imt_crosswalk_gap_length")
-        zebra.prop(props, "imt_crosswalk_offset")
-        zebra.prop(props, "imt_stop_line_width")
+        row.prop(profile, "imt_crosswalk_dash_length")
+        row.prop(profile, "imt_crosswalk_gap_length")
+        zebra.prop(profile, "imt_crosswalk_offset")
+        zebra.prop(profile, "imt_stop_line_width")
         line_dash = preview.row(align=True)
-        line_dash.prop(props, "imt_dash_length")
-        line_dash.prop(props, "imt_dash_gap")
+        line_dash.prop(profile, "imt_dash_length")
+        line_dash.prop(profile, "imt_dash_gap")
         preview.label(text="Zebra outer extension is not exposed by IMT API", icon="INFO")
 
 
@@ -3647,6 +4211,9 @@ class CS1ROAD_PT_files(_CS1RoadChildPanel, Panel):
         row = layout.row(align=True)
         row.operator("cs1_road.export_spec", text="Export active", icon="EXPORT")
         row.operator("cs1_road.export_all_specs", text="Export all", icon="EXPORT")
+        row = layout.row(align=True)
+        row.operator("cs1_road.import_profiles", text="Import profiles", icon="IMPORT")
+        row.operator("cs1_road.export_profiles", text="Export profiles", icon="EXPORT")
 
 
 class CS1ROAD_PT_runtime(_CS1RoadChildPanel, Panel):
@@ -3687,16 +4254,21 @@ class CS1ROAD_PT_development(_CS1RoadChildPanel, Panel):
 
 
 CLASSES = (
-    CS1RoadLane, CS1RoadBoundary, CS1RoadBuilderProperties,
-    CS1ROAD_UL_roads, CS1ROAD_UL_boundaries,
+    CS1RoadLane, CS1RoadBoundary, CS1RoadProfile, CS1RoadBuilderProperties,
+    CS1ROAD_UL_roads, CS1ROAD_UL_profiles, CS1ROAD_UL_boundaries,
     CS1ROAD_OT_road_add, CS1ROAD_OT_road_duplicate, CS1ROAD_OT_road_remove,
-    CS1ROAD_OT_lane_add, CS1ROAD_OT_lanes_reset, CS1ROAD_OT_lane_remove, CS1ROAD_OT_lane_move,
+    CS1ROAD_OT_profile_add, CS1ROAD_OT_profile_duplicate,
+    CS1ROAD_OT_profile_remove, CS1ROAD_OT_profile_assign_active,
+    CS1ROAD_OT_profile_override_toggle,
+    CS1ROAD_OT_lane_add, CS1ROAD_OT_lanes_reset, CS1ROAD_OT_lane_remove,
+    CS1ROAD_OT_lane_move, CS1ROAD_OT_lane_select, CS1ROAD_OT_lane_override_toggle,
     CS1ROAD_OT_boundaries_sync,
     CS1ROAD_OT_build_preview, CS1ROAD_OT_build_all, CS1ROAD_OT_reload_surface_texture,
     CS1ROAD_OT_import_spec, CS1ROAD_OT_export_spec, CS1ROAD_OT_export_runtime,
+    CS1ROAD_OT_import_profiles, CS1ROAD_OT_export_profiles,
     CS1ROAD_OT_import_spec_new, CS1ROAD_OT_export_all_specs,
     CS1ROAD_OT_export_runtime_prop,
-    CS1ROAD_PT_main, CS1ROAD_PT_shared, CS1ROAD_PT_cross_section,
+    CS1ROAD_PT_main, CS1ROAD_PT_shared, CS1ROAD_PT_profiles, CS1ROAD_PT_cross_section,
     CS1ROAD_PT_markings, CS1ROAD_PT_mode, CS1ROAD_PT_files,
     CS1ROAD_PT_runtime, CS1ROAD_PT_development,
 )
@@ -3708,6 +4280,8 @@ def register():
     bpy.types.Scene.cs1_road_builder = PointerProperty(type=CS1RoadBuilderProperties)
     bpy.types.Scene.cs1_roads = CollectionProperty(type=CS1RoadBuilderProperties)
     bpy.types.Scene.cs1_active_road_index = IntProperty(default=0, min=0)
+    bpy.types.Scene.cs1_road_profiles = CollectionProperty(type=CS1RoadProfile)
+    bpy.types.Scene.cs1_active_profile_index = IntProperty(default=0, min=0)
     if not bpy.app.timers.is_registered(_initialize_scene_lanes):
         bpy.app.timers.register(_initialize_scene_lanes, first_interval=0.0)
     if not bpy.app.timers.is_registered(_runtime_auto_export_timer):
@@ -3724,6 +4298,8 @@ def unregister():
     _AUTO_EXPORT_STATE.clear()
     _AUTO_EXPORT_ERRORS.clear()
     _LIVE_PREVIEW_PENDING.clear()
+    del bpy.types.Scene.cs1_active_profile_index
+    del bpy.types.Scene.cs1_road_profiles
     del bpy.types.Scene.cs1_active_road_index
     del bpy.types.Scene.cs1_roads
     del bpy.types.Scene.cs1_road_builder

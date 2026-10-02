@@ -6,7 +6,8 @@ declare the current persisted schema to be the final product model.
 
 from __future__ import annotations
 
-from typing import Iterable, NamedTuple, Protocol
+from copy import deepcopy
+from typing import Any, Iterable, NamedTuple, Protocol
 
 
 MODE_LENGTH = 64.0
@@ -17,6 +18,75 @@ SIDEWALK_LANE_TOTAL_INSET = 0.50
 MEDIAN_END_OVERHANG = 0.002
 MEDIAN_Z_FIGHT_EPSILON = 0.002
 PARKING_LANE_DEFAULT_WIDTH = 2.0
+AUTHORING_SCHEMA_VERSION = 4
+PROFILE_SCHEMA_VERSION = 1
+DEFAULT_PROFILE_ID = "urban.default"
+GLOBAL_LANE_DEFAULTS = {
+    "road_speed_limit": 1.0,
+    "pedestrian_speed_limit": 0.1,
+    "stop_offset": 0.0,
+    "allow_connect": True,
+}
+
+
+class ResolvedSetting(NamedTuple):
+    value: Any
+    source: str
+
+
+def resolve_setting(
+    global_value: Any,
+    profile_id: str,
+    profile_has_override: bool,
+    profile_value: Any,
+    road_has_override: bool = False,
+    road_value: Any = None,
+) -> ResolvedSetting:
+    """Resolve the fixed global -> profile -> road ownership chain."""
+    if road_has_override:
+        return ResolvedSetting(road_value, "road override")
+    if profile_has_override:
+        return ResolvedSetting(profile_value, profile_id)
+    return ResolvedSetting(global_value, "global")
+
+
+def redundant_override(override_value: Any, inherited_value: Any) -> bool:
+    """Return whether an explicit override carries no effective difference."""
+    if isinstance(override_value, float) or isinstance(inherited_value, float):
+        try:
+            return abs(float(override_value) - float(inherited_value)) <= 1e-8
+        except (TypeError, ValueError):
+            return False
+    return override_value == inherited_value
+
+
+def migrate_authoring_spec_v3_to_v4(
+    source: dict[str, Any], profile_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Preserve every v3 lane value as an explicit v4 road override.
+
+    The returned IMT mapping is intentionally separate.  The Blender adapter
+    owns profile creation because a single imported road must not silently
+    mutate an existing shared profile.
+    """
+    data = deepcopy(source)
+    version = int(data.get("schema_version", 2))
+    if version >= AUTHORING_SCHEMA_VERSION:
+        return data, {}
+    legacy_imt = deepcopy(data.get("styles", {}).get("imt_preview", {}))
+    data["schema_version"] = AUTHORING_SCHEMA_VERSION
+    data["profile_id"] = profile_id
+    for lane in data.get("lanes", []):
+        overrides = dict(lane.get("overrides", {}))
+        for field in ("speed_limit", "stop_offset", "allow_connect"):
+            if field in lane:
+                overrides[field] = lane.pop(field)
+        if overrides:
+            lane["overrides"] = overrides
+    styles = data.get("styles")
+    if isinstance(styles, dict):
+        styles.pop("imt_preview", None)
+    return data, legacy_imt
 
 
 class CrossSectionAllocation(NamedTuple):

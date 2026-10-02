@@ -1,6 +1,7 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "name": "Example Road",
+  "profile_id": "urban.default",
   "shared_geometry": {
     "segment_length": 64.0,
     "node_length": 64.0,
@@ -34,23 +35,6 @@
         "region_width": 0.4,
         "texture_tile": "dashed_white"
       }
-    },
-    "imt_preview": {
-      "preset": "JP_WEATHERED",
-      "white_color": [0.960784, 0.960784, 0.921569, 1.0],
-      "yellow_color": [1.0, 0.72, 0.0, 1.0],
-      "center_line_yellow": false,
-      "texture": 0.25,
-      "cracks": [0.7, 0.4],
-      "voids": [0.2, 1.0],
-      "crosswalk_width": 3.0,
-      "crosswalk_dash_length": 0.45,
-      "crosswalk_gap_length": 0.55,
-      "crosswalk_offset": 0.4,
-      "stop_line_width": 0.3,
-      "line_width": 0.15,
-      "dash_length": 6.0,
-      "dash_gap": 10.0
     }
   },
   "layout": {
@@ -79,10 +63,10 @@
     "transition_target": null
   },
   "lanes": [
-    {"id": "lane-left-sidewalk", "name": "Left sidewalk", "zone": "LEFT_SIDEWALK", "surface_strip_id": "strip-left-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "speed_limit": 0.1, "vertical_offset": 0.3, "stop_offset": 0.0, "allow_connect": true},
-    {"id": "lane-backward-1", "name": "Backward 1", "zone": "ROAD", "surface_strip_id": "strip-lane-backward-1", "lateral_start": 0.0, "lateral_end": 3.0, "direction": "BACKWARD", "lane_type": "VEHICLE", "vehicle_type": "CAR", "speed_limit": 1.0, "vertical_offset": 0.0, "stop_offset": 0.0, "allow_connect": true},
-    {"id": "lane-forward-1", "name": "Forward 1", "zone": "ROAD", "surface_strip_id": "strip-lane-forward-1", "lateral_start": 0.0, "lateral_end": 3.0, "direction": "FORWARD", "lane_type": "VEHICLE", "vehicle_type": "CAR", "speed_limit": 1.0, "vertical_offset": 0.0, "stop_offset": 0.0, "allow_connect": true},
-    {"id": "lane-right-sidewalk", "name": "Right sidewalk", "zone": "RIGHT_SIDEWALK", "surface_strip_id": "strip-right-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "speed_limit": 0.1, "vertical_offset": 0.3, "stop_offset": 0.0, "allow_connect": true}
+    {"id": "lane-left-sidewalk", "name": "Left sidewalk", "zone": "LEFT_SIDEWALK", "surface_strip_id": "strip-left-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "vertical_offset": 0.3},
+    {"id": "lane-backward-1", "name": "Backward 1", "zone": "ROAD", "surface_strip_id": "strip-lane-backward-1", "lateral_start": 0.0, "lateral_end": 3.0, "direction": "BACKWARD", "lane_type": "VEHICLE", "vehicle_type": "CAR", "vertical_offset": 0.0},
+    {"id": "lane-forward-1", "name": "Forward 1", "zone": "ROAD", "surface_strip_id": "strip-lane-forward-1", "lateral_start": 0.0, "lateral_end": 3.0, "direction": "FORWARD", "lane_type": "VEHICLE", "vehicle_type": "CAR", "vertical_offset": 0.0},
+    {"id": "lane-right-sidewalk", "name": "Right sidewalk", "zone": "RIGHT_SIDEWALK", "surface_strip_id": "strip-right-sidewalk", "lateral_start": 0.0, "lateral_end": 2.0, "direction": "BOTH", "lane_type": "PEDESTRIAN", "vehicle_type": "NONE", "vertical_offset": 0.3}
   ],
   "modes": {
     "basic": {"shader": "Custom/Net/Road"},

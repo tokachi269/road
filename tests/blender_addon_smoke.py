@@ -130,6 +130,13 @@ class FakeLayout:
 
 road_builder._initialize_scene_lanes()
 props = road_builder.active_road(bpy.context.scene)
+assert len(bpy.context.scene.cs1_road_profiles) == 1, [
+    (item.profile_id, item.name, road_builder._imt_appearance_data(item))
+    for item in bpy.context.scene.cs1_road_profiles
+]
+assert props.profile_id == road_builder.DEFAULT_PROFILE_ID
+profile = road_builder._profile_for_road(bpy.context.scene, props)
+assert profile is not None
 props.lanes.clear()
 road_builder._add_default_lanes(props)
 default_lane_offsets = {lane.lane_id: lane.vertical_offset for lane in props.lanes}
@@ -926,7 +933,8 @@ spec_output = ROOT / "build" / "smoke" / "roundtrip-road.json"
 spec_output.parent.mkdir(parents=True, exist_ok=True)
 assert bpy.ops.cs1_road.export_spec(filepath=str(spec_output)) == {"FINISHED"}
 saved = json.loads(spec_output.read_text(encoding="utf-8"))
-assert saved["schema_version"] == 3
+assert saved["schema_version"] == 4
+assert saved["profile_id"] == props.profile_id
 assert saved["shared_geometry"]["segment_length"] == 64.0
 assert saved["shared_geometry"]["line_mesh_enabled"] is False
 assert saved["node"]["length"] == 64.0
@@ -943,9 +951,7 @@ assert saved["styles"]["markings"]["rules"] == {
 assert [round(value, 3) for value in saved["styles"]["surface"]["road_color"]] == [
     0.20, 0.25, 0.30,
 ]
-assert [round(value, 3) for value in saved["styles"]["imt_preview"]["cracks"]] == [0.7, 0.4]
-assert [round(value, 3) for value in saved["styles"]["imt_preview"]["voids"]] == [0.2, 1.0]
-assert saved["styles"]["imt_preview"]["dash_length"] == 6.0
+assert "imt_preview" not in saved["styles"]
 assert len(saved["layout"]["strips"]) == 8
 assert len(saved["layout"]["boundaries"]) == 7
 assert sum(item["marking"] is not None for item in saved["layout"]["boundaries"]) == 3
@@ -957,6 +963,10 @@ assert len(saved["lanes"]) == 4
 assert [lane["direction"] for lane in saved["lanes"]] == ["BACKWARD", "BACKWARD", "FORWARD", "FORWARD"]
 assert len({lane["id"] for lane in saved["lanes"]}) == 4
 assert all(lane["surface_strip_id"] for lane in saved["lanes"])
+assert all(
+    not {"speed_limit", "stop_offset", "allow_connect"}.intersection(lane)
+    for lane in saved["lanes"]
+)
 
 props.road_color = (0.8, 0.8, 0.8)
 props.line_mesh_enabled = True
@@ -980,14 +990,53 @@ assert props.lanes[1].direction == "BACKWARD"
 assert props.lanes[2].direction == "FORWARD"
 assert props.node_min_corner_offset == 0.0
 assert [round(value, 3) for value in props.road_color] == [0.12, 0.14, 0.16]
-assert props.imt_appearance_preset == "JP_WEATHERED"
+profile = road_builder._profile_for_road(bpy.context.scene, props)
+assert profile.imt_appearance_preset == "JP_WEATHERED"
 assert props.roadside_lines is True
 assert props.lane_separator_style == "DASHED_WHITE"
 assert props.center_line_style == "DASHED_WHITE"
-props.imt_texture = 0.30
-assert props.imt_appearance_preset == "CUSTOM"
-props.imt_appearance_preset = "JP_WEATHERED"
-assert round(props.imt_texture, 2) == 0.25
+profile.imt_texture = 0.30
+assert profile.imt_appearance_preset == "CUSTOM"
+profile.imt_appearance_preset = "JP_WEATHERED"
+assert round(profile.imt_texture, 2) == 0.25
+profile_count = len(bpy.context.scene.cs1_road_profiles)
+source_profile_id = profile.profile_id
+source_profile_preset = profile.imt_appearance_preset
+assert bpy.ops.cs1_road.profile_duplicate() == {"FINISHED"}
+duplicated_profile = road_builder._active_profile(bpy.context.scene)
+assert duplicated_profile.imt_appearance_preset == source_profile_preset
+assert props.profile_id == duplicated_profile.profile_id
+props.profile_id = source_profile_id
+assert bpy.ops.cs1_road.profile_remove() == {"FINISHED"}
+assert len(bpy.context.scene.cs1_road_profiles) == profile_count
+bpy.context.scene.cs1_active_profile_index = 0
+profile = road_builder._profile_for_road(bpy.context.scene, props)
+vehicle_lane = next(lane for lane in props.lanes if lane.zone == "ROAD")
+vehicle_lane_index = next(
+    index for index, lane in enumerate(props.lanes) if lane.as_pointer() == vehicle_lane.as_pointer()
+)
+profile.override_road_speed_limit = False
+profile.road_speed_limit = 9.0
+assert bpy.ops.cs1_road.profile_override_toggle(field="road_speed_limit") == {"FINISHED"}
+assert profile.override_road_speed_limit and profile.road_speed_limit == 1.0
+assert bpy.ops.cs1_road.profile_override_toggle(field="road_speed_limit") == {"FINISHED"}
+assert not profile.override_road_speed_limit
+profile.override_road_speed_limit = True
+profile.road_speed_limit = 1.5
+vehicle_lane.override_speed_limit = False
+resolved = road_builder._lane_setting(profile, vehicle_lane, "speed_limit")
+assert resolved.value == 1.5 and resolved.source == profile.profile_id
+assert bpy.ops.cs1_road.lane_override_toggle(
+    index=vehicle_lane_index, field="speed_limit",
+) == {"FINISHED"}
+assert vehicle_lane.override_speed_limit and vehicle_lane.speed_limit == 1.5
+inherited = road_builder._inherited_lane_setting(profile, vehicle_lane, "speed_limit")
+assert road_builder.redundant_override(vehicle_lane.speed_limit, inherited.value)
+assert bpy.ops.cs1_road.lane_override_toggle(
+    index=vehicle_lane_index, field="speed_limit",
+) == {"FINISHED"}
+assert not vehicle_lane.override_speed_limit
+profile.override_road_speed_limit = False
 props.road_color = (0.31, 0.32, 0.33)
 
 runtime_output = ROOT / "build" / "smoke" / "runtime-preview"
@@ -1229,6 +1278,7 @@ road_builder._sync_cross_section_state = fail_if_panel_mutates_cross_section
 try:
     for panel_type in (
         road_builder.CS1ROAD_PT_shared,
+        road_builder.CS1ROAD_PT_profiles,
         road_builder.CS1ROAD_PT_cross_section,
         road_builder.CS1ROAD_PT_markings,
         road_builder.CS1ROAD_PT_mode,
@@ -1246,6 +1296,10 @@ assert "cs1_road.road_duplicate" in panel_layout.operator_ids
 assert "cs1_road.road_remove" in panel_layout.operator_ids
 assert "cs1_road.import_spec_new" in panel_layout.operator_ids
 assert "cs1_road.export_all_specs" in panel_layout.operator_ids
+assert "cs1_road.import_profiles" in panel_layout.operator_ids
+assert "cs1_road.export_profiles" in panel_layout.operator_ids
+assert "cs1_road.profile_assign_active" in panel_layout.operator_ids
+assert "cs1_road.profile_override_toggle" in panel_layout.operator_ids
 assert panel_layout.property_names.count("sidewalk_width") == 2
 assert panel_layout.property_names.count("shoulder_width") == 0
 assert "between_sidewalks_width" in panel_layout.property_names
@@ -1261,14 +1315,15 @@ assert "zone" in panel_layout.property_names
 assert "width" in panel_layout.property_names
 assert "direction" in panel_layout.property_names
 assert "vehicle_type" in panel_layout.property_names
-assert "speed_limit" in panel_layout.property_names
+assert "cs1_road.lane_override_toggle" in panel_layout.operator_ids
 for hidden_field in (
-    "lane_type", "vertical_offset", "stop_offset", "allow_connect",
+    "lane_type", "vertical_offset",
     "node_shoulder_bands", "imt_center_line_yellow",
 ):
     assert hidden_field not in panel_layout.property_names
 assert "node_transition_target" not in panel_layout.property_names
 for panel_type in (
+    road_builder.CS1ROAD_PT_profiles,
     road_builder.CS1ROAD_PT_markings,
     road_builder.CS1ROAD_PT_mode,
     road_builder.CS1ROAD_PT_files,
@@ -1311,7 +1366,17 @@ all_specs = ROOT / "build" / "smoke" / "all-road-specs"
 if all_specs.exists():
     shutil.rmtree(all_specs)
 assert bpy.ops.cs1_road.export_all_specs(directory=str(all_specs)) == {"FINISHED"}
-assert len(list(all_specs.glob("*.json"))) == original_count
+assert len(list(all_specs.glob("*.json"))) == original_count + 1
+profiles_data = json.loads((all_specs / "profiles.json").read_text(encoding="utf-8"))
+assert profiles_data["schema_version"] == 1
+assert any(item["id"] == props.profile_id for item in profiles_data["profiles"])
+profile_file = ROOT / "build" / "smoke" / "profiles-roundtrip.json"
+assert bpy.ops.cs1_road.export_profiles(filepath=str(profile_file)) == {"FINISHED"}
+active_profile = road_builder._profile_for_road(scene, road_builder.active_road(scene))
+profile_name = active_profile.name
+active_profile.name = "Temporary profile name"
+assert bpy.ops.cs1_road.import_profiles(filepath=str(profile_file)) == {"FINISHED"}
+assert active_profile.name == profile_name
 before_reload_count = len(scene.cs1_roads)
 before_reload_name = road_builder.active_road(scene).road_name
 

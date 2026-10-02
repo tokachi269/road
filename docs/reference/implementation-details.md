@@ -20,13 +20,14 @@
 - 道路線の編集単位は3規則（路側線の有無、同方向lane間の白線種別、対向中央線の色・線種）であり、個別boundaryごとの入力は持たない。道路定義が既定値を所有し、CS1配置時panelが同じ道路の次回配置値を所有する。各boundaryの有効状態とstyle IDはroleから導出する。生成済みIMT線はユーザ編集を上書きしない。
 - Blender PropertyGroupは編集adapterであり、別の意味を決めない。
 - Sceneは道路PropertyGroupの一覧とactive indexを保持する。各項目はlane、断面、marking、mode、Runtime入力を一式保持し、選択中の1件だけを編集・preview生成する。追加、複製、削除はこの一覧を操作する。JSONはactive roadの置換または新規項目としてimportでき、active roadまたは全項目をexportできる。spec directoryやTSVを定期走査せず、catalogとの同期状態をBlender側へ重複保持しない。
+- Sceneは共有profile一覧も保持する。laneの速度、停止offset、接続可否は`domain.py`のglobal既定値、profile、lane明示overrideの順に解決する。profile参照は1段だけで、profile間継承はない。IMT外観もprofileが所有する。道路JSON v4は`profile_id`とlaneの`overrides`だけを保存し、profile本体はprofile schema v1の`profiles.json`へ保存する。全道路exportは同じdirectoryへprofile libraryも出すが、ファイル監視や自動同期はしない。v3 importはlaneの3値をすべてoverrideとして保全し、標準と異なるIMT外観は専用profileへ分離する。
 - RoadImporter XMLはCS1向けcompiled outputであり、編集正本にしない。
 
 生成済みpreviewがある場合、断面・線・mode形状のUI変更は選択中modeへ最大0.15秒単位で反映する。スライダー操作が約0.60秒止まった後、他の生成済みmodeを一度だけ追従させる。未生成modeの作成とRuntime exportはこのlive preview更新では行わない。
 
 Blender previewのMaterialはmodeや道路名から生成しない。`surface / structure / tunnel`の共通Material datablockをすべのmodeと道路種別で再利用する。Markingはsurface内のface bandであり別Materialにしない。Slopeの非surface部はtunnelを使う。GroundとElevated等のCS1 shader差はMaterialの所有ではなくOutput Entry Planの描画契約であり、共通texture setを参照することと分けて扱う。
 
-現在のschema v3は`lanes`と`layout.strips`へ幅と接続を重複して保存しているため、最終契約ではない。どちらを正本にするかは未決定であり、比較評価は`docs/design-decisions.md`に置く。歩道間幅は`shared_geometry.between_sidewalks_width`を編集正本とし、路肩stripはそこからのcompiled topologyとする。分離帯は明示要求により`shared_geometry.median`を編集正本、`layout.strip-median`をcompiled topologyとして追加した。同じ幅を持つためimport時に一致を検証し、不一致を黙って採用しない。ほかの新機能を既存の重複へ追加する判断には流用しない。
+現在のschema v4は`lanes`と`layout.strips`へ幅を重複して保存しているため、最終契約ではない。どちらを正本にするかは未決定であり、比較評価は`docs/design-decisions.md`に置く。歩道間幅は`shared_geometry.between_sidewalks_width`を編集正本とし、路肩stripはそこからのcompiled topologyとする。分離帯は明示要求により`shared_geometry.median`を編集正本、`layout.strip-median`をcompiled topologyとして追加した。同じ幅を持つためimport時に一致を検証し、不一致を黙って採用しない。ほかの新機能を既存の重複へ追加する判断には流用しない。
 
 ## Derived topology
 

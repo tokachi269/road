@@ -18,12 +18,17 @@ Blender UIとJSONは編集adapterであり、同じ判断を独自に実装し�
 | 路肩幅と駐車lane | `domain.py`の導出結果 | Blender UI、mesh生成 |
 | 車道の0.30 m低下 | `domain.py`の固定値と道路単位の設定 | 全mode |
 | 道路線の3規則 | 道路定義の既定値とCS1配置時の道路単位選択 | boundary style、新規segmentのIMT初期値 |
+| lane既定値とIMT外観 | `domain.py`のglobal既定値、Scene内の1段profile、laneの明示override | Blender UI、JSON、Runtime bundle |
 | atlas領域とUV profile | `textures/dimensions.json` | Blender、texture検証 |
 | Blender preview mesh | 生成後のBlender mesh | Runtime preview bundle |
 | CS1向けentry | Output Entry Plan | RoadImporter、RuntimeHost |
 
 `layout.strips`はcompiled topologyであり、編集正本にしない。
-現行schema v3にはlaneとstripの重複が残るため、最終schemaとはみなさない。
+現行schema v4にはlaneとstripの重複が残るため、最終schemaとはみなさない。
+共有設定の解決順は`global -> profile -> road lane override`に固定し、profile間の継承は行わない。
+道路JSONはprofile IDと明示overrideだけを保存し、profile本体は`profiles.json`へ分離する。
+派生値はprofileやoverrideとして保存しない。v3読込では意図を推測せず、既存lane値を
+すべて明示overrideへ移す。
 
 ## Derived topology
 
@@ -50,6 +55,9 @@ BlenderのSceneは複数の道路定義をCollectionPropertyとして保持し�
 JSONとTSVは個別・一括編集用の入出力であり、Blender一覧を自動監視して同期しない。
 ファイルとの不一致はimport、export、Runtimeの既存validationで明示し、UI内に別の
 catalog正本や同期frameworkを追加しない。
+道路を複製してもprofile参照は共有したまま、明示overrideだけを複製する。
+Blender UIは実効値のsourceと不要な同値overrideを表示し、overrideを外す操作を
+継承値へのresetとして扱う。
 
 現在のBlender previewはmodeごとにsegmentとnodeを生成する。
 最終的なentry数、LOD、selector構成はゲーム内検証が終わるまで固定しない。

@@ -199,6 +199,44 @@ class DomainContractTest(unittest.TestCase):
         self.assertAlmostEqual(domain.sidewalk_lane_width(3.0), 2.5)
         self.assertAlmostEqual(domain.sidewalk_lane_width(3.0, 2), 1.25)
 
+    def test_setting_resolution_has_only_global_profile_and_road_levels(self) -> None:
+        global_value = domain.resolve_setting(1.0, "urban.default", False, 2.0)
+        self.assertEqual(global_value, (1.0, "global"))
+        profile_value = domain.resolve_setting(1.0, "urban.fast", True, 1.5)
+        self.assertEqual(profile_value, (1.5, "urban.fast"))
+        road_value = domain.resolve_setting(
+            1.0, "urban.fast", True, 1.5, True, 1.25,
+        )
+        self.assertEqual(road_value, (1.25, "road override"))
+        self.assertTrue(domain.redundant_override(1.5, 1.5))
+        self.assertFalse(domain.redundant_override(1.25, 1.5))
+
+    def test_v3_migration_preserves_lane_values_as_explicit_overrides(self) -> None:
+        source = {
+            "schema_version": 3,
+            "styles": {"imt_preview": {"texture": 0.4}},
+            "lanes": [{
+                "id": "lane-1",
+                "speed_limit": 1.2,
+                "stop_offset": 0.3,
+                "allow_connect": False,
+            }],
+        }
+        migrated, legacy_imt = domain.migrate_authoring_spec_v3_to_v4(
+            source, "urban.default",
+        )
+        self.assertEqual(migrated["schema_version"], 4)
+        self.assertEqual(migrated["profile_id"], "urban.default")
+        self.assertEqual(migrated["lanes"][0]["overrides"], {
+            "speed_limit": 1.2,
+            "stop_offset": 0.3,
+            "allow_connect": False,
+        })
+        self.assertNotIn("speed_limit", migrated["lanes"][0])
+        self.assertNotIn("imt_preview", migrated["styles"])
+        self.assertEqual(legacy_imt, {"texture": 0.4})
+        self.assertIn("imt_preview", source["styles"])
+
 
 if __name__ == "__main__":
     unittest.main()

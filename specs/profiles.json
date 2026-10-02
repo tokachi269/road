@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "id": "urban.default",
+      "name": "Urban default",
+      "lane_defaults": {},
+      "imt": {
+        "preset": "JP_WEATHERED",
+        "white_color": [0.960784, 0.960784, 0.921569, 1.0],
+        "yellow_color": [1.0, 0.72, 0.0, 1.0],
+        "texture": 0.25,
+        "cracks": [0.7, 0.4],
+        "voids": [0.2, 1.0],
+        "crosswalk_width": 3.0,
+        "crosswalk_dash_length": 0.45,
+        "crosswalk_gap_length": 0.55,
+        "crosswalk_offset": 0.4,
+        "stop_line_width": 0.3,
+        "dash_length": 6.0,
+        "dash_gap": 10.0
+      }
+    }
+  ]
+}

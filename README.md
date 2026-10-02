@@ -93,14 +93,14 @@ Elevatedモードでは`Edge mesh (right basis)`へ1つのMesh Objectを指定�
 - 長手分割したくない柵等の頂点を`CS1_NO_SPLIT` vertex groupへ入れる。その頂点に触れる面は分割しない。グループ名はUIで変更でき、グループがなければ全ての面を分割する。
 - Objectのlocationは配置に使わない。rotationとscaleは形状へ適用される。
 
-生成時は連続側面をsegmentで20分割、nodeで8分割し、最下辺を床版下面へ溶接します。左側は面の頂点順も反転して法線を維持します。カスタム端部指定中は従来の垂直fasciaを生成せず、道路表面・床版・主桁・左右端部を同じ生成Mesh Objectへまとめます。入力Objectへの参照は`.blend`内の編集状態であり、現行JSON schema v3には保存しません。
+生成時は連続側面をsegmentで20分割、nodeで8分割し、最下辺を床版下面へ溶接します。左側は面の頂点順も反転して法線を維持します。カスタム端部指定中は従来の垂直fasciaを生成せず、道路表面・床版・主桁・左右端部を同じ生成Mesh Objectへまとめます。入力Objectへの参照は`.blend`内の編集状態であり、現行JSON schema v4には保存しません。
 
 各モードは`segment`と`node`の2オブジェクトだけを生成します。歩道・路肩・curbはそれぞれ別プリミティブにせず、各オブジェクト内の道路表面として生成します。Groundの下面・端面・外側面など、通常見えない面は作りません。nodeの中央分割は1オブジェクト内の独立した左右面として保持します。
 
 segmentとnodeはどちらも設定変更不可の64 m固定です。Groundのtransitionはnodeの64 m全体を使い、segment側の路面高から接続先の路面高まで傾斜させます。
 カーブ変形用にsegmentは長手方向20分割（3.2 m間隔）、nodeは8分割（8 m間隔）です。分割は全断面と全モードへ適用されます。
 
-JSON schema v3では物理断面のstrip、CS1 lane、strip間boundary、共有marking styleを別の正本として保存します。線はlaneではなくboundaryに所属し、laneとboundaryはstable IDで参照します。Lane中心位置、道路総幅、marking位置、mesh、UVは保存値から再生成します。
+JSON schema v4では物理断面のstrip、CS1 lane、strip間boundary、共有marking styleを保存します。laneの速度、停止offset、接続可否はglobal既定値、1段profile、lane明示overrideの順で解決し、profile本体は`profiles.json`へ分離します。線はlaneではなくboundaryに所属し、laneとboundaryはstable IDで参照します。Lane中心位置、道路総幅、marking位置、mesh、UVは保存値から再生成します。
 
 現段階はBlender内の形状・道路定義previewです。UVは実装済みですが、最終texture atlas、LOD FBX、segment/nodeのflag selector、全NetInfo/AI XMLを生成してゲーム内検証するまでは「インポート可能な完成道路」とは扱いません。根拠と未実装項目は`docs/cs1-road-requirements.md`に集約しています。
 
