@@ -137,6 +137,26 @@ assert len(bpy.context.scene.cs1_road_profiles) == 1, [
 assert props.profile_id == road_builder.DEFAULT_PROFILE_ID
 profile = road_builder._profile_for_road(bpy.context.scene, props)
 assert profile is not None
+
+# A legacy .blend stored all three lane values without provenance. Migration
+# must not turn values equal to the exact metadata defaults into overrides.
+props.provenance_version = 0
+for lane in props.lanes:
+    defaults = road_builder.lane_metadata_defaults(
+        lane.lane_type, lane.vehicle_type,
+    )
+    assert defaults is not None
+    for field, value in defaults.items():
+        setattr(lane, field, value)
+road_builder._initialize_scene_lanes()
+assert props.provenance_version == 1
+assert not any(
+    lane.override_speed_limit
+    or lane.override_stop_offset
+    or lane.override_allow_connect
+    for lane in props.lanes
+)
+
 props.lanes.clear()
 road_builder._add_default_lanes(props)
 default_lane_offsets = {lane.lane_id: lane.vertical_offset for lane in props.lanes}
@@ -981,6 +1001,70 @@ assert props.node_min_corner_offset == 12.0
 assert props.line_mesh_enabled is False
 assert [round(value, 3) for value in props.road_color] == [0.20, 0.25, 0.30]
 
+# Import uses the same normalization rule: redundant values disappear while a
+# value different from the inherited default remains explicit.
+normalized_import = ROOT / "build" / "smoke" / "normalized-import.json"
+normalized_data = json.loads(json.dumps(saved))
+normalized_vehicle = next(
+    lane for lane in normalized_data["lanes"]
+    if lane["lane_type"] == "VEHICLE" and lane["vehicle_type"] == "CAR"
+)
+normalized_vehicle["overrides"] = {
+    "speed_limit": 1.0,
+    "stop_offset": 0.0,
+    "allow_connect": True,
+}
+normalized_import.write_text(
+    json.dumps(normalized_data, indent=2), encoding="utf-8",
+)
+assert bpy.ops.cs1_road.import_spec(filepath=str(normalized_import)) == {"FINISHED"}
+imported_vehicle = next(
+    lane for lane in props.lanes
+    if lane.lane_type == "VEHICLE" and lane.vehicle_type == "CAR"
+)
+assert not imported_vehicle.override_speed_limit
+assert not imported_vehicle.override_stop_offset
+assert not imported_vehicle.override_allow_connect
+normalized_vehicle["overrides"]["speed_limit"] = 1.25
+normalized_import.write_text(
+    json.dumps(normalized_data, indent=2), encoding="utf-8",
+)
+assert bpy.ops.cs1_road.import_spec(filepath=str(normalized_import)) == {"FINISHED"}
+imported_vehicle = next(
+    lane for lane in props.lanes
+    if lane.lane_type == "VEHICLE" and lane.vehicle_type == "CAR"
+)
+assert imported_vehicle.override_speed_limit
+assert imported_vehicle.speed_limit == 1.25
+
+# Unknown metadata tuples never borrow an existing tuple's defaults. Export is
+# rejected until all three values are explicit.
+unknown_export = ROOT / "build" / "smoke" / "unknown-metadata.json"
+imported_vehicle.vehicle_type = "BUS"
+imported_vehicle.override_speed_limit = False
+imported_vehicle.override_stop_offset = False
+imported_vehicle.override_allow_connect = False
+try:
+    bpy.ops.cs1_road.export_spec(filepath=str(unknown_export))
+except RuntimeError as error:
+    assert "has no defaults for metadata tuple (VEHICLE, BUS)" in str(error)
+else:
+    raise AssertionError("Unknown lane metadata export was not rejected")
+imported_vehicle.speed_limit = 0.8
+imported_vehicle.stop_offset = 0.2
+imported_vehicle.allow_connect = False
+imported_vehicle.override_speed_limit = True
+imported_vehicle.override_stop_offset = True
+imported_vehicle.override_allow_connect = True
+assert bpy.ops.cs1_road.export_spec(filepath=str(unknown_export)) == {"FINISHED"}
+unknown_saved = json.loads(unknown_export.read_text(encoding="utf-8"))
+unknown_lane = next(
+    lane for lane in unknown_saved["lanes"] if lane["vehicle_type"] == "BUS"
+)
+assert round(unknown_lane["overrides"]["speed_limit"], 3) == 0.8
+assert round(unknown_lane["overrides"]["stop_offset"], 3) == 0.2
+assert unknown_lane["overrides"]["allow_connect"] is False
+
 example = ROOT / "specs" / "example-road.json"
 assert bpy.ops.cs1_road.import_spec(filepath=str(example)) == {"FINISHED"}
 assert len(props.lanes) == 4
@@ -1032,10 +1116,23 @@ assert bpy.ops.cs1_road.lane_override_toggle(
 assert vehicle_lane.override_speed_limit and vehicle_lane.speed_limit == 1.5
 inherited = road_builder._inherited_lane_setting(profile, vehicle_lane, "speed_limit")
 assert road_builder.redundant_override(vehicle_lane.speed_limit, inherited.value)
-assert bpy.ops.cs1_road.lane_override_toggle(
-    index=vehicle_lane_index, field="speed_limit",
-) == {"FINISHED"}
+vehicle_lane.override_stop_offset = True
+vehicle_lane.stop_offset = road_builder._inherited_lane_setting(
+    profile, vehicle_lane, "stop_offset",
+).value
+vehicle_lane.override_allow_connect = True
+vehicle_lane.allow_connect = road_builder._inherited_lane_setting(
+    profile, vehicle_lane, "allow_connect",
+).value
+assert bpy.ops.cs1_road.remove_redundant_overrides() == {"FINISHED"}
 assert not vehicle_lane.override_speed_limit
+assert not vehicle_lane.override_stop_offset
+assert not vehicle_lane.override_allow_connect
+vehicle_lane.speed_limit = 1.25
+vehicle_lane.override_speed_limit = True
+assert bpy.ops.cs1_road.remove_redundant_overrides() == {"FINISHED"}
+assert vehicle_lane.override_speed_limit and vehicle_lane.speed_limit == 1.25
+vehicle_lane.override_speed_limit = False
 profile.override_road_speed_limit = False
 props.road_color = (0.31, 0.32, 0.33)
 
@@ -1340,15 +1437,27 @@ original_count = len(scene.cs1_roads)
 source_index = scene.cs1_active_road_index
 source_name = road_builder.active_road(scene).road_name
 source_lane_ids = [lane.lane_id for lane in road_builder.active_road(scene).lanes]
+source_vehicle = next(
+    lane for lane in road_builder.active_road(scene).lanes
+    if lane.lane_type == "VEHICLE" and lane.vehicle_type == "CAR"
+)
+source_vehicle.speed_limit = road_builder._inherited_lane_setting(
+    road_builder._profile_for_road(scene, road_builder.active_road(scene)),
+    source_vehicle,
+    "speed_limit",
+).value
+source_vehicle.override_speed_limit = True
 assert bpy.ops.cs1_road.road_duplicate() == {"FINISHED"}
 assert len(scene.cs1_roads) == original_count + 1
 duplicate = road_builder.active_road(scene)
 assert duplicate.road_name == f"{source_name} Copy"
 assert [lane.lane_id for lane in duplicate.lanes] == source_lane_ids
+assert not any(lane.override_speed_limit for lane in duplicate.lanes)
 assert duplicate.runtime_auto_export is False
 first_duplicate_id = duplicate.runtime_road_id
 first_duplicate_prefab = duplicate.runtime_prefab_name
 scene.cs1_active_road_index = source_index
+source_vehicle.override_speed_limit = False
 assert bpy.ops.cs1_road.road_duplicate() == {"FINISHED"}
 second_duplicate = road_builder.active_road(scene)
 assert len(scene.cs1_roads) == original_count + 2
@@ -1371,6 +1480,8 @@ created_variants = {
     if road.runtime_road_id in expected_variants
 }
 assert set(created_variants) == set(expected_variants)
+assert len(created_variants) == 14
+assert sum(len(road.lanes) for road in created_variants.values()) == 88
 for road_id, road in created_variants.items():
     variant = expected_variants[road_id]
     vehicle_lanes = [lane for lane in road.lanes if lane.lane_type == "VEHICLE"]
@@ -1378,6 +1489,12 @@ for road_id, road in created_variants.items():
     assert sum(lane.direction == "BACKWARD" for lane in vehicle_lanes) == variant.backward_lanes
     assert sum(lane.direction == "FORWARD" for lane in vehicle_lanes) == variant.forward_lanes
     assert road.between_sidewalks_width == variant.vehicle_lane_count * 3.0 + 1.0
+    assert not any(
+        lane.override_speed_limit
+        or lane.override_stop_offset
+        or lane.override_allow_connect
+        for lane in road.lanes
+    )
 for index in range(len(scene.cs1_roads) - 1, -1, -1):
     if scene.cs1_roads[index].runtime_road_id in expected_variants:
         scene.cs1_roads.remove(index)

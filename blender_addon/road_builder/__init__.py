@@ -37,6 +37,7 @@ from .domain import (
     AUTHORING_SCHEMA_VERSION,
     DEFAULT_PROFILE_ID,
     GLOBAL_LANE_DEFAULTS,
+    LANE_SETTING_FIELDS,
     MODE_LENGTH,
     MEDIAN_END_OVERHANG,
     MEDIAN_Z_FIGHT_EPSILON,
@@ -51,6 +52,7 @@ from .domain import (
     allocate_cross_section,
     cross_section_widths,
     expected_boundaries,
+    lane_metadata_defaults,
     lane_vertical_offset,
     marking_rule,
     migrate_authoring_spec_v3_to_v4,
@@ -59,6 +61,7 @@ from .domain import (
     roadway_depression,
     redundant_override,
     resolve_setting,
+    normalize_lane_overrides as normalize_lane_override_values,
     sidewalk_lane_width,
     strip_id,
     vehicle_lane_variants,
@@ -2069,12 +2072,19 @@ def _ensure_default_profile(scene):
 
 
 def _lane_setting(profile, lane, field: str):
-    pedestrian = lane.zone in {"LEFT_SIDEWALK", "RIGHT_SIDEWALK"}
-    if field == "speed_limit":
-        key = "pedestrian_speed_limit" if pedestrian else "road_speed_limit"
-    else:
-        key = field
-    global_value = GLOBAL_LANE_DEFAULTS[key]
+    if getattr(lane, f"override_{field}"):
+        return resolve_setting(
+            getattr(lane, field), DEFAULT_PROFILE_ID, False, None,
+            True, getattr(lane, field),
+        )
+    defaults = lane_metadata_defaults(lane.lane_type, lane.vehicle_type)
+    if defaults is None:
+        raise ValueError(
+            "No lane defaults for metadata tuple "
+            f"({lane.lane_type}, {lane.vehicle_type}); set explicit values"
+        )
+    key = _profile_field_for_lane(lane, field)
+    global_value = defaults[field]
     profile_has = bool(profile and getattr(profile, f"override_{key}"))
     profile_value = getattr(profile, key) if profile is not None else global_value
     return resolve_setting(
@@ -2088,19 +2098,88 @@ def _lane_setting(profile, lane, field: str):
 
 
 def _inherited_lane_setting(profile, lane, field: str):
-    pedestrian = lane.zone in {"LEFT_SIDEWALK", "RIGHT_SIDEWALK"}
-    key = (
-        "pedestrian_speed_limit" if field == "speed_limit" and pedestrian
-        else "road_speed_limit" if field == "speed_limit"
-        else field
-    )
-    global_value = GLOBAL_LANE_DEFAULTS[key]
+    defaults = lane_metadata_defaults(lane.lane_type, lane.vehicle_type)
+    if defaults is None:
+        raise ValueError(
+            "No lane defaults for metadata tuple "
+            f"({lane.lane_type}, {lane.vehicle_type})"
+        )
+    key = _profile_field_for_lane(lane, field)
+    global_value = defaults[field]
     return resolve_setting(
         global_value,
         profile.profile_id if profile is not None else DEFAULT_PROFILE_ID,
         bool(profile and getattr(profile, f"override_{key}")),
         getattr(profile, key) if profile is not None else global_value,
     )
+
+
+def _profile_field_for_lane(lane, field: str) -> str:
+    if field != "speed_limit":
+        return field
+    key = (
+        (lane.lane_type or "").strip().upper(),
+        (lane.vehicle_type or "").strip().upper(),
+    )
+    if key == ("PEDESTRIAN", "NONE"):
+        return "pedestrian_speed_limit"
+    return "road_speed_limit"
+
+
+def _inherited_lane_values(profile, lane):
+    try:
+        return {
+            field: _inherited_lane_setting(profile, lane, field).value
+            for field in LANE_SETTING_FIELDS
+        }
+    except ValueError:
+        return None
+
+
+def _normalize_lane_override_flags(lane, profile, include_all=False) -> int:
+    explicit = {
+        field: getattr(lane, field)
+        for field in LANE_SETTING_FIELDS
+        if include_all or getattr(lane, f"override_{field}")
+    }
+    normalized = normalize_lane_override_values(
+        lane.lane_type,
+        lane.vehicle_type,
+        explicit,
+        _inherited_lane_values(profile, lane),
+    )
+    removed = 0
+    for field in LANE_SETTING_FIELDS:
+        flag = f"override_{field}"
+        was_enabled = bool(include_all or getattr(lane, flag))
+        enabled = field in normalized
+        setattr(lane, flag, enabled)
+        if was_enabled and not enabled:
+            removed += 1
+    return removed
+
+
+def _normalize_road_lane_overrides(road, profile, include_all=False) -> int:
+    return sum(
+        _normalize_lane_override_flags(lane, profile, include_all)
+        for lane in road.lanes
+    )
+
+
+def _validate_lane_settings(road, profile) -> None:
+    for lane in road.lanes:
+        missing = []
+        for field in LANE_SETTING_FIELDS:
+            try:
+                _lane_setting(profile, lane, field)
+            except ValueError:
+                missing.append(field)
+        if missing:
+            raise ValueError(
+                f"Lane {lane.lane_id or lane.name} has no defaults for metadata "
+                f"tuple ({lane.lane_type}, {lane.vehicle_type}); set explicit "
+                f"values for {', '.join(missing)}"
+            )
 
 
 def _ensure_default_lanes(props) -> None:
@@ -2224,10 +2303,9 @@ def _initialize_scene_lanes():
                     profile.name = f"Migrated: {road.road_name}"
                     _copy_imt_appearance(road, profile)
                 road.profile_id = profile.profile_id
-                for lane in road.lanes:
-                    lane.override_speed_limit = True
-                    lane.override_stop_offset = True
-                    lane.override_allow_connect = True
+                _normalize_road_lane_overrides(
+                    road, profile, include_all=True,
+                )
                 road.provenance_version = 1
     return None
 
@@ -2848,6 +2926,9 @@ class CS1ROAD_OT_road_duplicate(Operator):
             f"{source.runtime_prefab_name} Copy", target,
         )
         target.runtime_auto_export = False
+        _normalize_road_lane_overrides(
+            target, _profile_for_road(scene, target),
+        )
         scene.cs1_active_road_index = len(scene.cs1_roads) - 1
         return {"FINISHED"}
 
@@ -3066,9 +3147,27 @@ class CS1ROAD_OT_lane_override_toggle(Operator):
             setattr(lane, flag, False)
         else:
             profile = _profile_for_road(context.scene, props)
-            inherited = _inherited_lane_setting(profile, lane, self.field)
+            try:
+                inherited = _inherited_lane_setting(profile, lane, self.field)
+            except ValueError as error:
+                self.report({"ERROR"}, str(error))
+                return {"CANCELLED"}
             setattr(lane, self.field, inherited.value)
             setattr(lane, flag, True)
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_remove_redundant_overrides(Operator):
+    bl_idname = "cs1_road.remove_redundant_overrides"
+    bl_label = "Remove redundant overrides"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = active_road(context.scene)
+        removed = _normalize_road_lane_overrides(
+            props, _profile_for_road(context.scene, props),
+        )
+        self.report({"INFO"}, f"Removed {removed} redundant overrides")
         return {"FINISHED"}
 
 
@@ -3110,8 +3209,12 @@ def _draw_lane_table_row(layout, scene, props, lane, index: int) -> None:
         cells[2].prop(lane, "direction", text="")
         cells[3].prop(lane, "vehicle_type", text="")
     profile = _profile_for_road(scene, props)
-    speed = _lane_setting(profile, lane, "speed_limit")
-    cells[4].label(text=f"{float(speed.value):.2f}")
+    try:
+        speed = _lane_setting(profile, lane, "speed_limit")
+    except ValueError:
+        cells[4].label(text="Unset", icon="ERROR")
+    else:
+        cells[4].label(text=f"{float(speed.value):.2f}")
     actions = cells[5].row(align=True)
     actions.enabled = not automatic_parking
     select = actions.operator("cs1_road.lane_select", text="", icon="PROPERTIES")
@@ -3147,13 +3250,22 @@ def _draw_lane_provenance(layout, scene, props) -> None:
         ("allow_connect", "Allow connect"),
     )
     for field, label in definitions:
-        resolved = _lane_setting(profile, lane, field)
-        inherited = _inherited_lane_setting(profile, lane, field)
         row = box.row(align=True)
+        try:
+            resolved = _lane_setting(profile, lane, field)
+        except ValueError:
+            row.label(text=f"{label}: unset [unknown metadata]", icon="ERROR")
+            continue
+        try:
+            inherited = _inherited_lane_setting(profile, lane, field)
+        except ValueError:
+            inherited = None
         value = resolved.value
         display = str(bool(value)) if field == "allow_connect" else f"{float(value):.2f}"
         row.label(text=f"{label}: {display} [{resolved.source}]")
-        toggle = row.operator(
+        toggle_row = row.row(align=True)
+        toggle_row.enabled = inherited is not None
+        toggle = toggle_row.operator(
             "cs1_road.lane_override_toggle",
             text="Reset" if getattr(lane, f"override_{field}") else "Override",
             icon="LOOP_BACK" if getattr(lane, f"override_{field}") else "ADD",
@@ -3161,7 +3273,9 @@ def _draw_lane_provenance(layout, scene, props) -> None:
         toggle.index, toggle.field = lane_index, field
         if getattr(lane, f"override_{field}"):
             row.prop(lane, field, text="")
-            if redundant_override(getattr(lane, field), inherited.value):
+            if inherited is not None and redundant_override(
+                getattr(lane, field), inherited.value,
+            ):
                 box.label(
                     text=f"{lane.lane_id}.{field}: override equals inherited value",
                     icon="ERROR",
@@ -3177,9 +3291,16 @@ def _draw_override_summary(layout, scene, props) -> None:
         for field in ("speed_limit", "stop_offset", "allow_connect"):
             if not getattr(lane, f"override_{field}"):
                 continue
-            inherited = _inherited_lane_setting(profile, lane, field)
+            try:
+                inherited = _inherited_lane_setting(profile, lane, field)
+            except ValueError:
+                inherited = None
             value = getattr(lane, field)
-            entries.append((lane, field, value, redundant_override(value, inherited.value)))
+            entries.append((
+                lane, field, value,
+                inherited is not None
+                and redundant_override(value, inherited.value),
+            ))
     box.label(text=f"Explicit overrides ({len(entries)})")
     if not entries:
         box.label(text="No road-specific lane overrides.")
@@ -3189,6 +3310,12 @@ def _draw_override_summary(layout, scene, props) -> None:
         box.label(
             text=f"{lane.lane_id}.{field} = {value}{suffix}",
             icon="ERROR" if redundant else "INFO",
+        )
+    if any(entry[3] for entry in entries):
+        box.operator(
+            "cs1_road.remove_redundant_overrides",
+            text="Remove redundant overrides",
+            icon="BRUSH_DATA",
         )
 
 
@@ -3833,6 +3960,16 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
                 if lane_source["width"] <= 0.0:
                     lane_source["width"] = strip.get("width", 3.0)
             _load_lane(props.lanes.add(), lane_source)
+        _normalize_road_lane_overrides(
+            props, _profile_for_road(context.scene, props),
+        )
+        try:
+            _validate_lane_settings(
+                props, _profile_for_road(context.scene, props),
+            )
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
         props.median_profile = _enum_value(
             imported_median_profile, MEDIAN_PROFILE_ITEMS, "NONE",
         )
@@ -3867,6 +4004,16 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
 
     def execute(self, context):
         props = active_road(context.scene)
+        _normalize_road_lane_overrides(
+            props, _profile_for_road(context.scene, props),
+        )
+        try:
+            _validate_lane_settings(
+                props, _profile_for_road(context.scene, props),
+            )
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
         _sync_cross_section_state(props)
         _ensure_lane_ids(props)
         _sync_boundaries(props)
@@ -4419,6 +4566,7 @@ CLASSES = (
     CS1ROAD_OT_profile_override_toggle,
     CS1ROAD_OT_lane_add, CS1ROAD_OT_lanes_reset, CS1ROAD_OT_lane_remove,
     CS1ROAD_OT_lane_move, CS1ROAD_OT_lane_select, CS1ROAD_OT_lane_override_toggle,
+    CS1ROAD_OT_remove_redundant_overrides,
     CS1ROAD_OT_boundaries_sync,
     CS1ROAD_OT_build_preview, CS1ROAD_OT_build_all, CS1ROAD_OT_reload_surface_texture,
     CS1ROAD_OT_import_spec, CS1ROAD_OT_export_spec,

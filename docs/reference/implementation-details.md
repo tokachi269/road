@@ -20,7 +20,7 @@
 - 道路線の編集単位は3規則（路側線の有無、同方向lane間の白線種別、対向中央線の色・線種）であり、個別boundaryごとの入力は持たない。道路定義が既定値を所有し、CS1配置時panelが同じ道路の次回配置値を所有する。各boundaryの有効状態とstyle IDはroleから導出する。生成済みIMT線はユーザ編集を上書きしない。
 - Blender PropertyGroupは編集adapterであり、別の意味を決めない。
 - Sceneは道路PropertyGroupの一覧とactive indexを保持する。各項目はlane、断面、marking、mode、Runtime入力を一式保持し、選択中の1件だけを編集・preview生成する。追加、複製、削除はこの一覧を操作する。JSONはactive roadの置換または新規項目としてimportでき、active roadまたは全項目をexportできる。spec directoryやTSVを定期走査せず、catalogとの同期状態をBlender側へ重複保持しない。
-- Sceneは共有profile一覧も保持する。laneの速度、停止offset、接続可否は`domain.py`のglobal既定値、profile、lane明示overrideの順に解決する。profile参照は1段だけで、profile間継承はない。IMT外観もprofileが所有する。道路JSON v4は`profile_id`とlaneの`overrides`だけを保存し、profile本体はprofile schema v1の`profiles.json`へ保存する。全道路exportは同じdirectoryへprofile libraryも出すが、ファイル監視や自動同期はしない。v3 importはlaneの3値をすべてoverrideとして保全し、標準と異なるIMT外観は専用profileへ分離する。
+- Sceneは共有profile一覧も保持する。laneの速度、停止offset、接続可否のglobal既定値は`domain.py`で正確な`(lane_type, vehicle_type)`から解決する。現データで定義するのは`Vehicle/Car = 1.0/0.0/true`と`Pedestrian/None = 0.1/0.0/true`だけで、未知tupleへ値を推測しない。現行profile schema v1との互換経路ではglobal既定値、profile、lane明示overrideの順に解決するが、これを最終schemaとはみなさない。IMT外観はprofileが所有する。道路JSON v4は`profile_id`とlaneの`overrides`だけを保存し、profile本体は`profiles.json`へ保存する。全道路exportは同じdirectoryへprofile libraryも出すが、ファイル監視や自動同期はしない。migration、import、duplicate、exportは同じ正規化規則を使い、継承値と同じと証明できるoverrideだけを除去し、異値と未知tupleの明示値は保全する。標準と異なるIMT外観は専用profileへ分離する。
 - RoadImporter XMLはCS1向けcompiled outputであり、編集正本にしない。
 
 生成済みpreviewがある場合、断面・線・mode形状のUI変更は選択中modeへ最大0.15秒単位で反映する。スライダー操作が約0.60秒止まった後、他の生成済みmodeを一度だけ追従させる。未生成modeの作成とRuntime exportはこのlive preview更新では行わない。

@@ -7,7 +7,7 @@ declare the current persisted schema to be the final product model.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Iterable, NamedTuple, Protocol
+from typing import Any, Iterable, Mapping, NamedTuple, Protocol
 
 
 MODE_LENGTH = 64.0
@@ -21,11 +21,26 @@ PARKING_LANE_DEFAULT_WIDTH = 2.0
 AUTHORING_SCHEMA_VERSION = 4
 PROFILE_SCHEMA_VERSION = 1
 DEFAULT_PROFILE_ID = "urban.default"
+LANE_SETTING_FIELDS = ("speed_limit", "stop_offset", "allow_connect")
+LANE_METADATA_DEFAULTS = {
+    ("VEHICLE", "CAR"): {
+        "speed_limit": 1.0,
+        "stop_offset": 0.0,
+        "allow_connect": True,
+    },
+    ("PEDESTRIAN", "NONE"): {
+        "speed_limit": 0.1,
+        "stop_offset": 0.0,
+        "allow_connect": True,
+    },
+}
+# Compatibility view used by the existing schema-v1 profile adapter. Values
+# remain owned by the exact metadata tuples above.
 GLOBAL_LANE_DEFAULTS = {
-    "road_speed_limit": 1.0,
-    "pedestrian_speed_limit": 0.1,
-    "stop_offset": 0.0,
-    "allow_connect": True,
+    "road_speed_limit": LANE_METADATA_DEFAULTS[("VEHICLE", "CAR")]["speed_limit"],
+    "pedestrian_speed_limit": LANE_METADATA_DEFAULTS[("PEDESTRIAN", "NONE")]["speed_limit"],
+    "stop_offset": LANE_METADATA_DEFAULTS[("VEHICLE", "CAR")]["stop_offset"],
+    "allow_connect": LANE_METADATA_DEFAULTS[("VEHICLE", "CAR")]["allow_connect"],
 }
 STANDARD_VEHICLE_LANE_WIDTH = 3.0
 STANDARD_SHOULDER_WIDTH = 0.5
@@ -66,6 +81,18 @@ class ResolvedSetting(NamedTuple):
     source: str
 
 
+def lane_metadata_defaults(
+    lane_type: str, vehicle_type: str,
+) -> dict[str, Any] | None:
+    """Return defaults only for an exact metadata tuple observed in road data."""
+    key = (
+        (lane_type or "").strip().upper(),
+        (vehicle_type or "").strip().upper(),
+    )
+    defaults = LANE_METADATA_DEFAULTS.get(key)
+    return None if defaults is None else dict(defaults)
+
+
 def resolve_setting(
     global_value: Any,
     profile_id: str,
@@ -92,6 +119,31 @@ def redundant_override(override_value: Any, inherited_value: Any) -> bool:
     return override_value == inherited_value
 
 
+def normalize_lane_overrides(
+    lane_type: str,
+    vehicle_type: str,
+    overrides: Mapping[str, Any],
+    inherited_values: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Drop only overrides proven equal to the applicable inherited values.
+
+    Exact metadata defaults are used when callers do not provide a more
+    specific inherited value. Unknown metadata keeps every explicit value.
+    """
+    inherited = (
+        dict(inherited_values)
+        if inherited_values is not None
+        else lane_metadata_defaults(lane_type, vehicle_type)
+    )
+    if inherited is None:
+        return dict(overrides)
+    return {
+        field: value
+        for field, value in overrides.items()
+        if field not in inherited or not redundant_override(value, inherited[field])
+    }
+
+
 def migrate_authoring_spec_v3_to_v4(
     source: dict[str, Any], profile_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -110,11 +162,13 @@ def migrate_authoring_spec_v3_to_v4(
     data["profile_id"] = profile_id
     for lane in data.get("lanes", []):
         overrides = dict(lane.get("overrides", {}))
-        for field in ("speed_limit", "stop_offset", "allow_connect"):
+        for field in LANE_SETTING_FIELDS:
             if field in lane:
                 overrides[field] = lane.pop(field)
         if overrides:
             lane["overrides"] = overrides
+        else:
+            lane.pop("overrides", None)
     styles = data.get("styles")
     if isinstance(styles, dict):
         styles.pop("imt_preview", None)

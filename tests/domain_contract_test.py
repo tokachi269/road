@@ -211,6 +211,40 @@ class DomainContractTest(unittest.TestCase):
         self.assertTrue(domain.redundant_override(1.5, 1.5))
         self.assertFalse(domain.redundant_override(1.25, 1.5))
 
+    def test_lane_defaults_exist_only_for_observed_metadata_tuples(self) -> None:
+        self.assertEqual(
+            domain.lane_metadata_defaults("Vehicle", "Car"),
+            {"speed_limit": 1.0, "stop_offset": 0.0, "allow_connect": True},
+        )
+        self.assertEqual(
+            domain.lane_metadata_defaults("PEDESTRIAN", "NONE"),
+            {"speed_limit": 0.1, "stop_offset": 0.0, "allow_connect": True},
+        )
+        self.assertIsNone(domain.lane_metadata_defaults("VEHICLE", "BUS"))
+        self.assertIsNone(domain.lane_metadata_defaults("PARKING", "CAR"))
+
+    def test_lane_override_normalization_is_conservative(self) -> None:
+        self.assertEqual(
+            domain.normalize_lane_overrides(
+                "VEHICLE", "CAR",
+                {"speed_limit": 1.0, "stop_offset": 0.0, "allow_connect": True},
+            ),
+            {},
+        )
+        self.assertEqual(
+            domain.normalize_lane_overrides(
+                "VEHICLE", "CAR", {"speed_limit": 1.25},
+            ),
+            {"speed_limit": 1.25},
+        )
+        unknown = {
+            "speed_limit": 0.8, "stop_offset": 0.2, "allow_connect": False,
+        }
+        self.assertEqual(
+            domain.normalize_lane_overrides("VEHICLE", "BUS", unknown),
+            unknown,
+        )
+
     def test_v3_migration_preserves_lane_values_as_explicit_overrides(self) -> None:
         source = {
             "schema_version": 3,

@@ -103,7 +103,7 @@ Elevatedモードでは`Edge mesh (right basis)`へ1つのMesh Objectを指定�
 segmentとnodeはどちらも設定変更不可の64 m固定です。Groundのtransitionはnodeの64 m全体を使い、segment側の路面高から接続先の路面高まで傾斜させます。
 カーブ変形用にsegmentは長手方向20分割（3.2 m間隔）、nodeは8分割（8 m間隔）です。分割は全断面と全モードへ適用されます。
 
-JSON schema v4では物理断面のstrip、CS1 lane、strip間boundary、共有marking styleを保存します。laneの速度、停止offset、接続可否はglobal既定値、1段profile、lane明示overrideの順で解決し、profile本体は`profiles.json`へ分離します。線はlaneではなくboundaryに所属し、laneとboundaryはstable IDで参照します。Lane中心位置、道路総幅、marking位置、mesh、UVは保存値から再生成します。
+JSON schema v4では物理断面のstrip、CS1 lane、strip間boundary、共有marking styleを保存します。laneの速度、停止offset、接続可否の既定値は、`domain.py`が現データで確認済みの正確な`(lane_type, vehicle_type)`から解決し、未知tupleを推測しません。現行profile schema v1との互換経路ではglobal既定値、1段profile、lane明示overrideの順で解決し、同じと証明できるoverrideは保存しません。profile本体は`profiles.json`へ分離します。線はlaneではなくboundaryに所属し、laneとboundaryはstable IDで参照します。Lane中心位置、道路総幅、marking位置、mesh、UVは保存値から再生成します。
 
 現段階はBlender内の形状・道路定義previewです。UVは実装済みですが、最終texture atlas、LOD FBX、segment/nodeのflag selector、全NetInfo/AI XMLを生成してゲーム内検証するまでは「インポート可能な完成道路」とは扱いません。根拠と未実装項目は`docs/cs1-road-requirements.md`に集約しています。
 
