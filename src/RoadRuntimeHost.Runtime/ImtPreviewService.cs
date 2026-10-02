@@ -21,6 +21,7 @@ namespace RoadRuntimeHost.Runtime
             public NetInfo Info;
             public ushort StartNode;
             public ushort EndNode;
+            public ImtMarkingStyleBundle Style;
         }
 
         private sealed class PendingSegment
@@ -36,6 +37,7 @@ namespace RoadRuntimeHost.Runtime
         private readonly Dictionary<ushort, SegmentStamp> _segments = new Dictionary<ushort, SegmentStamp>();
         private readonly HashSet<ulong> _initializedSegmentDefaults = new HashSet<ulong>();
         private readonly HashSet<string> _ownedNodeLinePairs = new HashSet<string>();
+        private readonly HashSet<string> _ownedNodeDefaults = new HashSet<string>();
         private readonly HashSet<string> _initializedNodeDefaults = new HashSet<string>();
         private readonly HashSet<ulong> _nativeCrosswalksRestored = new HashSet<ulong>();
         private readonly ImtInternalAdapter _internalAdapter = new ImtInternalAdapter();
@@ -45,8 +47,11 @@ namespace RoadRuntimeHost.Runtime
         private readonly object _pendingTrafficPolicySync = new object();
         private readonly Dictionary<ushort, TargetRoad> _pendingSegments =
             new Dictionary<ushort, TargetRoad>();
+        private readonly HashSet<ushort> _pendingNodes = new HashSet<ushort>();
         private readonly HashSet<ushort> _pendingTrafficPolicyNodes = new HashSet<ushort>();
         private readonly HashSet<ushort> _pendingTrafficPolicySegments = new HashSet<ushort>();
+        private readonly Dictionary<ushort, uint> _pendingTopologyRetryNodes =
+            new Dictionary<ushort, uint>();
         private volatile HashSet<NetInfo> _targetInfos = new HashSet<NetInfo>();
         private volatile bool _segmentBatchPending;
         private volatile bool _trafficPolicyRefreshPending;
@@ -57,7 +62,7 @@ namespace RoadRuntimeHost.Runtime
         {
             _placementMarkings = new RoadPlacementMarkingController();
             _trafficPolicy = new TmpeTrafficPolicy(QueueTrafficPolicyRefresh);
-            NetSegmentCreationHook.Start(OnSegmentCreated);
+            NetSegmentCreationHook.Start(OnSegmentCreated, OnSegmentReleased);
             ImtRestoreDefaultsHook.Start(CanRestoreDefaults, RestoreDefaults);
         }
 
@@ -106,15 +111,21 @@ namespace RoadRuntimeHost.Runtime
                 _targets.Clear();
                 _targetInfos = new HashSet<NetInfo>();
             }
-            lock (_pendingSegmentSync) _pendingSegments.Clear();
+            lock (_pendingSegmentSync)
+            {
+                _pendingSegments.Clear();
+                _pendingNodes.Clear();
+            }
             lock (_pendingTrafficPolicySync)
             {
                 _pendingTrafficPolicyNodes.Clear();
                 _pendingTrafficPolicySegments.Clear();
                 _trafficPolicyRefreshPending = false;
             }
+            lock (_pendingSegmentSync) _pendingTopologyRetryNodes.Clear();
             _initializedSegmentDefaults.Clear();
             _ownedNodeLinePairs.Clear();
+            _ownedNodeDefaults.Clear();
             _initializedNodeDefaults.Clear();
             _nativeCrosswalksRestored.Clear();
         }
@@ -277,18 +288,7 @@ namespace RoadRuntimeHost.Runtime
 
         private void ForgetInitializedNodeDefaults(ushort nodeId)
         {
-            string marker = ":" + nodeId + ":";
-            List<string> remove = new List<string>();
-            foreach (string key in _initializedNodeDefaults)
-                if (key.IndexOf(marker, StringComparison.Ordinal) >= 0)
-                    remove.Add(key);
-            foreach (string key in remove) _initializedNodeDefaults.Remove(key);
-
-            remove.Clear();
-            foreach (string key in _ownedNodeLinePairs)
-                if (key.IndexOf(marker, StringComparison.Ordinal) >= 0)
-                    remove.Add(key);
-            foreach (string key in remove) _ownedNodeLinePairs.Remove(key);
+            ForgetNodeDefaults(nodeId);
         }
 
         private void QueueTrafficPolicyRefresh(ushort instanceId, bool isSegment)
@@ -422,23 +422,52 @@ namespace RoadRuntimeHost.Runtime
             lock (_targetSync) return new List<TargetRoad>(_targets.Values).ToArray();
         }
 
-        private void OnSegmentCreated(ushort segmentId, NetInfo info)
+        public void Tick()
         {
-            if (_stopped || segmentId == 0 || info == null || !_targetInfos.Contains(info) || !SimulationManager.exists) return;
-            TargetRoad registered;
-            lock (_targetSync)
-            {
-                if (!_targets.TryGetValue(info, out registered)) return;
-            }
-            TargetRoad captured = new TargetRoad
-            {
-                RoadId = registered.RoadId,
-                Info = registered.Info,
-                Style = _placementMarkings.Capture(info, registered.Style)
-            };
+            if (_stopped || !SimulationManager.exists) return;
+            ushort[] ready;
+            uint currentTick = SimulationManager.instance.m_currentTickIndex;
             lock (_pendingSegmentSync)
             {
-                _pendingSegments[segmentId] = captured;
+                List<ushort> nodes = new List<ushort>();
+                foreach (KeyValuePair<ushort, uint> item in _pendingTopologyRetryNodes)
+                    if (item.Value != currentTick) nodes.Add(item.Key);
+                foreach (ushort nodeId in nodes)
+                    _pendingTopologyRetryNodes.Remove(nodeId);
+                ready = nodes.ToArray();
+            }
+            if (ready.Length == 0) return;
+            SimulationManager.instance.AddAction(delegate
+            {
+                if (!_stopped)
+                    ApplySegmentBatch(new PendingSegment[0], ready, false);
+            });
+        }
+
+        private void OnSegmentCreated(ushort segmentId, NetInfo info)
+        {
+            if (_stopped || segmentId == 0 || !SimulationManager.exists) return;
+            TargetRoad captured = null;
+            if (info != null && _targetInfos.Contains(info))
+            {
+                TargetRoad registered;
+                lock (_targetSync) _targets.TryGetValue(info, out registered);
+                if (registered != null)
+                {
+                    captured = new TargetRoad
+                    {
+                        RoadId = registered.RoadId,
+                        Info = registered.Info,
+                        Style = _placementMarkings.Capture(info, registered.Style)
+                    };
+                }
+            }
+            lock (_pendingSegmentSync)
+            {
+                if (captured != null) _pendingSegments[segmentId] = captured;
+                AddCurrentSegmentNodes(
+                    segmentId, _pendingNodes, captured != null);
+                if (captured == null && _pendingNodes.Count == 0) return;
                 if (_segmentBatchPending) return;
                 _segmentBatchPending = true;
             }
@@ -446,9 +475,54 @@ namespace RoadRuntimeHost.Runtime
             SimulationManager.instance.AddAction(ProcessPendingSegments);
         }
 
+        private void OnSegmentReleased(
+            ushort segmentId,
+            ushort startNode,
+            ushort endNode,
+            NetInfo info)
+        {
+            if (_stopped || segmentId == 0 || !SimulationManager.exists) return;
+            bool releasedTarget = info != null && _targetInfos.Contains(info);
+            lock (_pendingSegmentSync)
+            {
+                _pendingSegments.Remove(segmentId);
+                if (startNode != 0
+                    && (releasedTarget || NodeIdHasTarget(startNode)))
+                    _pendingNodes.Add(startNode);
+                if (endNode != 0
+                    && (releasedTarget || NodeIdHasTarget(endNode)))
+                    _pendingNodes.Add(endNode);
+                _segments.Remove(segmentId);
+                ForgetInitializedSegmentDefaults(segmentId);
+                if (_pendingNodes.Count == 0) return;
+                if (_segmentBatchPending) return;
+                _segmentBatchPending = true;
+            }
+            SimulationManager.instance.AddAction(ProcessPendingSegments);
+        }
+
+        private void AddCurrentSegmentNodes(
+            ushort segmentId,
+            HashSet<ushort> nodes,
+            bool targetSegment)
+        {
+            NetManager manager = NetManager.instance;
+            if (manager == null || segmentId == 0
+                || segmentId >= manager.m_segments.m_size) return;
+            ref NetSegment segment = ref manager.m_segments.m_buffer[segmentId];
+            if ((segment.m_flags & NetSegment.Flags.Created) == 0) return;
+            if (segment.m_startNode != 0
+                && (targetSegment || NodeIdHasTarget(segment.m_startNode)))
+                nodes.Add(segment.m_startNode);
+            if (segment.m_endNode != 0
+                && (targetSegment || NodeIdHasTarget(segment.m_endNode)))
+                nodes.Add(segment.m_endNode);
+        }
+
         private void ProcessPendingSegments()
         {
             PendingSegment[] segments;
+            ushort[] nodes;
             lock (_pendingSegmentSync)
             {
                 List<PendingSegment> captured = new List<PendingSegment>();
@@ -459,21 +533,120 @@ namespace RoadRuntimeHost.Runtime
                         Target = item.Value
                     });
                 segments = captured.ToArray();
+                nodes = new List<ushort>(_pendingNodes).ToArray();
                 _pendingSegments.Clear();
+                _pendingNodes.Clear();
                 _segmentBatchPending = false;
             }
-            if (_stopped || segments.Length == 0) return;
-            ApplySegmentBatch(segments);
+            if (_stopped || (segments.Length == 0 && nodes.Length == 0)) return;
+            EnableDefaultTrafficLights(nodes);
+            ApplySegmentBatch(segments, nodes, true);
         }
 
-        private void ApplySegmentBatch(PendingSegment[] pendingSegments)
+        private void EnableDefaultTrafficLights(ushort[] nodeIds)
+        {
+            NetManager manager = NetManager.instance;
+            foreach (ushort nodeId in nodeIds)
+            {
+                if (nodeId == 0 || nodeId >= manager.m_nodes.m_size) continue;
+                ref NetNode node = ref manager.m_nodes.m_buffer[nodeId];
+                if (CountSegments(node) >= 3 && NodeHasTarget(node))
+                {
+                    EnsureDefaultTrafficLight(nodeId, ref node);
+                    EnsureDefaultPedestrianCrossings(nodeId, ref node);
+                }
+            }
+        }
+
+        private bool NodeHasTarget(NetNode node)
+        {
+            NetManager manager = NetManager.instance;
+            for (int slot = 0; slot < 8; ++slot)
+            {
+                ushort segmentId = node.GetSegment(slot);
+                if (segmentId == 0 || segmentId >= manager.m_segments.m_size) continue;
+                NetInfo info = manager.m_segments.m_buffer[segmentId].Info;
+                if (info != null && _targetInfos.Contains(info)) return true;
+            }
+            return false;
+        }
+
+        private bool NodeIdHasTarget(ushort nodeId)
+        {
+            NetManager manager = NetManager.instance;
+            if (manager == null || nodeId == 0
+                || nodeId >= manager.m_nodes.m_size) return false;
+            ref NetNode node = ref manager.m_nodes.m_buffer[nodeId];
+            return NodeHasTarget(node);
+        }
+
+        private void EnsureDefaultPedestrianCrossings(
+            ushort nodeId,
+            ref NetNode node)
+        {
+            NetManager manager = NetManager.instance;
+            for (int slot = 0; slot < 8; ++slot)
+            {
+                ushort segmentId = node.GetSegment(slot);
+                if (segmentId == 0 || segmentId >= manager.m_segments.m_size) continue;
+                ref NetSegment segment = ref manager.m_segments.m_buffer[segmentId];
+                if (segment.Info == null || !_targetInfos.Contains(segment.Info)
+                    || !HasPedestrianLane(segment.Info)) continue;
+                bool startNode = segment.m_startNode == nodeId;
+                if (IsPedestrianCrossingAllowed(
+                        segmentId, nodeId, ref segment)) continue;
+
+                bool? tmpeEnabled = null;
+                try
+                {
+                    tmpeEnabled = _trafficPolicy.TryEnableDefaultPedestrianCrossing(
+                        segmentId, startNode);
+                }
+                catch (Exception error)
+                {
+                    DiagnosticLog.Warn(
+                        "MOD_COMPATIBILITY",
+                        "tmpe_default_pedestrian_crossing_failed",
+                        "TM:PE could not enable the default pedestrian crossing",
+                        "node_id", nodeId.ToString(),
+                        "segment_id", segmentId.ToString(),
+                        "reason", error.GetBaseException().Message);
+                    continue;
+                }
+                if (tmpeEnabled.HasValue && !tmpeEnabled.Value) continue;
+                if (!tmpeEnabled.HasValue)
+                {
+                    NetSegment.Flags flag = startNode
+                        ? NetSegment.Flags.CrossingStart
+                        : NetSegment.Flags.CrossingEnd;
+                    segment.m_flags |= flag;
+                    manager.UpdateSegmentRenderer(segmentId, true);
+                }
+                DiagnosticLog.Info(
+                    "SUCCESS",
+                    "intersection_default_pedestrian_crossing_enabled",
+                    "Enabled a default pedestrian crossing for a newly affected intersection entrance",
+                    "node_id", nodeId.ToString(),
+                    "segment_id", segmentId.ToString(),
+                    "provider", tmpeEnabled.HasValue ? "TMPE" : "vanilla");
+            }
+        }
+
+        private void ApplySegmentBatch(
+            PendingSegment[] pendingSegments,
+            ushort[] affectedNodeIds,
+            bool allowTopologyRetry)
         {
             IDataProviderV1 provider = GetProvider();
             if (provider == null)
             {
                 lock (_pendingSegmentSync)
+                {
                     foreach (PendingSegment pending in pendingSegments)
                         _pendingSegments[pending.SegmentId] = pending.Target;
+                    foreach (ushort nodeId in affectedNodeIds)
+                        if (nodeId != 0) _pendingNodes.Add(nodeId);
+                }
                 return;
             }
 
@@ -486,7 +659,8 @@ namespace RoadRuntimeHost.Runtime
             int stopLinesExisting = 0;
             int failures = 0;
             Exception firstFailure = null;
-            HashSet<ushort> nodes = new HashSet<ushort>();
+            HashSet<ushort> nodes = new HashSet<ushort>(affectedNodeIds);
+            HashSet<ushort> topologyRetryNodes = new HashSet<ushort>();
             NetManager manager = NetManager.instance;
 
             foreach (PendingSegment pending in pendingSegments)
@@ -513,7 +687,8 @@ namespace RoadRuntimeHost.Runtime
                     BuildIndex = segment.m_buildIndex,
                     Info = segment.Info,
                     StartNode = segment.m_startNode,
-                    EndNode = segment.m_endNode
+                    EndNode = segment.m_endNode,
+                    Style = target.Style
                 };
                 nodes.Add(segment.m_startNode);
                 nodes.Add(segment.m_endNode);
@@ -533,8 +708,31 @@ namespace RoadRuntimeHost.Runtime
             {
                 if (nodeId == 0 || nodeId >= manager.m_nodes.m_size) continue;
                 ref NetNode node = ref manager.m_nodes.m_buffer[nodeId];
-                if (CountSegments(node) < 2) continue;
+                if (CountSegments(node) < 2)
+                {
+                    ForgetNodeDefaults(nodeId);
+                    continue;
+                }
+                int connectedSegments = CountSegments(node);
+                INodeMarkingData currentMarking =
+                    provider.GetOrCreateNodeMarking(nodeId);
+                int markingEntrances = CountEntrances(currentMarking);
+                if (markingEntrances != connectedSegments)
+                {
+                    if (allowTopologyRetry)
+                        topologyRetryNodes.Add(nodeId);
+                    else
+                        DiagnosticLog.Warn(
+                            "MOD_COMPATIBILITY",
+                            "imt_node_topology_not_ready",
+                            "IMT node entrances were still stale after one targeted retry; markings were not partially generated",
+                            "node_id", nodeId.ToString(),
+                            "connected_segment_count", connectedSegments.ToString(),
+                            "imt_entrance_count", markingEntrances.ToString());
+                    continue;
+                }
                 HashSet<NetInfo> appliedInfos = new HashSet<NetInfo>();
+                bool appliedTarget = false;
                 for (int slot = 0; slot < 8; ++slot)
                 {
                     ushort connectedSegmentId = node.GetSegment(slot);
@@ -542,16 +740,9 @@ namespace RoadRuntimeHost.Runtime
                     NetInfo connectedInfo = manager.m_segments.m_buffer[connectedSegmentId].Info;
                     if (connectedInfo == null
                         || !appliedInfos.Add(connectedInfo)) continue;
-                    TargetRoad target = null;
-                    foreach (PendingSegment pending in pendingSegments)
-                    {
-                        if (ReferenceEquals(pending.Target.Info, connectedInfo))
-                        {
-                            target = pending.Target;
-                            break;
-                        }
-                    }
+                    TargetRoad target = FindTarget(connectedInfo);
                     if (target == null) continue;
+                    appliedTarget = true;
                     try
                     {
                         ApplyNodeMarkings(
@@ -567,15 +758,18 @@ namespace RoadRuntimeHost.Runtime
                         if (firstFailure == null) firstFailure = error;
                     }
                 }
+                if (appliedTarget)
+                    VerifyCrosswalkPostcondition(
+                        currentMarking, nodeId, ref node);
             }
 
-            if (changedSegments == 0) return;
+            if (changedSegments == 0 && nodes.Count == 0) return;
             if (failures != 0)
             {
                 DiagnosticLog.Error(
                     "MOD_COMPATIBILITY",
                     "imt_preview_segment_batch_partial_failure",
-                    "IMT preview markings were applied only partially for a new-segment batch",
+                    "IMT preview markings were applied only partially for a changed-node batch",
                     firstFailure,
                     "notified_segment_count", pendingSegments.Length.ToString(),
                     "changed_segment_count", changedSegments.ToString(),
@@ -585,7 +779,7 @@ namespace RoadRuntimeHost.Runtime
             DiagnosticLog.Info(
                 failures == 0 ? "SUCCESS" : "MOD_COMPATIBILITY",
                 "imt_preview_segment_batch_applied",
-                "IMT preview markings were evaluated for an event-driven new-segment batch",
+                "IMT preview markings were evaluated only around event-driven segment changes",
                 "notified_segment_count", pendingSegments.Length.ToString(),
                 "changed_segment_count", changedSegments.ToString(),
                 "affected_node_count", nodes.Count.ToString(),
@@ -597,6 +791,43 @@ namespace RoadRuntimeHost.Runtime
                 "stop_line_existing_count", stopLinesExisting.ToString(),
                 "failure_count", failures.ToString(),
                 "preview_only", bool.TrueString);
+
+            if (topologyRetryNodes.Count != 0 && SimulationManager.exists)
+            {
+                uint queuedTick = SimulationManager.instance.m_currentTickIndex;
+                lock (_pendingSegmentSync)
+                {
+                    foreach (ushort nodeId in topologyRetryNodes)
+                        _pendingTopologyRetryNodes[nodeId] = queuedTick;
+                }
+            }
+        }
+
+        private void EnsureDefaultTrafficLight(ushort nodeId, ref NetNode node)
+        {
+            if ((node.m_flags & NetNode.Flags.TrafficLights) != 0) return;
+            bool enabled = false;
+            try { enabled = _trafficPolicy.TryEnableTrafficLight(nodeId); }
+            catch (Exception error)
+            {
+                DiagnosticLog.Warn(
+                    "MOD_COMPATIBILITY",
+                    "tmpe_default_traffic_light_failed",
+                    "TM:PE could not enable the default traffic light; the vanilla node flag will be used",
+                    "node_id", nodeId.ToString(),
+                    "reason", error.GetBaseException().Message);
+            }
+            if (!enabled)
+            {
+                node.m_flags |= NetNode.Flags.TrafficLights;
+                NetManager.instance.UpdateNodeRenderer(nodeId, true);
+            }
+            DiagnosticLog.Info(
+                "SUCCESS",
+                "intersection_default_traffic_light_enabled",
+                "Enabled the default traffic light for a newly affected intersection",
+                "node_id", nodeId.ToString(),
+                "provider", enabled ? "TMPE" : "vanilla");
         }
 
         private static void AddNodeTarget(Dictionary<ushort, List<TargetRoad>> nodes, ushort nodeId, TargetRoad target)
@@ -714,6 +945,25 @@ namespace RoadRuntimeHost.Runtime
             return kind + ":" + nodeId + ":" + first + ":" + second;
         }
 
+        private void ForgetNodeDefaults(ushort nodeId)
+        {
+            string token = ":" + nodeId + ":";
+            RemoveKeysContaining(_initializedNodeDefaults, token);
+            RemoveKeysContaining(_ownedNodeDefaults, token);
+            RemoveKeysContaining(_ownedNodeLinePairs, token);
+        }
+
+        private static void RemoveKeysContaining(
+            HashSet<string> values,
+            string token)
+        {
+            List<string> remove = new List<string>();
+            foreach (string value in values)
+                if (value.IndexOf(token, StringComparison.Ordinal) >= 0)
+                    remove.Add(value);
+            foreach (string value in remove) values.Remove(value);
+        }
+
         private void ApplyNodeMarkings(
             IDataProviderV1 provider,
             ushort nodeId,
@@ -734,7 +984,7 @@ namespace RoadRuntimeHost.Runtime
                 ApplyCornerLines(
                     provider, marking, appearance,
                     ref linesAdded, ref linesExisting);
-                RemoveCrosswalksAndStopLines(marking);
+                RemoveOwnedCrosswalksAndStopLines(marking);
                 return;
             }
             RemoveOwnedCornerLines(marking);
@@ -763,7 +1013,8 @@ namespace RoadRuntimeHost.Runtime
                         IsPedestrianCrossingAllowed(segmentId, nodeId, ref segment));
                     if (!shouldHaveCrosswalk)
                     {
-                        if (existed) marking.RemoveCrosswalk(crosswalkStart, crosswalkEnd);
+                        if (_ownedNodeDefaults.Remove(crosswalkKey) && existed)
+                            marking.RemoveCrosswalk(crosswalkStart, crosswalkEnd);
                         _initializedNodeDefaults.Remove(crosswalkKey);
                     }
                     else if (existed || !_initializedNodeDefaults.Contains(crosswalkKey))
@@ -780,6 +1031,7 @@ namespace RoadRuntimeHost.Runtime
                         {
                             ICrosswalkData createdCrosswalk = marking.AddCrosswalk(crosswalkStart, crosswalkEnd, CreateCrosswalkStyle(provider, appearance));
                             effectiveCrosswalk = createdCrosswalk;
+                            _ownedNodeDefaults.Add(crosswalkKey);
                             ++crosswalksAdded;
                         }
                         _initializedNodeDefaults.Add(crosswalkKey);
@@ -812,8 +1064,8 @@ namespace RoadRuntimeHost.Runtime
                     bool existed = marking.TryGetStopLine(stopStart, stopEnd, out current);
                     if (!shouldHaveStopLine)
                     {
-                        if (existed) marking.RemoveStopLine(stopStart, stopEnd);
-                        RemoveLegacyFullWidthStopLine(marking, entrance, stopStart, stopEnd);
+                        if (_ownedNodeDefaults.Remove(stopLineKey) && existed)
+                            marking.RemoveStopLine(stopStart, stopEnd);
                         _initializedNodeDefaults.Remove(stopLineKey);
                         continue;
                     }
@@ -827,6 +1079,7 @@ namespace RoadRuntimeHost.Runtime
                     }
                     if (_initializedNodeDefaults.Contains(stopLineKey)) continue;
                     marking.AddStopLine(stopStart, stopEnd, CreateStopLineStyle(provider, appearance));
+                    _ownedNodeDefaults.Add(stopLineKey);
                     _initializedNodeDefaults.Add(stopLineKey);
                     ++stopLinesAdded;
                 }
@@ -847,12 +1100,25 @@ namespace RoadRuntimeHost.Runtime
 
             List<IEntrancePointData> first = GetPointsByIndex(entrances[0].EntrancePoints);
             List<IEntrancePointData> second = GetPointsByIndex(entrances[1].EntrancePoints);
-            if (first.Count != second.Count) return;
-            for (int ordinal = 0; ordinal < first.Count; ++ordinal)
+            ImtBoundaryRole[] firstRoles = BoundaryRoles(
+                entrances[0].Id, marking.Id, first);
+            ImtBoundaryRole[] secondRoles = BoundaryRoles(
+                entrances[1].Id, marking.Id, second);
+            int[] pairs = ImtNodePolicy.MatchBoundaryRoles(
+                firstRoles, secondRoles);
+            ImtMarkingStyleBundle firstAppearance = StyleForSegment(
+                entrances[0].Id, appearance);
+            ImtMarkingStyleBundle secondAppearance = StyleForSegment(
+                entrances[1].Id, appearance);
+            float connectorAngle = ConnectorAngle(
+                marking.Id, entrances[0].Id, entrances[1].Id);
+            for (int pairIndex = 0; pairIndex + 1 < pairs.Length; pairIndex += 2)
             {
-                IEntrancePointData start = first[ordinal];
-                IEntrancePointData end = second[
-                    ImtNodePolicy.OppositePointOrdinal(ordinal, second.Count)];
+                int firstOrdinal = pairs[pairIndex];
+                int secondOrdinal = pairs[pairIndex + 1];
+                IEntrancePointData start = first[firstOrdinal];
+                IEntrancePointData end = second[secondOrdinal];
+                ImtBoundaryRole role = firstRoles[firstOrdinal];
                 string defaultKey = NodeDefaultKey("line", marking.Id, start, end);
                 if (marking.RegularLineExist(start, end))
                 {
@@ -862,20 +1128,20 @@ namespace RoadRuntimeHost.Runtime
                 }
                 if (_initializedNodeDefaults.Contains(defaultKey)) continue;
 
-                bool edge = IsEdgeBoundary(start.Source);
-                if (edge && !appearance.RoadsideLines) continue;
-                bool yellow = !edge
-                    && IsOpposingBoundary(entrances[0].Id, start.Source)
-                    && string.Equals(
-                        appearance.CenterLineStyle,
-                        "SOLID_YELLOW",
-                        StringComparison.OrdinalIgnoreCase);
-                // IMT connects node entrance points with a straight trajectory.
-                // A dashed style therefore produces detached transverse-looking
-                // pieces on a bend. Keep every two-segment corner connector solid;
-                // only its configured centre-line colour may differ.
-                IRegularLineStyleData style =
-                    CreateSolidStyle(provider, appearance, yellow);
+                if (role == ImtBoundaryRole.Roadside
+                    && (!firstAppearance.RoadsideLines
+                    || !secondAppearance.RoadsideLines)) continue;
+                string connectorStyle = ImtNodePolicy.ConnectorStyle(
+                    role,
+                    role == ImtBoundaryRole.Center
+                        ? firstAppearance.CenterLineStyle
+                        : firstAppearance.LaneSeparatorStyle,
+                    role == ImtBoundaryRole.Center
+                        ? secondAppearance.CenterLineStyle
+                        : secondAppearance.LaneSeparatorStyle,
+                    connectorAngle);
+                IRegularLineStyleData style = CreateConfiguredLineStyle(
+                    provider, firstAppearance, connectorStyle);
                 marking.AddRegularLine(start, end, style);
                 _ownedNodeLinePairs.Add(defaultKey);
                 _initializedNodeDefaults.Add(defaultKey);
@@ -894,24 +1160,61 @@ namespace RoadRuntimeHost.Runtime
                 for (int rightIndex = leftIndex + 1; rightIndex < entrances.Count; ++rightIndex)
                 {
                     List<IEntrancePointData> right = GetPointsByIndex(entrances[rightIndex].EntrancePoints);
-                    if (left.Count != right.Count) continue;
-                    for (int ordinal = 0; ordinal < left.Count; ++ordinal)
+                    foreach (IEntrancePointData start in left)
                     {
-                        IEntrancePointData start = left[ordinal];
-                        IEntrancePointData end = right[
-                            ImtNodePolicy.OppositePointOrdinal(ordinal, right.Count)];
-                        string defaultKey = NodeDefaultKey(
-                            "line", marking.Id, start, end);
-                        if (_ownedNodeLinePairs.Remove(defaultKey)
-                            && marking.RegularLineExist(start, end))
-                            marking.RemoveRegularLine(start, end);
-                        _initializedNodeDefaults.Remove(defaultKey);
+                        foreach (IEntrancePointData end in right)
+                        {
+                            string defaultKey = NodeDefaultKey(
+                                "line", marking.Id, start, end);
+                            if (!_ownedNodeLinePairs.Remove(defaultKey)) continue;
+                            if (marking.RegularLineExist(start, end))
+                                marking.RemoveRegularLine(start, end);
+                            _initializedNodeDefaults.Remove(defaultKey);
+                        }
                     }
                 }
             }
         }
 
-        private void RemoveCrosswalksAndStopLines(INodeMarkingData marking)
+        private static ImtBoundaryRole[] BoundaryRoles(
+            ushort segmentId,
+            ushort nodeId,
+            List<IEntrancePointData> points)
+        {
+            ImtBoundaryRole[] roles = new ImtBoundaryRole[points.Count];
+            for (int ordinal = 0; ordinal < points.Count; ++ordinal)
+            {
+                if (ordinal == 0 || ordinal == points.Count - 1)
+                {
+                    roles[ordinal] = ImtBoundaryRole.Roadside;
+                    continue;
+                }
+                IPointSourceData source = points[ordinal].Source;
+                if (IsOpposingBoundary(segmentId, source))
+                {
+                    roles[ordinal] = ImtBoundaryRole.Center;
+                    continue;
+                }
+                roles[ordinal] = SeparatorRole(segmentId, nodeId, source);
+            }
+            return roles;
+        }
+
+        private ImtMarkingStyleBundle StyleForSegment(
+            ushort segmentId,
+            ImtMarkingStyleBundle fallback)
+        {
+            SegmentStamp stamp;
+            if (_segments.TryGetValue(segmentId, out stamp) && stamp.Style != null)
+                return stamp.Style;
+            if (segmentId == 0 || segmentId >= NetManager.instance.m_segments.m_size)
+                return fallback;
+            NetInfo info = NetManager.instance.m_segments.m_buffer[segmentId].Info;
+            TargetRoad target = FindTarget(info);
+            return target == null || target.Style == null ? fallback : target.Style;
+        }
+
+        private void RemoveOwnedCrosswalksAndStopLines(INodeMarkingData marking)
         {
             foreach (ISegmentEntranceData entrance in marking.Entrances)
             {
@@ -922,10 +1225,12 @@ namespace RoadRuntimeHost.Runtime
                     && entrance.GetCrosswalkPoint((byte)entrance.PointCount, out crosswalkEnd)
                     )
                 {
-                    if (marking.CrosswalkExist(crosswalkStart, crosswalkEnd))
+                    string key = NodeDefaultKey(
+                        "crosswalk", marking.Id, crosswalkStart, crosswalkEnd);
+                    if (_ownedNodeDefaults.Remove(key)
+                        && marking.CrosswalkExist(crosswalkStart, crosswalkEnd))
                         marking.RemoveCrosswalk(crosswalkStart, crosswalkEnd);
-                    _initializedNodeDefaults.Remove(NodeDefaultKey(
-                        "crosswalk", marking.Id, crosswalkStart, crosswalkEnd));
+                    _initializedNodeDefaults.Remove(key);
                 }
 
                 List<IEntrancePointData> points = GetPoints(entrance.EntrancePoints);
@@ -933,11 +1238,13 @@ namespace RoadRuntimeHost.Runtime
                 {
                     for (int endIndex = startIndex + 1; endIndex < points.Count; ++endIndex)
                     {
+                        string key = NodeDefaultKey(
+                            "stop", marking.Id, points[startIndex], points[endIndex]);
                         IStopLineData stopLine;
-                        if (marking.TryGetStopLine(points[startIndex], points[endIndex], out stopLine))
+                        if (_ownedNodeDefaults.Remove(key)
+                            && marking.TryGetStopLine(points[startIndex], points[endIndex], out stopLine))
                             marking.RemoveStopLine(points[startIndex], points[endIndex]);
-                        _initializedNodeDefaults.Remove(NodeDefaultKey(
-                            "stop", marking.Id, points[startIndex], points[endIndex]));
+                        _initializedNodeDefaults.Remove(key);
                     }
                 }
             }
@@ -955,6 +1262,61 @@ namespace RoadRuntimeHost.Runtime
                 ? NetSegment.Flags.CrossingStart
                 : NetSegment.Flags.CrossingEnd;
             return (segment.m_flags & flag) != 0;
+        }
+
+        private void VerifyCrosswalkPostcondition(
+            INodeMarkingData marking,
+            ushort nodeId,
+            ref NetNode node)
+        {
+            int connectedSegments = CountSegments(node);
+            if (connectedSegments < 3) return;
+            NetManager manager = NetManager.instance;
+            int expected = 0;
+            int actual = 0;
+            List<string> missing = new List<string>();
+            foreach (ISegmentEntranceData entrance in marking.Entrances)
+            {
+                ushort segmentId = entrance.Id;
+                if (segmentId == 0 || segmentId >= manager.m_segments.m_size)
+                    continue;
+                ref NetSegment segment = ref manager.m_segments.m_buffer[segmentId];
+                if (segment.Info == null || FindTarget(segment.Info) == null
+                    || !HasPedestrianLane(segment.Info)
+                    || !IsPedestrianCrossingAllowed(
+                        segmentId, nodeId, ref segment)) continue;
+
+                ICrosswalkPointData start;
+                ICrosswalkPointData end;
+                if (!entrance.GetCrosswalkPoint(1, out start)
+                    || !entrance.GetCrosswalkPoint(
+                        (byte)entrance.PointCount, out end))
+                {
+                    missing.Add(segmentId + ":points");
+                    ++expected;
+                    continue;
+                }
+                string key = NodeDefaultKey(
+                    "crosswalk", nodeId, start, end);
+                bool exists = marking.CrosswalkExist(start, end);
+                if (!exists && _initializedNodeDefaults.Contains(key)
+                    && !_ownedNodeDefaults.Contains(key))
+                    continue;
+                ++expected;
+                if (exists) ++actual;
+                else missing.Add(segmentId.ToString());
+            }
+            if (actual == expected) return;
+            DiagnosticLog.Error(
+                "MOD_COMPATIBILITY",
+                "imt_crosswalk_postcondition_failed",
+                "An affected intersection is missing an eligible generated-road crosswalk",
+                null,
+                "node_id", nodeId.ToString(),
+                "connected_segment_count", connectedSegments.ToString(),
+                "expected_crosswalk_count", expected.ToString(),
+                "actual_crosswalk_count", actual.ToString(),
+                "missing_segment_ids", string.Join(",", missing.ToArray()));
         }
 
         private bool HasTrafficLight(ushort nodeId, ref NetNode node)
@@ -999,9 +1361,67 @@ namespace RoadRuntimeHost.Runtime
             return false;
         }
 
-        private static bool IsEdgeBoundary(IPointSourceData source)
+        private static ImtBoundaryRole SeparatorRole(
+            ushort segmentId,
+            ushort nodeId,
+            IPointSourceData source)
         {
-            return source == null || source.LeftIndex < 0 || source.RightIndex < 0;
+            if (source == null) return ImtBoundaryRole.Other;
+            NetManager manager = NetManager.instance;
+            if (manager == null || segmentId == 0
+                || segmentId >= manager.m_segments.m_size)
+                return ImtBoundaryRole.Other;
+            ref NetSegment segment = ref manager.m_segments.m_buffer[segmentId];
+            NetInfo info = segment.Info;
+            if (info == null || info.m_lanes == null
+                || source.LeftIndex < 0 || source.RightIndex < 0
+                || source.LeftIndex >= info.m_lanes.Length
+                || source.RightIndex >= info.m_lanes.Length)
+                return ImtBoundaryRole.Other;
+
+            NetInfo.Direction incoming = nodeId == segment.m_endNode
+                ? NetInfo.Direction.Forward
+                : NetInfo.Direction.Backward;
+            if ((segment.m_flags & NetSegment.Flags.Invert) != 0)
+                incoming = NetInfo.InvertDirection(incoming);
+            NetInfo.Direction outgoing = NetInfo.InvertDirection(incoming);
+            NetInfo.Direction left = info.m_lanes[source.LeftIndex].m_finalDirection;
+            NetInfo.Direction right = info.m_lanes[source.RightIndex].m_finalDirection;
+            bool leftIncoming = (left & incoming) != 0 && (left & outgoing) == 0;
+            bool rightIncoming = (right & incoming) != 0 && (right & outgoing) == 0;
+            if (leftIncoming && rightIncoming)
+                return ImtBoundaryRole.SeparatorIncoming;
+            bool leftOutgoing = (left & outgoing) != 0 && (left & incoming) == 0;
+            bool rightOutgoing = (right & outgoing) != 0 && (right & incoming) == 0;
+            if (leftOutgoing && rightOutgoing)
+                return ImtBoundaryRole.SeparatorOutgoing;
+            return ImtBoundaryRole.Other;
+        }
+
+        private static float ConnectorAngle(
+            ushort nodeId,
+            ushort firstSegmentId,
+            ushort secondSegmentId)
+        {
+            NetManager manager = NetManager.instance;
+            if (manager == null || firstSegmentId == 0 || secondSegmentId == 0
+                || firstSegmentId >= manager.m_segments.m_size
+                || secondSegmentId >= manager.m_segments.m_size)
+                return 180f;
+            ref NetSegment first = ref manager.m_segments.m_buffer[firstSegmentId];
+            ref NetSegment second = ref manager.m_segments.m_buffer[secondSegmentId];
+            Vector3 firstDirection = first.m_startNode == nodeId
+                ? first.m_startDirection
+                : first.m_endDirection;
+            Vector3 secondDirection = second.m_startNode == nodeId
+                ? second.m_startDirection
+                : second.m_endDirection;
+            firstDirection.y = 0f;
+            secondDirection.y = 0f;
+            if (firstDirection.sqrMagnitude < 0.000001f
+                || secondDirection.sqrMagnitude < 0.000001f)
+                return 180f;
+            return Vector3.Angle(firstDirection, secondDirection);
         }
 
         private static bool TryGetIncomingStopLinePoints(
@@ -1244,6 +1664,14 @@ namespace RoadRuntimeHost.Runtime
             int count = 0;
             for (int slot = 0; slot < 8; ++slot)
                 if (node.GetSegment(slot) != 0) ++count;
+            return count;
+        }
+
+        private static int CountEntrances(INodeMarkingData marking)
+        {
+            int count = 0;
+            foreach (ISegmentEntranceData entrance in marking.Entrances)
+                ++count;
             return count;
         }
     }

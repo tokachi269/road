@@ -110,10 +110,11 @@ $previewPath = Join-Path $PWD 'build\smoke\runtime-preview'
 Blender smokeは、Scene共通の出力先へ全道路を一括Runtime exportし、manifestがScene内道路だけを含むことも確認する。
 catalogとbundleのlane不一致は`lane_contract_mismatch`として拒否する。
 一致時はcatalog laneへ置換せず、比較したBlender bundle lane配列そのものをRuntime適用へ返す。
-配置時の3規則がsegment用style snapshotへ変換されること、CS1用panel型が存在すること、
-全segment走査経路がないこともreflection contractで確認する。2-segment nodeでは、
-片側入口のboundary順序と反対側入口の逆順を接続し、segmentのInvert状態が異なっても
-左右の路側線を交差させないことをcontractに含める。
+配置時の3規則が共通の一時選択からsegment用style snapshotへ変換されること、CS1用panel型が存在すること、
+全segment走査経路がなく、作成と削除の両hookが存在することもreflection contractで確認する。2-segment nodeでは、
+路側帯線・中央線・流入/流出separatorの接続可否、1～4車線の全16組合せ、端点を重複使用しないこと、対面道路から一方通行道路へ中央線を接続しないこと、135度未満だけ破線を実線化する境界をcontractに含める。
+IMT entrance更新が接続segmentより遅れた場合は部分生成せず、simulation tickが進んだ後に対象nodeだけを1回再投入する経路があり、全node走査へ変化していないことも確認する。3～8入口について歩行者laneと横断許可の全真偽組合せから期待ゼブラ数を求めるmatrixと、影響nodeで期待数と実数を比較する事後条件もcontractに含める。
+参照道路から矢印・信号lane propを抽出する経路と、TM:PEへ信号既定ONを要求する経路の存在も確認する。
 
 このcontract smokeは次を証明しない。
 

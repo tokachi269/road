@@ -172,17 +172,18 @@ Get-Content $log | ConvertFrom-Json | Where-Object { $_.context.road_id -eq 'jp-
 ## 新しく引く道路の線
 
 対象道路をCS1の道路ツールで選択すると、画面右側に`New road lines`を表示する。
-ここでは道路単位で次の3項目だけを選ぶ。
+ここでは次の3項目だけを選ぶ。選択値は生成道路間で共通の一時値であり、道路ごとにもmapにも保存しない。
 
 - `Roadside lines`: `On / Off`
 - `Lane separators`: `White dashed / White solid`
 - `Center line`: `Yellow solid / White solid / White dashed`
 
-選択は同じ道路のGround、Elevated、Bridge、Tunnel Entrance、Tunnelで共有する。
-道路定義の値は初期値であり、CS1での選択が次に作るsegmentへ優先される。
+道路定義の値はRuntime開始時の初期値であり、CS1での共通選択が次に作るsegmentへ優先される。
 作成成功イベント時に値をsnapshotするため、その後panelを変更しても既設segmentは変わらない。
 RuntimeHostは作成されたsegmentと両端nodeだけをIMTへ渡し、全segment走査や定期pollを行わない。
 生成後の個別編集と保存値はIMTが所有する。
+
+2本接続nodeでは中央線同士を線種が異なっても接続し、中央線・separatorのconnectorにも選択した線種を使う。接続する両segmentの線種が異なる場合は、黄色実線、白実線、白破線の順で1本のconnector styleを決める。lane数が異なる場合は、路側線同士を接続したうえで中央線から外側へ接続可能なseparatorを優先する。3本以上へ変化したnodeでは信号を既定で有効にし、歩行者laneがある入口の横断も既定で許可する。ただしTM:PEで明示的に横断禁止となっている入口は変更しない。車両laneの矢印7種類と左右歩道laneの信号4種類ずつは、各modeの参照元道路が持つ条件付きlane propを複製し、同名propを独自定義しない。
 
 ## Prop名とWorkshop公開後のID
 

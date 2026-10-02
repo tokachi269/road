@@ -12,8 +12,12 @@ namespace RoadRuntimeHost.Runtime
         private object _trafficLights;
         private object _trafficPriority;
         private MethodInfo _isCrossingAllowed;
+        private MethodInfo _getCrossingAllowed;
+        private MethodInfo _setCrossingAllowed;
         private MethodInfo _isEnteringBlockedJunctionAllowed;
         private MethodInfo _hasTrafficLight;
+        private MethodInfo _canToggleTrafficLight;
+        private MethodInfo _toggleTrafficLight;
         private MethodInfo _getPrioritySign;
         private object _notifier;
         private System.Reflection.EventInfo _modifiedEvent;
@@ -46,6 +50,25 @@ namespace RoadRuntimeHost.Runtime
                 _junctionRestrictions, new object[] { segmentId, startNode }));
         }
 
+        public bool? TryEnableDefaultPedestrianCrossing(
+            ushort segmentId,
+            bool startNode)
+        {
+            if (_junctionRestrictions == null || _isCrossingAllowed == null
+                || _getCrossingAllowed == null || _setCrossingAllowed == null)
+                return null;
+            if (Convert.ToBoolean(_isCrossingAllowed.Invoke(
+                    _junctionRestrictions, new object[] { segmentId, startNode })))
+                return true;
+            object configured = _getCrossingAllowed.Invoke(
+                _junctionRestrictions, new object[] { segmentId, startNode });
+            if (configured != null && string.Equals(
+                    configured.ToString(), "False", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return Convert.ToBoolean(_setCrossingAllowed.Invoke(
+                _junctionRestrictions, new object[] { segmentId, startNode, true }));
+        }
+
         public bool? IsEnteringBlockedJunctionAllowed(ushort segmentId, bool startNode)
         {
             if (_junctionRestrictions == null || _isEnteringBlockedJunctionAllowed == null) return null;
@@ -57,6 +80,19 @@ namespace RoadRuntimeHost.Runtime
         {
             if (_trafficLights == null || _hasTrafficLight == null) return null;
             return Convert.ToBoolean(_hasTrafficLight.Invoke(
+                _trafficLights, new object[] { nodeId }));
+        }
+
+        public bool TryEnableTrafficLight(ushort nodeId)
+        {
+            if (_trafficLights == null || _hasTrafficLight == null
+                || _canToggleTrafficLight == null || _toggleTrafficLight == null)
+                return false;
+            if (Convert.ToBoolean(_hasTrafficLight.Invoke(
+                    _trafficLights, new object[] { nodeId }))) return true;
+            if (!Convert.ToBoolean(_canToggleTrafficLight.Invoke(
+                    _trafficLights, new object[] { nodeId }))) return false;
+            return Convert.ToBoolean(_toggleTrafficLight.Invoke(
                 _trafficLights, new object[] { nodeId }));
         }
 
@@ -92,11 +128,21 @@ namespace RoadRuntimeHost.Runtime
                 _isCrossingAllowed = RequireMethod(
                     _junctionRestrictions, "IsPedestrianCrossingAllowed",
                     typeof(ushort), typeof(bool));
+                _getCrossingAllowed = RequireMethod(
+                    _junctionRestrictions, "GetPedestrianCrossingAllowed",
+                    typeof(ushort), typeof(bool));
+                _setCrossingAllowed = RequireMethod(
+                    _junctionRestrictions, "SetPedestrianCrossingAllowed",
+                    typeof(ushort), typeof(bool), typeof(bool));
                 _isEnteringBlockedJunctionAllowed = RequireMethod(
                     _junctionRestrictions, "IsEnteringBlockedJunctionAllowed",
                     typeof(ushort), typeof(bool));
                 _hasTrafficLight = RequireMethod(
                     _trafficLights, "HasTrafficLight", typeof(ushort));
+                _canToggleTrafficLight = RequireMethod(
+                    _trafficLights, "CanToggleTrafficLight", typeof(ushort));
+                _toggleTrafficLight = RequireMethod(
+                    _trafficLights, "ToggleTrafficLight", typeof(ushort));
                 _getPrioritySign = RequireMethod(
                     _trafficPriority, "GetPrioritySign",
                     typeof(ushort), typeof(bool));

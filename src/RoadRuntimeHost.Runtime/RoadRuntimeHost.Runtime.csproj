@@ -52,6 +52,7 @@
     <Compile Include="PrefabInspectionService.cs" />
     <Compile Include="PrefabUpdater.cs" />
     <Compile Include="RoadPlacementMarkingPanel.cs" />
+    <Compile Include="RoadToolbarRefresh.cs" />
     <Compile Include="RuntimeEntry.cs" />
     <Compile Include="TestLayoutManager.cs" />
     <Compile Include="TmpeTrafficPolicy.cs" />

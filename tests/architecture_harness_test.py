@@ -66,7 +66,7 @@ class ArchitectureHarnessTest(unittest.TestCase):
         self.assertEqual(result.errors, [])
         self.assertEqual(len(result.classified), len(result.files))
 
-    def test_runtime_imt_new_segments_use_one_event_hook_without_polling(self) -> None:
+    def test_runtime_imt_segment_mutations_use_bounded_hooks_without_polling(self) -> None:
         entry = (ROOT / "src" / "RoadRuntimeHost.Runtime" / "RuntimeEntry.cs").read_text(
             encoding="utf-8"
         )
@@ -80,9 +80,16 @@ class ArchitectureHarnessTest(unittest.TestCase):
         self.assertNotIn("_imtPreview.Poll()", entry)
         self.assertNotIn("public void Poll()", service)
         self.assertIn("ProcessPendingSegments", service)
-        self.assertEqual(hook.count("_harmony.Patch("), 1)
+        self.assertEqual(hook.count("_harmony.Patch("), 2)
         self.assertIn("typeof(TreeInfo)", hook)
+        self.assertIn('"ReleaseSegment"', hook)
         self.assertIn("if (__result && segment != 0)", hook)
+        self.assertIn("_pendingNodes", service)
+        self.assertIn("topologyRetryNodes", service)
+        self.assertIn("imt_node_topology_not_ready", service)
+        self.assertIn("m_currentTickIndex", service)
+        self.assertIn("_imtPreview.Tick()", entry)
+        self.assertNotIn("m_segments.m_buffer.Length", service)
 
 
 if __name__ == "__main__":

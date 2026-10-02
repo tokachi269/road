@@ -79,9 +79,11 @@ Blenderを通常起動し、3D Viewで`N`キーを押し、`Road`タブを開き
 - 64 m固定のnode、道路中央`X=0`での左右メッシュ分割
 - 地面同高路面とcurb高さ分だけ低い路面、およびnode内の接続スロープ
 
-`Build active mode`または`Build all modes`で専用コレクションへ生成します。生成物は通常のMeshなので、生成後はEdit Mode、Modifier、Materialで直接編集できます。同じモードを再生成すると、そのモードの専用コレクション内だけが置き換わります。
+サイドバー上部は`Road library`、`Active road`、`Preview — active road only`の3区画に分かれます。`Add missing standard roads`はSceneの道路一覧へ不足している標準道路を追加します。`Build & export road library`はScene内の全道路・全5 modeを一度にbuildしてRuntime出力します。14道路を1本ずつ選んでbuildする必要はありません。通常の形状編集では選択道路の`Preview active mode`だけを使います。道路単体の全mode確認は`Selected mode > Rebuild active road`に置き、5 modeを16 m間隔で上下に並べます。全道路のmeshをviewportへ同時保持はしません。生成物は通常のMeshなので、生成後はEdit Mode、Modifier、Materialで直接編集できます。同じモードを再生成すると、そのモードの専用コレクション内だけが置き換わります。
 
-アドオンのPythonを変更した場合、Blenderの再起動は不要です。Roadサイドバー下部の`Development > Reload Scripts`ボタンで`domain.py`と`geometry_plan.py`を含めて再読込できます。コード反映後の形状は自動更新されないため、`Build active mode`または`Build all modes`で再生成します。
+通常編集では`Cross-section`と`Appearance and road lines`を使います。profile、JSON、Runtime IDと出力先、開発操作は`Advanced`配下にまとめています。
+
+アドオンのPythonを変更した場合、Blenderの再起動は不要です。`Advanced > Development > Reload Scripts`で`domain.py`と`geometry_plan.py`を含めて再読込できます。コード反映後の形状は自動更新されないため、編集中の確認は`Preview active mode`、全道路の出力は`Build & export road library`で再生成します。
 
 ### Elevatedのカスタム端部Mesh
 

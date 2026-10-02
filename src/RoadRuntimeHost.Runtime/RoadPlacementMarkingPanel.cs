@@ -67,10 +67,8 @@ namespace RoadRuntimeHost.Runtime
     internal sealed class RoadPlacementMarkingController
     {
         private readonly object _sync = new object();
-        private readonly Dictionary<NetInfo, RoadPlacementMarkingSelection> _selections =
-            new Dictionary<NetInfo, RoadPlacementMarkingSelection>();
-        private readonly Dictionary<string, RoadPlacementMarkingSelection> _roadSelections =
-            new Dictionary<string, RoadPlacementMarkingSelection>(StringComparer.Ordinal);
+        private readonly HashSet<NetInfo> _targets = new HashSet<NetInfo>();
+        private RoadPlacementMarkingSelection _selection;
         private RoadPlacementMarkingPanel _panel;
 
         public RoadPlacementMarkingController()
@@ -85,16 +83,9 @@ namespace RoadRuntimeHost.Runtime
             if (info == null) return;
             lock (_sync)
             {
-                string key = string.IsNullOrEmpty(roadId)
-                    ? "prefab:" + info.name
-                    : roadId;
-                RoadPlacementMarkingSelection selection;
-                if (!_roadSelections.TryGetValue(key, out selection))
-                {
-                    selection = RoadPlacementMarkingSelection.FromStyle(defaultStyle);
-                    _roadSelections.Add(key, selection);
-                }
-                _selections[info] = selection;
+                _targets.Add(info);
+                if (_selection == null)
+                    _selection = RoadPlacementMarkingSelection.FromStyle(defaultStyle);
             }
             if (object.ReferenceEquals(_panel, null)) StartPanel();
         }
@@ -105,9 +96,8 @@ namespace RoadRuntimeHost.Runtime
             if (info == null) return false;
             lock (_sync)
             {
-                RoadPlacementMarkingSelection current;
-                if (!_selections.TryGetValue(info, out current)) return false;
-                selection = current.Copy();
+                if (!_targets.Contains(info) || _selection == null) return false;
+                selection = _selection.Copy();
                 return true;
             }
         }
@@ -116,9 +106,7 @@ namespace RoadRuntimeHost.Runtime
         {
             lock (_sync)
             {
-                RoadPlacementMarkingSelection selection;
-                if (_selections.TryGetValue(info, out selection))
-                    selection.RoadsideLines = enabled;
+                if (_selection != null) _selection.RoadsideLines = enabled;
             }
         }
 
@@ -126,9 +114,8 @@ namespace RoadRuntimeHost.Runtime
         {
             lock (_sync)
             {
-                RoadPlacementMarkingSelection selection;
-                if (_selections.TryGetValue(info, out selection))
-                    selection.LaneSeparatorStyle =
+                if (_selection != null)
+                    _selection.LaneSeparatorStyle =
                         RoadPlacementMarkingSelection.NormalizeLaneSeparator(style);
             }
         }
@@ -137,9 +124,8 @@ namespace RoadRuntimeHost.Runtime
         {
             lock (_sync)
             {
-                RoadPlacementMarkingSelection selection;
-                if (_selections.TryGetValue(info, out selection))
-                    selection.CenterLineStyle =
+                if (_selection != null)
+                    _selection.CenterLineStyle =
                         RoadPlacementMarkingSelection.NormalizeCenterLine(style);
             }
         }
@@ -158,8 +144,8 @@ namespace RoadRuntimeHost.Runtime
         {
             lock (_sync)
             {
-                _selections.Clear();
-                _roadSelections.Clear();
+                _targets.Clear();
+                _selection = null;
             }
             if (!object.ReferenceEquals(_panel, null))
             {
@@ -241,6 +227,21 @@ namespace RoadRuntimeHost.Runtime
         }
     }
 
+    internal sealed class RoadPlacementMarkingPanelWatcher : MonoBehaviour
+    {
+        private RoadPlacementMarkingPanel _panel;
+
+        public void Bind(RoadPlacementMarkingPanel panel)
+        {
+            _panel = panel;
+        }
+
+        public void Update()
+        {
+            if (_panel != null) _panel.RefreshSelectedTool();
+        }
+    }
+
     internal sealed class RoadPlacementMarkingPanel : UIPanel
     {
         private const float PanelWidth = 430f;
@@ -250,6 +251,7 @@ namespace RoadRuntimeHost.Runtime
 
         private RoadPlacementMarkingController _controller;
         private NetInfo _currentInfo;
+        private NetInfo _lastObservedInfo;
         private UILabel _roadName;
         private UIButton _roadsideOn;
         private UIButton _roadsideOff;
@@ -323,9 +325,12 @@ namespace RoadRuntimeHost.Runtime
         public void Bind(RoadPlacementMarkingController controller)
         {
             _controller = controller;
+            RoadPlacementMarkingPanelWatcher watcher =
+                gameObject.AddComponent<RoadPlacementMarkingPanelWatcher>();
+            watcher.Bind(this);
         }
 
-        public override void Update()
+        public void RefreshSelectedTool()
         {
             PositionPanel();
             NetInfo selected = null;
@@ -336,10 +341,32 @@ namespace RoadRuntimeHost.Runtime
             if (netTool != null) selected = netTool.Prefab;
 
             RoadPlacementMarkingSelection ignored;
-            if (_controller == null || !_controller.TryGet(selected, out ignored))
+            bool generatedRoad =
+                _controller != null && _controller.TryGet(selected, out ignored);
+            if (!ReferenceEquals(_lastObservedInfo, selected))
             {
+                _lastObservedInfo = selected;
+                DiagnosticLog.Info(
+                    "DATA",
+                    "road_placement_tool_prefab_changed",
+                    "Observed a road-tool prefab selection change",
+                    "prefab_name", selected == null ? string.Empty : selected.name,
+                    "generated_road", generatedRoad ? "true" : "false");
+            }
+
+            if (!generatedRoad)
+            {
+                NetInfo previous = _currentInfo;
                 _currentInfo = null;
-                if (isVisible) Hide();
+                if (isVisible)
+                {
+                    Hide();
+                    DiagnosticLog.Info(
+                        "SUCCESS",
+                        "road_placement_marking_panel_hidden",
+                        "Hid the road-tool marking panel because the selected tool is not a generated road",
+                        "previous_prefab", previous == null ? string.Empty : previous.name);
+                }
                 return;
             }
 
@@ -348,8 +375,21 @@ namespace RoadRuntimeHost.Runtime
                 _currentInfo = selected;
                 _roadName.text = selected.name;
                 RefreshSelection();
+                DiagnosticLog.Info(
+                    "SUCCESS",
+                    "road_placement_marking_panel_target_selected",
+                    "Selected a generated road for placement-time marking controls",
+                    "prefab_name", selected.name);
             }
-            if (!isVisible) Show();
+            if (!isVisible)
+            {
+                Show(true);
+                DiagnosticLog.Info(
+                    "SUCCESS",
+                    "road_placement_marking_panel_shown",
+                    "Showed the road-tool marking panel for a generated road",
+                    "prefab_name", selected.name);
+            }
         }
 
         private void PositionPanel()

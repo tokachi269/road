@@ -17,9 +17,9 @@
 - 歩道間幅、歩道幅、分離帯profile・全幅・路面からの高さは共有断面値が所有する。路肩幅は`(歩道間幅 - 車道lane合計 - 分離帯幅) / 2`から導出し、負になる場合は0として明示寸法を縮めず、超過量をBlenderで警告する。残幅を駐車に使う設定では、指定幅が左右とも収まる場合だけ実際のParking laneを2本導出し、片側だけは作らない。通常の車道高低差は道路単位の真偽値から`domain.py`の固定値0.30mを導出し、個別laneやmodeでは編集しない。
 - Nodeの角を道路幅とは独立して広げる必須値は`NetInfo.m_minCornerOffset`として保持し、全modeへ同じ値を適用する。`m_halfWidth`は道路全幅の半分であり、node寸法の代替として倍化しない。
 - Road colorは道路定義の`styles.surface.road_color`が所有し、全modeの共通surface Materialへ同じ値を適用する。mode固有値やtexture mask側へ重複保持しない。
-- 道路線の編集単位は3規則（路側線の有無、同方向lane間の白線種別、対向中央線の色・線種）であり、個別boundaryごとの入力は持たない。道路定義が既定値を所有し、CS1配置時panelが同じ道路の次回配置値を所有する。各boundaryの有効状態とstyle IDはroleから導出する。生成済みIMT線はユーザ編集を上書きしない。
+- 道路線の編集単位は3規則（路側線の有無、同方向lane間の白線種別、対向中央線の色・線種）であり、個別boundaryごとの入力は持たない。道路定義はRuntime開始時の初期値だけを持ち、CS1配置時panelは生成道路間で共通の一時値を所有する。道路ごとにもmapにも保存しない。各boundaryの有効状態とstyle IDはroleから導出する。生成済みIMT線はユーザ編集を上書きしない。
 - Blender PropertyGroupは編集adapterであり、別の意味を決めない。
-- Sceneは道路PropertyGroupの一覧とactive indexを保持する。各項目はlane、断面、marking、mode、Runtime入力を一式保持し、選択中の1件だけを編集・preview生成する。追加、複製、削除はこの一覧を操作する。JSONはactive roadの置換または新規項目としてimportでき、active roadまたは全項目をexportできる。spec directoryやTSVを定期走査せず、catalogとの同期状態をBlender側へ重複保持しない。
+- Sceneは道路PropertyGroupの一覧とactive indexを保持する。各項目はlane、断面、marking、mode、Runtime入力を一式保持し、選択中の1件だけを編集・preview生成する。サイドバー上部では道路一覧、active road、active roadだけを対象にするpreview操作を別区画へ分ける。通常編集は選択modeだけをpreviewし、道路単体の5 mode再生成は`Selected mode`内の補助操作とする。全道路・全modeの正規buildとRuntime出力は`Road library`の1操作で行い、道路ごとの手動buildを要求しない。profile、files、Runtime ID、development操作は折り畳まれた`Advanced`配下へ置く。追加、複製、削除は道路一覧を操作する。JSONはactive roadの置換または新規項目としてimportでき、active roadまたは全項目をexportできる。spec directoryやTSVを定期走査せず、catalogとの同期状態をBlender側へ重複保持しない。
 - Sceneは共有profile一覧も保持する。laneの速度、停止offset、接続可否のglobal既定値は`domain.py`で正確な`(lane_type, vehicle_type)`から解決する。現データで定義するのは`Vehicle/Car = 1.0/0.0/true`と`Pedestrian/None = 0.1/0.0/true`だけで、未知tupleへ値を推測しない。現行profile schema v1との互換経路ではglobal既定値、profile、lane明示overrideの順に解決するが、これを最終schemaとはみなさない。IMT外観はprofileが所有する。道路JSON v4は`profile_id`とlaneの`overrides`だけを保存し、profile本体は`profiles.json`へ保存する。全道路exportは同じdirectoryへprofile libraryも出すが、ファイル監視や自動同期はしない。migration、import、duplicate、exportは同じ正規化規則を使い、継承値と同じと証明できるoverrideだけを除去し、異値と未知tupleの明示値は保全する。標準と異なるIMT外観は専用profileへ分離する。
 - RoadImporter XMLはCS1向けcompiled outputであり、編集正本にしない。
 
@@ -112,9 +112,36 @@ IMT previewの線・停止線・ゼブラは、Blenderの道路定義にある�
 
 IMT 1.15の公開APIはゼブラ専用の外側端点offsetを公開していないため、共有入口点を動かして路側線や停止線までずらさない。対象道路のwall位置へゼブラを合わせる処理は、IMT 1.15にversion gateしたHarmony hookで`MarkingCrosswalk.GetTrajectory`の境界生成を置換する。左右wallはIMTが計算した`Entrance.FirstPointSide / LastPointSide`を使い、crosswalk lineと左右border trajectoryを同じ外側位置へ合わせる。これにより縞の基準線だけを伸ばして元幅のcontourで再切断する状態を避け、LOD0 / LOD1のどちらも同じ境界から生成する。平行縞の本数は、Move It中の角度変換後のtrajectory長を`floor`するのではなく、`Entrance.RoadHalfWidth * 2`の正本幅と縞幅＋間隔から決める。比率が整数の浮動小数誤差内ならその整数を使い、7 m / 1 m周期のような境界で6本と7本を往復させない。gap grouping、非平行縞、またはIMTで左右borderのどちらかを明示指定したcrosswalkはユーザ編集を優先し、native IMT生成を使う。その後の破線分割とdecal生成はIMTへ委ねる。完成後の各decal polygonを伸ばす旧方式は、各縞の重複と全面塗りを生むため使用しない。hookは対象道路のcrosswalk再計算時だけ実行し、frame pollや全node走査を追加しない。
 
-2本接続nodeでは対応する道路境界の線だけを両segment間へ接続し、ゼブラと停止線は作らない。IMTのnode内trajectoryは直線になるため、破線を使うとbend上で横向きの短い線片に見える。したがって2本接続nodeのconnectorは外側・内部境界ともsolidとし、中央線色の設定だけを維持する。3本以上のnodeでは、対象道路に歩行者laneがあり、かつTM:PEの横断許可（TM:PEがない場合はvanilla crossing flag）が有効な入口だけへゼブラを作る。停止線は流入vehicle laneがあり、信号、TM:PEのStop指定、または「詰まった交差点への進入」が不許可のいずれかに該当する入口へ作る。TM:PEがない場合は従来の既定表示を保つため、詰まった交差点への進入を不許可として扱う。TM:PEの変更通知は通知対象nodeまたはsegment両端だけをsimulation actionへまとめ、接続slot最大8本から対象`NetInfo`を判定する。通知ごとの全segment走査や定期pollは行わない。
+2本接続nodeの線は次の役割表で接続する。役割を別の役割へ読み替えない。
 
-IMT previewの新規道路検出も1秒pollでは行わない。CS1本体の`NetManager.CreateSegment`は通常overloadから`TreeInfo`付きoverloadへ委譲するため、後者1か所の成功postfixだけで作成segment IDと`NetInfo`を受け取る。hookは対象道路の配置時3規則をその場でsnapshotし、IMT APIを呼ばずbatchへ積む。`CreateSegment`完了後のSimulation actionはそのsegmentと両端nodeだけを評価し、node側も接続slot最大8本だけを調べる。既設segmentの全走査は行わない。hot Runtimeの新旧版が一時的に共存しても旧版の停止が新版patchを外さないよう、Harmony owner IDはassembly moduleごとに分ける。これは処理範囲の上限を定める設計であり、実ゲーム上の処理時間は未計測である。
+| 接続元 | 接続先 | 結果 |
+| --- | --- | --- |
+| 路側帯線 | 路側帯線 | 接続。常に白実線 |
+| 中央線 | 中央線 | 接続 |
+| 流入側separator | 流出側separator | 接続 |
+| 流出側separator | 流入側separator | 接続 |
+| 上記以外 | 任意 | 接続しない |
+
+対面道路と一方通行道路の接続では、中央線をseparatorへ接続せずnode内で終端する。lane数が異なるseparatorは中央寄りから1対1で`min(両側のseparator数)`本だけ接続し、同じ端点を複数回使う扇状接続を禁止する。このため1車線から4車線へ増える一方通行では、1車線側にseparator端点が存在しないのでseparator connectorは0本であり、4車線側の3本はnode内で終端する。路側帯線と、両側に存在する場合の中央線は別に接続する。
+
+connector角度が135度未満なら白破線を白実線にする。135度以上では選択した線種を維持する。中央線の黄色実線は角度にかかわらず黄色実線を維持し、路側帯線はlane間や中央線の設定を参照せず常に白実線とする。両segmentで線種が異なる同役割のconnectorは、黄色実線、白実線、白破線の順で決める。2本接続nodeではゼブラと停止線を作らない。
+
+3本以上へ変化したnodeではRuntimeHostが作ったcorner connectorだけを削除し、ユーザがIMTで作った線は削除しない。TM:PEのtoggle APIを優先し、利用できなければvanilla node flagで信号を既定ONにする。歩行者laneがある生成道路入口は、TM:PEの設定が未指定なら横断を一度だけ既定ONにし、明示的な禁止は維持する。TM:PEがない場合はvanilla crossing flagを設定する。その後、横断許可が有効な入口だけへゼブラを作る。停止線は流入vehicle laneがあり、信号、TM:PEのStop指定、または「詰まった交差点への進入」が不許可のいずれかに該当する入口へ作る。TM:PEがない場合は従来の既定表示を保つため、詰まった交差点への進入を不許可として扱う。逆に3本以上から2本へ戻った場合はRuntimeHostが作ったゼブラと停止線だけを削除してcorner connectorを評価する。TM:PEの変更通知は通知対象nodeまたはsegment両端だけをsimulation actionへまとめ、接続slot最大8本から対象`NetInfo`を判定する。通知ごとの全segment走査や定期pollは行わない。
+
+IMT previewの道路変更検出も1秒pollでは行わない。CS1本体の`NetManager.CreateSegment`は通常overloadから`TreeInfo`付きoverloadへ委譲するため、後者1か所の成功postfixで作成を受け取る。削除は`NetManager.ReleaseSegment(ushort, bool)`のprefixで両端nodeを退避し、postfixで通知する。upgradeや道路種別置換はreleaseとcreateの組として同じ経路で扱う。作成hookは対象道路なら配置時3規則をその場でsnapshotし、対象外道路でも既存の生成道路へ接続した可能性があるため両端nodeをbatchへ積む。Simulation actionは作成対象segmentと、作成または削除で変化した両端nodeだけを評価し、node側も接続slot最大8本だけを調べる。既設segmentの全走査は行わない。hot Runtimeの新旧版が一時的に共存しても旧版の停止が新版patchを外さないよう、Harmony owner IDはassembly moduleごとに分ける。これは処理範囲の上限を定める設計であり、実ゲーム上の処理時間は未計測である。
+
+`CreateSegment`直後にIMT側のnode entrance更新が遅れている場合、接続segment数とIMT entrance数が一致しないnodeへ線を部分生成しない。現在のsimulation tickを記録し、tickが進んだ後にそのnode IDだけをsimulation actionへ1回だけ再投入する。2回目も一致しなければ警告して停止し、全node走査や無制限retryへ移行しない。生成後は、対象道路・歩行者laneあり・横断許可ありの各入口についてゼブラの存在を数え、期待数と実数が違えばnode IDと欠落segment IDをerrorとして記録する。IMTで明示的に削除された既存ゼブラは期待数から除外する。
+
+| 道路操作 | 検出 | 再評価範囲 |
+| --- | --- | --- |
+| 生成道路を作成・Move Itで複製 | `CreateSegment` | 作成segmentと両端node |
+| 既存の生成道路へ通常道路を接続 | `CreateSegment` | 接続で変化した両端node |
+| 道路を削除 | `ReleaseSegment` | 削除前に退避した両端node |
+| upgrade・道路種別置換 | `ReleaseSegment` + `CreateSegment` | 変更segmentの両端nodeを重複排除して1 batch |
+| 接続数を変えないMove It変形 | IMT自身のtrajectory更新 | RuntimeHostは再生成しない |
+| 読み取り | 変更なし | 再評価なし |
+
+RuntimeHostが作ったnode線、ゼブラ、停止線の所有記録は現在のRuntimeセッション内だけにある。map再読込後は、IMTに保存された既存線がRuntimeHost生成かユーザ生成かを公開APIから判別できないため、所有が不明な線をCRUD処理で削除しない。セッションをまたぐ自動削除まで必要なら、線設定とは別のprovenance保存契約が必要であり、現状では対応済みとみなさない。
 
 ```text
 TSV catalog ──compile──> catalog.json

@@ -112,14 +112,21 @@ class FakeLayout:
 
     def __init__(self):
         self.operator_ids = []
+        self.operator_text = []
         self.property_names = []
+        self.label_text = []
 
     def operator(self, operator_id, *args, **kwargs):
         self.operator_ids.append(operator_id)
+        self.operator_text.append(kwargs.get("text", ""))
         return self
 
     def prop(self, data, property_name, *args, **kwargs):
         self.property_names.append(property_name)
+        return self
+
+    def label(self, *args, **kwargs):
+        self.label_text.append(kwargs.get("text", ""))
         return self
 
     def __getattr__(self, name):
@@ -1369,17 +1376,25 @@ panel_layout = FakeLayout()
 panel = type("FakePanel", (), {"layout": panel_layout})()
 road_builder.CS1ROAD_PT_main.draw(panel, bpy.context)
 assert panel_layout.property_names.count("mode") == 1
+assert "Road library — 1 road(s)" in panel_layout.label_text
+assert "Active road" in panel_layout.label_text
+assert "Preview — active road only" in panel_layout.label_text
+assert "Add missing standard roads (14)" in panel_layout.operator_text
+assert "Build & export road library" in panel_layout.operator_text
+assert "Builds 1 road(s) × 5 modes." in panel_layout.label_text
+assert any(text.startswith("Preview active mode: ") for text in panel_layout.operator_text)
+assert not any(text.startswith("Rebuild active road") for text in panel_layout.operator_text)
 original_cross_section_sync = road_builder._sync_cross_section_state
 def fail_if_panel_mutates_cross_section(_props):
     raise AssertionError("panel draw must not mutate cross-section state")
 road_builder._sync_cross_section_state = fail_if_panel_mutates_cross_section
 try:
     for panel_type in (
-        road_builder.CS1ROAD_PT_shared,
-        road_builder.CS1ROAD_PT_profiles,
         road_builder.CS1ROAD_PT_cross_section,
         road_builder.CS1ROAD_PT_markings,
         road_builder.CS1ROAD_PT_mode,
+        road_builder.CS1ROAD_PT_advanced,
+        road_builder.CS1ROAD_PT_profiles,
         road_builder.CS1ROAD_PT_files,
         road_builder.CS1ROAD_PT_runtime,
         road_builder.CS1ROAD_PT_development,
@@ -1387,6 +1402,8 @@ try:
         panel_type.draw(panel, bpy.context)
 finally:
     road_builder._sync_cross_section_state = original_cross_section_sync
+assert "Rebuild active road (5 modes)" in panel_layout.operator_text
+assert "Modes are stacked vertically at 16 m intervals." in panel_layout.label_text
 assert "script.reload" in panel_layout.operator_ids
 assert "cs1_road.reload_surface_texture" in panel_layout.operator_ids
 assert "cs1_road.road_add" in panel_layout.operator_ids
@@ -1423,6 +1440,7 @@ for hidden_field in (
     assert hidden_field not in panel_layout.property_names
 assert "node_transition_target" not in panel_layout.property_names
 for panel_type in (
+    road_builder.CS1ROAD_PT_advanced,
     road_builder.CS1ROAD_PT_profiles,
     road_builder.CS1ROAD_PT_markings,
     road_builder.CS1ROAD_PT_mode,
@@ -1431,6 +1449,13 @@ for panel_type in (
     road_builder.CS1ROAD_PT_development,
 ):
     assert "DEFAULT_CLOSED" in panel_type.bl_options
+for panel_type in (
+    road_builder.CS1ROAD_PT_profiles,
+    road_builder.CS1ROAD_PT_files,
+    road_builder.CS1ROAD_PT_runtime,
+    road_builder.CS1ROAD_PT_development,
+):
+    assert panel_type.bl_parent_id == road_builder.CS1ROAD_PT_advanced.bl_idname
 
 scene = bpy.context.scene
 original_count = len(scene.cs1_roads)

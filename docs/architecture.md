@@ -17,7 +17,7 @@ Blender UIとJSONは編集adapterであり、同じ判断を独自に実装し�
 | 歩道間幅、歩道幅、分離帯 | 共有断面 | 路肩、駐車lane、mesh |
 | 路肩幅と駐車lane | `domain.py`の導出結果 | Blender UI、mesh生成 |
 | 車道の0.30 m低下 | `domain.py`の固定値と道路単位の設定 | 全mode |
-| 道路線の3規則 | 道路定義の既定値とCS1配置時の道路単位選択 | boundary style、新規segmentのIMT初期値 |
+| 道路線の3規則 | 道路定義の初期値とCS1配置時の一時的な共通選択 | boundary style、新規segmentのIMT初期値 |
 | lane metadata既定値 | `domain.py`の正確な`(lane_type, vehicle_type)` tuple | Blender UI、JSON、Runtime bundle |
 | IMT外観 | Scene内の1段profile | Blender UI、JSON、Runtime bundle |
 | 標準車両lane variant | `domain.py`のmirror正規化済み組合せ | Blender道路一覧、Runtime catalog、preview bundle |
@@ -117,7 +117,7 @@ Blenderで生成したmeshを通常マップへ反映するが、Runtimeで断�
 IMTは生成後の線、停止線、ゼブラとユーザ編集を所有する。
 RuntimeHostはmissing時だけ初期値を作り、定期pollで復元しない。
 CS1の道路ツールでは、対象道路を選択中だけ次に引く道路の3規則を表示する。
-選択値は`CreateSegment`成功時にsnapshotし、そのsegmentと両端nodeだけへ適用する。
+選択値は`CreateSegment`成功時にsnapshotし、そのsegmentと両端nodeだけへ適用する。道路の作成・削除・upgradeによるnode種別変更は`CreateSegment`と`ReleaseSegment`の通知から両端nodeだけを再評価する。
 既設道路の全segment走査と定期pollは行わない。
 
 Runtimeの入出力、hot reload、IMT連携の詳細は

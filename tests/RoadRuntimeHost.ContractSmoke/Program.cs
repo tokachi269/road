@@ -29,9 +29,11 @@ namespace RoadRuntimeHost.ContractSmoke
                     throw new InvalidOperationException("hot runtime reflection contract is incomplete");
                 ValidatePrefabInspectionContract(runtime.Assembly);
                 ValidatePackedTextureContract(runtime.Assembly);
+                ValidateReferenceLanePropContract(runtime.Assembly);
                 ValidateCrosswalkWallRenderingContract(runtime.Assembly);
                 ValidateImtNodePolicyContract(runtime.Assembly);
                 ValidateRoadPlacementMarkingContract(runtime.Assembly);
+                ValidateRoadToolbarRefreshContract(runtime.Assembly);
                 LaneOwnershipContract.Validate(runtime.Assembly);
                 string temp = Path.Combine(Path.GetTempPath(), "RoadRuntimeHost.ContractSmoke." + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(temp);
@@ -162,6 +164,36 @@ namespace RoadRuntimeHost.ContractSmoke
                 throw new InvalidOperationException("XYS default channels are invalid");
         }
 
+        private static void ValidateReferenceLanePropContract(Assembly runtimeAssembly)
+        {
+            Type updater = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.PrefabUpdater", true);
+            if (updater.GetMethod(
+                    "CopyReferenceLaneProps",
+                    BindingFlags.Static | BindingFlags.NonPublic) == null
+                || updater.GetMethod(
+                    "IsRoadArrowProp",
+                    BindingFlags.Static | BindingFlags.NonPublic) == null
+                || updater.GetMethod(
+                    "IsTrafficLightProp",
+                    BindingFlags.Static | BindingFlags.NonPublic) == null)
+                throw new InvalidOperationException(
+                    "reference-road arrow and traffic-light prop transfer is missing");
+
+            Type trafficPolicy = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.TmpeTrafficPolicy", true);
+            if (trafficPolicy.GetMethod(
+                    "TryEnableTrafficLight",
+                    BindingFlags.Instance | BindingFlags.Public) == null)
+                throw new InvalidOperationException(
+                    "new intersections cannot request their default traffic light");
+            if (trafficPolicy.GetMethod(
+                    "TryEnableDefaultPedestrianCrossing",
+                    BindingFlags.Instance | BindingFlags.Public) == null)
+                throw new InvalidOperationException(
+                    "new or copied intersections cannot request default pedestrian crossings");
+        }
+
         private static void ValidateCrosswalkWallRenderingContract(Assembly runtimeAssembly)
         {
             if (runtimeAssembly.GetType("RoadRuntimeHost.Runtime.ImtCrosswalkTrajectoryPatch", false) != null)
@@ -276,12 +308,40 @@ namespace RoadRuntimeHost.ContractSmoke
                 "ShouldConnectRoadLines", BindingFlags.Static | BindingFlags.Public);
             MethodInfo crosswalk = policy.GetMethod(
                 "ShouldCreateCrosswalk", BindingFlags.Static | BindingFlags.Public);
+            MethodInfo expectedCrosswalks = policy.GetMethod(
+                "ExpectedCrosswalkCount", BindingFlags.Static | BindingFlags.Public);
             MethodInfo stopLine = policy.GetMethod(
                 "ShouldCreateStopLine", BindingFlags.Static | BindingFlags.Public);
             MethodInfo oppositePoint = policy.GetMethod(
                 "OppositePointOrdinal", BindingFlags.Static | BindingFlags.Public);
-            if (corner == null || crosswalk == null || stopLine == null || oppositePoint == null)
+            MethodInfo matchBoundaries = policy.GetMethod(
+                "MatchTwoSegmentBoundaries", BindingFlags.Static | BindingFlags.Public);
+            MethodInfo matchRoles = policy.GetMethod(
+                "MatchBoundaryRoles", BindingFlags.Static | BindingFlags.Public);
+            MethodInfo canConnect = policy.GetMethod(
+                "CanConnectBoundaryRoles", BindingFlags.Static | BindingFlags.Public);
+            MethodInfo connectorStyle = policy.GetMethod(
+                "ConnectorStyle", BindingFlags.Static | BindingFlags.Public);
+            if (corner == null || crosswalk == null || expectedCrosswalks == null
+                || stopLine == null
+                || oppositePoint == null || matchBoundaries == null
+                || matchRoles == null || canConnect == null || connectorStyle == null)
                 throw new InvalidOperationException("IMT node policy contract is incomplete");
+
+            Type roleType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.ImtBoundaryRole", true);
+            object roadside = Enum.Parse(roleType, "Roadside");
+            object centerRole = Enum.Parse(roleType, "Center");
+            object incoming = Enum.Parse(roleType, "SeparatorIncoming");
+            object outgoing = Enum.Parse(roleType, "SeparatorOutgoing");
+            if (!(bool)canConnect.Invoke(null, new object[] { roadside, roadside })
+                || !(bool)canConnect.Invoke(null, new object[] { centerRole, centerRole })
+                || !(bool)canConnect.Invoke(null, new object[] { incoming, outgoing })
+                || !(bool)canConnect.Invoke(null, new object[] { outgoing, incoming })
+                || (bool)canConnect.Invoke(null, new object[] { centerRole, outgoing })
+                || (bool)canConnect.Invoke(null, new object[] { roadside, incoming }))
+                throw new InvalidOperationException(
+                    "roadside, separator, and center connector roles are mixed");
 
             if (!(bool)corner.Invoke(null, new object[] { 2 })
                 || (bool)corner.Invoke(null, new object[] { 3 }))
@@ -291,6 +351,31 @@ namespace RoadRuntimeHost.ContractSmoke
                 || (bool)crosswalk.Invoke(null, new object[] { 3, true, false })
                 || !(bool)crosswalk.Invoke(null, new object[] { 3, true, true }))
                 throw new InvalidOperationException("crosswalk policy must require a junction, pedestrian lane, and crossing permission");
+            for (int entranceCount = 3; entranceCount <= 8; ++entranceCount)
+            {
+                int combinations = 1 << entranceCount;
+                for (int pedestrianMask = 0; pedestrianMask < combinations; ++pedestrianMask)
+                {
+                    for (int allowedMask = 0; allowedMask < combinations; ++allowedMask)
+                    {
+                        bool[] pedestrians = new bool[entranceCount];
+                        bool[] allowed = new bool[entranceCount];
+                        int expected = 0;
+                        for (int index = 0; index < entranceCount; ++index)
+                        {
+                            pedestrians[index] = (pedestrianMask & (1 << index)) != 0;
+                            allowed[index] = (allowedMask & (1 << index)) != 0;
+                            if (pedestrians[index] && allowed[index]) ++expected;
+                        }
+                        int actual = (int)expectedCrosswalks.Invoke(
+                            null,
+                            new object[] { entranceCount, pedestrians, allowed });
+                        if (actual != expected)
+                            throw new InvalidOperationException(
+                                "3-8 entrance crosswalk eligibility matrix is incomplete");
+                    }
+                }
+            }
             if ((bool)stopLine.Invoke(null, new object[] { 3, true, false, false, false })
                 || (bool)stopLine.Invoke(null, new object[] { 3, false, false, false, true })
                 || (bool)stopLine.Invoke(null, new object[] { 2, true, false, false, true })
@@ -304,6 +389,88 @@ namespace RoadRuntimeHost.ContractSmoke
                 || (int)oppositePoint.Invoke(null, new object[] { 4, 5 }) != 0)
                 throw new InvalidOperationException(
                     "two-segment node boundaries must connect in opposite entrance order");
+            int[] reduced = (int[])matchBoundaries.Invoke(
+                null, new object[] { 5, 7, 2, 3 });
+            int[] expectedReduced = new int[] { 0, 6, 4, 0, 2, 3, 3, 2, 1, 4 };
+            if (reduced.Length != expectedReduced.Length)
+                throw new InvalidOperationException(
+                    "lane-count transition did not retain the connectable boundaries");
+            for (int index = 0; index < reduced.Length; ++index)
+                if (reduced[index] != expectedReduced[index])
+                    throw new InvalidOperationException(
+                        "lane-count transition did not prioritize center-outward boundaries: "
+                        + string.Join(",", Array.ConvertAll(reduced, delegate(int value) { return value.ToString(); })));
+            for (int firstLaneCount = 1; firstLaneCount <= 4; ++firstLaneCount)
+            {
+                for (int secondLaneCount = 1; secondLaneCount <= 4; ++secondLaneCount)
+                {
+                    Array firstRoles = SeparatorRoles(
+                        roleType, roadside, incoming, firstLaneCount);
+                    Array secondRoles = SeparatorRoles(
+                        roleType, roadside, outgoing, secondLaneCount);
+                    int[] pairs = (int[])matchRoles.Invoke(
+                        null, new object[] { firstRoles, secondRoles });
+                    int expectedPairCount = 2 + Math.Min(
+                        firstLaneCount - 1, secondLaneCount - 1);
+                    if (pairs.Length != expectedPairCount * 2)
+                        throw new InvalidOperationException(
+                            "1-4 lane separator matrix omitted or invented a connector");
+                    AssertOneToOnePairs(pairs);
+                }
+            }
+            Array twoWay = Array.CreateInstance(roleType, 3);
+            twoWay.SetValue(roadside, 0);
+            twoWay.SetValue(centerRole, 1);
+            twoWay.SetValue(roadside, 2);
+            Array oneWay = Array.CreateInstance(roleType, 3);
+            oneWay.SetValue(roadside, 0);
+            oneWay.SetValue(outgoing, 1);
+            oneWay.SetValue(roadside, 2);
+            int[] mixedDirection = (int[])matchRoles.Invoke(
+                null, new object[] { twoWay, oneWay });
+            if (mixedDirection.Length != 4)
+                throw new InvalidOperationException(
+                    "a two-way center line was connected to a one-way separator");
+            if ((string)connectorStyle.Invoke(
+                    null, new object[] { roadside, "DASHED_WHITE", "DASHED_WHITE", 180f })
+                    != "SOLID_WHITE"
+                || (string)connectorStyle.Invoke(
+                    null, new object[] { incoming, "DASHED_WHITE", "DASHED_WHITE", 135f })
+                    != "DASHED_WHITE"
+                || (string)connectorStyle.Invoke(
+                    null, new object[] { incoming, "DASHED_WHITE", "DASHED_WHITE", 134.999f })
+                    != "SOLID_WHITE"
+                || (string)connectorStyle.Invoke(
+                    null, new object[] { centerRole, "SOLID_YELLOW", "DASHED_WHITE", 90f })
+                    != "SOLID_YELLOW")
+                throw new InvalidOperationException(
+                    "connector style role or 135-degree policy is incorrect");
+        }
+
+        private static Array SeparatorRoles(
+            Type roleType,
+            object roadside,
+            object separator,
+            int laneCount)
+        {
+            Array roles = Array.CreateInstance(roleType, laneCount + 1);
+            roles.SetValue(roadside, 0);
+            roles.SetValue(roadside, laneCount);
+            for (int index = 1; index < laneCount; ++index)
+                roles.SetValue(separator, index);
+            return roles;
+        }
+
+        private static void AssertOneToOnePairs(int[] pairs)
+        {
+            System.Collections.Generic.HashSet<int> first =
+                new System.Collections.Generic.HashSet<int>();
+            System.Collections.Generic.HashSet<int> second =
+                new System.Collections.Generic.HashSet<int>();
+            for (int index = 0; index + 1 < pairs.Length; index += 2)
+                if (!first.Add(pairs[index]) || !second.Add(pairs[index + 1]))
+                    throw new InvalidOperationException(
+                        "lane transition contains a fan connector");
         }
 
         private static void ValidateRoadPlacementMarkingContract(Assembly runtimeAssembly)
@@ -314,24 +481,75 @@ namespace RoadRuntimeHost.ContractSmoke
                 "RoadRuntimeHost.Runtime.RoadPlacementMarkingSelection", true);
             Type panelType = runtimeAssembly.GetType(
                 "RoadRuntimeHost.Runtime.RoadPlacementMarkingPanel", true);
+            Type panelWatcherType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RoadPlacementMarkingPanelWatcher", true);
+            Type controllerType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RoadPlacementMarkingController", true);
             Type previewType = runtimeAssembly.GetType(
                 "RoadRuntimeHost.Runtime.ImtPreviewService", true);
             if (!typeof(ColossalFramework.UI.UIPanel).IsAssignableFrom(panelType))
                 throw new InvalidOperationException(
                     "road placement markings are not exposed through a CS1 UI panel");
-            MethodInfo panelUpdate = panelType.GetMethod(
+            if (panelType.GetMethod(
+                    "Update",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly) != null
+                || panelType.GetMethod(
+                    "LateUpdate",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly) != null)
+                throw new InvalidOperationException(
+                    "road placement panel overrides a CS1 UI hierarchy lifecycle method");
+            if (!typeof(UnityEngine.MonoBehaviour).IsAssignableFrom(panelWatcherType))
+                throw new InvalidOperationException(
+                    "road placement panel selection watcher is not a Unity component");
+            if (controllerType.GetField(
+                    "_selection", BindingFlags.Instance | BindingFlags.NonPublic) == null
+                || controllerType.GetField(
+                    "_roadSelections", BindingFlags.Instance | BindingFlags.NonPublic) != null)
+                throw new InvalidOperationException(
+                    "road placement marking choices are still stored per road");
+            MethodInfo watcherUpdate = panelWatcherType.GetMethod(
                 "Update",
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly);
-            if (panelUpdate == null || CallsMethod(
-                    panelUpdate,
-                    "ColossalFramework.UI.UIPanel",
-                    "Update"))
+            if (watcherUpdate == null)
                 throw new InvalidOperationException(
-                    "road placement panel calls the unavailable UIPanel.Update method");
+                    "road placement panel has no independent selection refresh callback");
             if (previewType.GetMethod(
                     "Scan", BindingFlags.Instance | BindingFlags.NonPublic) != null)
                 throw new InvalidOperationException(
                     "road placement markings still depend on a full segment scan");
+            if (previewType.GetMethod(
+                    "OnSegmentReleased", BindingFlags.Instance | BindingFlags.NonPublic) == null
+                || previewType.GetField(
+                    "_pendingNodes", BindingFlags.Instance | BindingFlags.NonPublic) == null)
+                throw new InvalidOperationException(
+                    "road deletion and upgrade do not queue their affected nodes");
+            if (previewType.GetMethod(
+                    "VerifyCrosswalkPostcondition",
+                    BindingFlags.Instance | BindingFlags.NonPublic) == null)
+                throw new InvalidOperationException(
+                    "affected intersections do not verify eligible crosswalk completeness");
+            Type mutationPatch = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.NetSegmentMutationPatch", true);
+            if (mutationPatch.GetMethod(
+                    "CreatePostfix", BindingFlags.Static | BindingFlags.NonPublic) == null
+                || mutationPatch.GetMethod(
+                    "ReleasePrefix", BindingFlags.Static | BindingFlags.NonPublic) == null
+                || mutationPatch.GetMethod(
+                    "ReleasePostfix", BindingFlags.Static | BindingFlags.NonPublic) == null)
+                throw new InvalidOperationException(
+                    "event-driven road create/release coverage is incomplete");
+            MethodInfo previewTick = previewType.GetMethod(
+                "Tick", BindingFlags.Instance | BindingFlags.Public);
+            Type runtimeType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeEntry", true);
+            MethodInfo runtimeTick = runtimeType.GetMethod(
+                "Tick", BindingFlags.Instance | BindingFlags.Public);
+            if (previewTick == null || runtimeTick == null || !CallsMethod(
+                    runtimeTick,
+                    "RoadRuntimeHost.Runtime.ImtPreviewService",
+                    "Tick"))
+                throw new InvalidOperationException(
+                    "stale IMT entrances cannot receive one delayed targeted retry");
 
             object defaults = Activator.CreateInstance(styleType, true);
             styleType.GetField("RoadsideLines").SetValue(defaults, true);
@@ -363,6 +581,28 @@ namespace RoadRuntimeHost.ContractSmoke
                 || !(bool)styleType.GetField("CenterLineYellow").GetValue(captured))
                 throw new InvalidOperationException(
                     "placement-time choices were not converted into one segment style snapshot");
+        }
+
+        private static void ValidateRoadToolbarRefreshContract(Assembly runtimeAssembly)
+        {
+            Type refreshType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RoadToolbarRefresh", true);
+            MethodInfo refresh = refreshType.GetMethod(
+                "Refresh", BindingFlags.Static | BindingFlags.Public);
+            if (refresh == null || refresh.ReturnType != typeof(void))
+                throw new InvalidOperationException(
+                    "road toolbar refresh entry point is missing");
+
+            Type runtimeType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeEntry", true);
+            MethodInfo poll = runtimeType.GetMethod(
+                "Poll", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (poll == null || !CallsMethod(
+                    poll,
+                    "RoadRuntimeHost.Runtime.RoadToolbarRefresh",
+                    "Refresh"))
+                throw new InvalidOperationException(
+                    "manifest application does not refresh the road toolbar");
         }
 
         private static bool CallsMethod(

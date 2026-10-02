@@ -81,7 +81,7 @@ namespace RoadRuntimeHost.Runtime
                 info.m_halfWidth = bundle.HalfWidth;
                 info.m_pavementWidth = bundle.PavementWidth;
                 info.m_minCornerOffset = bundle.NodeMinCornerOffset;
-                ApplyLanes(info, bundle.Lanes, catalogRoad);
+                ApplyLanes(info, modeTemplate, bundle.Lanes, catalogRoad);
                 ApplyGeometry(info, mode.Mode, mode.Entries, catalogRoad);
                 if (catalogRoad != null)
                 {
@@ -150,9 +150,17 @@ namespace RoadRuntimeHost.Runtime
             DiagnosticLog.Info("SUCCESS", "prop_apply_success", "Prop definition applied", "prop_id", definition.PropId ?? string.Empty, "prefab_name", definition.PrefabName ?? string.Empty, "kind", definition.Kind ?? string.Empty);
         }
 
-        private void ApplyLanes(NetInfo info, LaneBundle[] definitions, CatalogRoad catalogRoad)
+        private void ApplyLanes(
+            NetInfo info,
+            NetInfo referenceInfo,
+            LaneBundle[] definitions,
+            CatalogRoad catalogRoad)
         {
             if (definitions == null) definitions = new LaneBundle[0];
+            NetInfo.Lane[] referenceLanes = referenceInfo == null
+                || referenceInfo.m_lanes == null
+                ? new NetInfo.Lane[0]
+                : referenceInfo.m_lanes;
             Dictionary<string, List<PropPlacement>> placements = new Dictionary<string, List<PropPlacement>>();
             if (catalogRoad != null && catalogRoad.PropPlacements != null)
             {
@@ -184,7 +192,8 @@ namespace RoadRuntimeHost.Runtime
                 lane.m_allowConnect = source.AllowConnect;
                 lane.m_laneProps = ScriptableObject.CreateInstance<NetLaneProps>();
                 lane.m_laneProps.name = info.name + "." + source.LaneId;
-                lane.m_laneProps.m_props = BuildLaneProps(placements, source.LaneId);
+                lane.m_laneProps.m_props = BuildLaneProps(
+                    referenceLanes, source, placements, source.LaneId);
                 lanes[index] = lane;
             }
             info.m_lanes = lanes;
@@ -193,11 +202,15 @@ namespace RoadRuntimeHost.Runtime
             Array.Sort(info.m_sortedLanes, delegate(int left, int right) { return lanes[left].m_position.CompareTo(lanes[right].m_position); });
         }
 
-        private NetLaneProps.Prop[] BuildLaneProps(Dictionary<string, List<PropPlacement>> placements, string laneId)
+        private NetLaneProps.Prop[] BuildLaneProps(
+            NetInfo.Lane[] referenceLanes,
+            LaneBundle lane,
+            Dictionary<string, List<PropPlacement>> placements,
+            string laneId)
         {
+            List<NetLaneProps.Prop> result = CopyReferenceLaneProps(referenceLanes, lane);
             List<PropPlacement> source;
-            if (!placements.TryGetValue(laneId, out source)) return new NetLaneProps.Prop[0];
-            List<NetLaneProps.Prop> result = new List<NetLaneProps.Prop>();
+            if (!placements.TryGetValue(laneId, out source)) return result.ToArray();
             foreach (PropPlacement placement in source)
             {
                 PropInfo prop;
@@ -221,6 +234,101 @@ namespace RoadRuntimeHost.Runtime
                 result.Add(value);
             }
             return result.ToArray();
+        }
+
+        private static List<NetLaneProps.Prop> CopyReferenceLaneProps(
+            NetInfo.Lane[] referenceLanes,
+            LaneBundle target)
+        {
+            List<NetLaneProps.Prop> result = new List<NetLaneProps.Prop>();
+            bool vehicleLane = string.Equals(
+                target.LaneType, "Vehicle", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    target.VehicleType, "Car", StringComparison.OrdinalIgnoreCase);
+            bool pedestrianLane = string.Equals(
+                target.LaneType, "Pedestrian", StringComparison.OrdinalIgnoreCase);
+            if (!vehicleLane && !pedestrianLane) return result;
+
+            NetInfo.Lane reference = FindReferenceLane(
+                referenceLanes, target.Position, vehicleLane);
+            if (reference == null || reference.m_laneProps == null
+                || reference.m_laneProps.m_props == null) return result;
+
+            foreach (NetLaneProps.Prop prop in reference.m_laneProps.m_props)
+            {
+                if (prop == null) continue;
+                if (vehicleLane && IsRoadArrowProp(prop))
+                    result.Add(CloneLaneProp(prop));
+                else if (pedestrianLane && IsTrafficLightProp(prop))
+                    result.Add(CloneLaneProp(prop));
+            }
+            return result;
+        }
+
+        private static NetInfo.Lane FindReferenceLane(
+            NetInfo.Lane[] lanes,
+            float targetPosition,
+            bool vehicleLane)
+        {
+            NetInfo.Lane best = null;
+            float bestDistance = float.MaxValue;
+            foreach (NetInfo.Lane lane in lanes)
+            {
+                if (lane == null) continue;
+                bool matches = vehicleLane
+                    ? (lane.m_laneType & NetInfo.LaneType.Vehicle) != 0
+                        && (lane.m_vehicleType & VehicleInfo.VehicleType.Car) != 0
+                    : (lane.m_laneType & NetInfo.LaneType.Pedestrian) != 0;
+                if (!matches || lane.m_laneProps == null) continue;
+                float distance = Mathf.Abs(lane.m_position - targetPosition);
+                if (distance >= bestDistance) continue;
+                best = lane;
+                bestDistance = distance;
+            }
+            return best;
+        }
+
+        private static bool IsRoadArrowProp(NetLaneProps.Prop prop)
+        {
+            PropInfo info = prop.m_prop ?? prop.m_finalProp;
+            return info != null && info.name != null
+                && info.name.StartsWith("Road Arrow ", StringComparison.Ordinal);
+        }
+
+        private static bool IsTrafficLightProp(NetLaneProps.Prop prop)
+        {
+            NetNode.Flags required = prop.m_startFlagsRequired | prop.m_endFlagsRequired;
+            return (required & NetNode.Flags.TrafficLights) != 0;
+        }
+
+        private static NetLaneProps.Prop CloneLaneProp(NetLaneProps.Prop source)
+        {
+            NetLaneProps.Prop value = new NetLaneProps.Prop();
+            value.m_flagsRequired = source.m_flagsRequired;
+            value.m_flagsForbidden = source.m_flagsForbidden;
+            value.m_startFlagsRequired = source.m_startFlagsRequired;
+            value.m_startFlagsRequired2 = source.m_startFlagsRequired2;
+            value.m_startFlagsForbidden = source.m_startFlagsForbidden;
+            value.m_startFlagsForbidden2 = source.m_startFlagsForbidden2;
+            value.m_endFlagsRequired = source.m_endFlagsRequired;
+            value.m_endFlagsRequired2 = source.m_endFlagsRequired2;
+            value.m_endFlagsForbidden = source.m_endFlagsForbidden;
+            value.m_endFlagsForbidden2 = source.m_endFlagsForbidden2;
+            value.m_colorMode = source.m_colorMode;
+            value.m_prop = source.m_prop;
+            value.m_tree = source.m_tree;
+            value.m_position = source.m_position;
+            value.m_angle = source.m_angle;
+            value.m_segmentOffset = source.m_segmentOffset;
+            value.m_repeatDistance = source.m_repeatDistance;
+            value.m_minLength = source.m_minLength;
+            value.m_cornerAngle = source.m_cornerAngle;
+            value.m_probability = source.m_probability;
+            value.m_upgradable = source.m_upgradable;
+            value.m_disableRuined = source.m_disableRuined;
+            value.m_finalProp = source.m_finalProp;
+            value.m_finalTree = source.m_finalTree;
+            return value;
         }
 
         private void ApplyCondition(NetLaneProps.Prop target, string conditionId)

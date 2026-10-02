@@ -2880,7 +2880,8 @@ class CS1ROAD_OT_road_add(Operator):
 
 class CS1ROAD_OT_add_vehicle_variants(Operator):
     bl_idname = "cs1_road.add_vehicle_variants"
-    bl_label = "Add 14 vehicle-lane variants"
+    bl_label = "Add missing standard roads"
+    bl_description = "Add the missing standard vehicle-lane roads to this Scene"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -3344,7 +3345,7 @@ def _show_all_modes() -> None:
 
 
 class CS1ROAD_OT_build_preview(Operator):
-    bl_idname, bl_label, bl_options = "cs1_road.build_preview", "Build active mode", {"REGISTER", "UNDO"}
+    bl_idname, bl_label, bl_options = "cs1_road.build_preview", "Preview active mode", {"REGISTER", "UNDO"}
 
     def execute(self, context):
         props = active_road(context.scene)
@@ -3360,7 +3361,7 @@ class CS1ROAD_OT_build_preview(Operator):
 
 
 class CS1ROAD_OT_build_all(Operator):
-    bl_idname, bl_label, bl_options = "cs1_road.build_all", "Build all modes", {"REGISTER", "UNDO"}
+    bl_idname, bl_label, bl_options = "cs1_road.build_all", "Rebuild active road", {"REGISTER", "UNDO"}
 
     def execute(self, context):
         props = active_road(context.scene)
@@ -3605,7 +3606,7 @@ def _runtime_auto_export_timer():
 
 
 class CS1ROAD_OT_export_runtime(Operator):
-    bl_idname, bl_label = "cs1_road.export_runtime", "Build and export runtime bundle"
+    bl_idname, bl_label = "cs1_road.export_runtime", "Build and export active road"
 
     def execute(self, context):
         try:
@@ -3629,7 +3630,7 @@ class CS1ROAD_OT_export_runtime(Operator):
 
 class CS1ROAD_OT_export_all_runtime(Operator):
     bl_idname = "cs1_road.export_all_runtime"
-    bl_label = "Build and export Runtime bundle"
+    bl_label = "Build and export road library"
 
     def execute(self, context):
         scene = context.scene
@@ -4210,47 +4211,76 @@ class CS1ROAD_PT_main(Panel):
     bl_space_type, bl_region_type, bl_category = "VIEW_3D", "UI", "Road"
 
     def draw(self, context):
-        layout, props = self.layout, active_road(context.scene)
-        library = layout.row()
+        layout, scene = self.layout, context.scene
+        props = active_road(scene)
+        variants = vehicle_lane_variants()
+        standard_ids = {item.road_id for item in variants}
+        present_standard = sum(
+            road.runtime_road_id in standard_ids for road in scene.cs1_roads
+        )
+
+        library_box = layout.box()
+        library_box.label(
+            text=f"Road library — {len(scene.cs1_roads)} road(s)",
+            icon="OUTLINER_COLLECTION",
+        )
+        library = library_box.row()
         library.template_list(
             "CS1ROAD_UL_roads", "",
-            context.scene, "cs1_roads",
-            context.scene, "cs1_active_road_index",
-            rows=4,
+            scene, "cs1_roads",
+            scene, "cs1_active_road_index",
+            rows=min(8, max(4, len(scene.cs1_roads))),
         )
         buttons = library.column(align=True)
         buttons.operator("cs1_road.road_add", text="", icon="ADD")
         buttons.operator("cs1_road.road_duplicate", text="", icon="DUPLICATE")
         buttons.operator("cs1_road.road_remove", text="", icon="REMOVE")
-        layout.operator(
-            "cs1_road.add_vehicle_variants",
-            text="Add standard vehicle-lane variants",
-            icon="PRESET",
+        if present_standard < len(variants):
+            library_box.operator(
+                "cs1_road.add_vehicle_variants",
+                text=f"Add missing standard roads ({len(variants) - present_standard})",
+                icon="PRESET",
+            )
+        else:
+            library_box.label(
+                text=f"Standard roads: {present_standard}/{len(variants)}",
+                icon="CHECKMARK",
+            )
+        library_box.operator(
+            "cs1_road.export_all_runtime",
+            text="Build & export road library",
+            icon="EXPORT",
         )
-        summary = layout.box()
+        library_box.label(
+            text=f"Builds {len(scene.cs1_roads)} road(s) × {len(MODE_ITEMS)} modes.",
+        )
+
+        active_box = layout.box()
+        active_box.label(text="Active road", icon="MESH_GRID")
+        active_box.prop(props, "road_name")
         road_lanes = sum(lane.zone == "ROAD" for lane in props.lanes)
         pedestrian_lanes = sum(lane.lane_type == "PEDESTRIAN" for lane in props.lanes)
         _, total_width, _ = _cross_section(props)
-        summary.label(text=props.runtime_road_id or "No runtime road ID", icon="KEYTYPE_KEYFRAME_VEC")
-        override_count = sum(
-            lane.override_speed_limit + lane.override_stop_offset + lane.override_allow_connect
-            for lane in props.lanes
-        )
-        summary.label(text=f"Profile: {props.profile_id} | {override_count} explicit lane overrides")
-        summary.label(text=(
+        active_box.label(text=(
+            f"{props.runtime_road_id or 'No runtime road ID'} | "
             f"{road_lanes} roadway / {pedestrian_lanes} pedestrian lanes | "
             f"{total_width:.2f} m total"
         ))
-        summary.label(text=(
+        active_box.label(text=(
             ("Median" if props.median_enabled else "No median")
             + (" | depressed roadway" if props.depress_roadway else " | flush roadway")
         ))
-        layout.prop(props, "road_name")
-        tabs = layout.row(align=True)
+
+        preview = layout.box()
+        preview.label(text="Preview — active road only", icon="HIDE_OFF")
+        tabs = preview.row(align=True)
         tabs.prop(props, "mode", expand=True)
-        actions = layout.row(align=True)
-        actions.operator("cs1_road.build_preview", text="Build selected", icon="MOD_BUILD")
-        actions.operator("cs1_road.build_all", text="Build all", icon="OUTLINER_COLLECTION")
+        mode_labels = {key: label for key, label, _ in MODE_ITEMS}
+        preview.operator(
+            "cs1_road.build_preview",
+            text=f"Preview active mode: {mode_labels.get(props.mode, props.mode)}",
+            icon="MOD_BUILD",
+        )
 
 
 class _CS1RoadChildPanel:
@@ -4260,24 +4290,21 @@ class _CS1RoadChildPanel:
     bl_parent_id = "CS1ROAD_PT_main"
 
 
-class CS1ROAD_PT_shared(_CS1RoadChildPanel, Panel):
-    bl_label = "Shared settings"
-    bl_idname = "CS1ROAD_PT_shared"
+class CS1ROAD_PT_advanced(_CS1RoadChildPanel, Panel):
+    bl_label = "Advanced"
+    bl_idname = "CS1ROAD_PT_advanced"
+    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
-        layout, props = self.layout, active_road(context.scene)
-        layout.prop(props, "depress_roadway")
-        layout.prop(props, "node_min_corner_offset")
-        layout.prop(props, "road_color")
-        row = layout.row(align=True)
-        row.prop(props, "marking_paint_width")
-        row.prop(props, "marking_region_width")
-        if props.marking_region_width <= props.marking_paint_width:
-            layout.label(text="Texture band must include asphalt margin.", icon="ERROR")
+        self.layout.label(text="Profiles, files, Runtime IDs, and development tools.")
 
 
-class CS1ROAD_PT_profiles(_CS1RoadChildPanel, Panel):
-    bl_label = "Shared profiles"
+class _CS1RoadAdvancedChildPanel(_CS1RoadChildPanel):
+    bl_parent_id = "CS1ROAD_PT_advanced"
+
+
+class CS1ROAD_PT_profiles(_CS1RoadAdvancedChildPanel, Panel):
+    bl_label = "Profiles"
     bl_idname = "CS1ROAD_PT_profiles"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -4331,6 +4358,8 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
         allocation = _cross_section_allocation(props)
         primary = box.box()
         primary.label(text="Width budget")
+        primary.prop(props, "depress_roadway")
+        primary.prop(props, "node_min_corner_offset")
         primary.prop(props, "between_sidewalks_width")
         primary.prop(props, "roadside_use")
         if props.roadside_use == "PARKING":
@@ -4412,13 +4441,23 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
 
 
 class CS1ROAD_PT_markings(_CS1RoadChildPanel, Panel):
-    bl_label = "Road lines"
+    bl_label = "Appearance and road lines"
     bl_idname = "CS1ROAD_PT_markings"
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         layout, props = self.layout, active_road(context.scene)
         profile = _profile_for_road(context.scene, props)
+        appearance = layout.box()
+        appearance.label(text="Road surface")
+        appearance.prop(props, "road_color")
+        row = appearance.row(align=True)
+        row.prop(props, "marking_paint_width")
+        row.prop(props, "marking_region_width")
+        if props.marking_region_width <= props.marking_paint_width:
+            appearance.label(
+                text="Texture band must include asphalt margin.", icon="ERROR",
+            )
         rules = layout.box()
         rules.label(text="Default lines for this road")
         rules.prop(props, "roadside_lines")
@@ -4495,10 +4534,17 @@ class CS1ROAD_PT_mode(_CS1RoadChildPanel, Panel):
                 mode_box.prop(props, "tunnel_clearance")
         else:
             mode_box.label(text="No mode-specific settings.")
+        mode_box.separator()
+        mode_box.operator(
+            "cs1_road.build_all",
+            text=f"Rebuild active road ({len(MODE_ITEMS)} modes)",
+            icon="OUTLINER_COLLECTION",
+        )
+        mode_box.label(text="Modes are stacked vertically at 16 m intervals.")
 
 
-class CS1ROAD_PT_files(_CS1RoadChildPanel, Panel):
-    bl_label = "Road definition files"
+class CS1ROAD_PT_files(_CS1RoadAdvancedChildPanel, Panel):
+    bl_label = "Files"
     bl_idname = "CS1ROAD_PT_files"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -4515,8 +4561,8 @@ class CS1ROAD_PT_files(_CS1RoadChildPanel, Panel):
         row.operator("cs1_road.export_profiles", text="Export profiles", icon="EXPORT")
 
 
-class CS1ROAD_PT_runtime(_CS1RoadChildPanel, Panel):
-    bl_label = "Runtime preview"
+class CS1ROAD_PT_runtime(_CS1RoadAdvancedChildPanel, Panel):
+    bl_label = "Runtime and output"
     bl_idname = "CS1ROAD_PT_runtime"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -4527,18 +4573,21 @@ class CS1ROAD_PT_runtime(_CS1RoadChildPanel, Panel):
         runtime.prop(props, "runtime_template_name")
         runtime.prop(props, "runtime_output_dir")
         runtime.prop(props, "runtime_auto_export")
-        runtime.operator("cs1_road.export_runtime", text="Export active road", icon="EXPORT")
+        runtime.operator(
+            "cs1_road.export_runtime",
+            text="Export active road only",
+            icon="EXPORT",
+        )
         runtime.separator()
         runtime.prop(context.scene, "cs1_runtime_output_dir")
-        runtime.operator("cs1_road.export_all_runtime", text="Export all roads", icon="EXPORT")
-        runtime.label(text="Exports every road in this Scene.")
+        runtime.label(text="Library output path used by the main panel action.")
         runtime.separator()
         runtime.prop(props, "runtime_prop_id")
         runtime.prop(props, "runtime_prop_shader")
         runtime.operator("cs1_road.export_runtime_prop", icon="MESH_PLANE")
 
 
-class CS1ROAD_PT_development(_CS1RoadChildPanel, Panel):
+class CS1ROAD_PT_development(_CS1RoadAdvancedChildPanel, Panel):
     bl_label = "Development"
     bl_idname = "CS1ROAD_PT_development"
     bl_options = {"DEFAULT_CLOSED"}
@@ -4574,8 +4623,8 @@ CLASSES = (
     CS1ROAD_OT_import_profiles, CS1ROAD_OT_export_profiles,
     CS1ROAD_OT_import_spec_new, CS1ROAD_OT_export_all_specs,
     CS1ROAD_OT_export_runtime_prop,
-    CS1ROAD_PT_main, CS1ROAD_PT_shared, CS1ROAD_PT_profiles, CS1ROAD_PT_cross_section,
-    CS1ROAD_PT_markings, CS1ROAD_PT_mode, CS1ROAD_PT_files,
+    CS1ROAD_PT_main, CS1ROAD_PT_cross_section, CS1ROAD_PT_markings,
+    CS1ROAD_PT_mode, CS1ROAD_PT_advanced, CS1ROAD_PT_profiles, CS1ROAD_PT_files,
     CS1ROAD_PT_runtime, CS1ROAD_PT_development,
 )
 

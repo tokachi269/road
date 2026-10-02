@@ -137,6 +137,7 @@ namespace RoadRuntimeHost.Runtime
             JsonProperty(item, "max_slope", info.m_maxSlope, true);
             JsonProperty(item, "max_build_angle", info.m_maxBuildAngle, true);
             JsonProperty(item, "max_turn_angle", info.m_maxTurnAngle, true);
+            JsonProperty(item, "max_prop_distance", info.m_maxPropDistance, true);
             JsonProperty(item, "lane_count", info.m_lanes == null ? 0 : info.m_lanes.Length, true);
             JsonProperty(item, "segment_entry_count", info.m_segments == null ? 0 : info.m_segments.Length, true);
             JsonProperty(item, "node_entry_count", info.m_nodes == null ? 0 : info.m_nodes.Length, true);
@@ -180,6 +181,7 @@ namespace RoadRuntimeHost.Runtime
                 JsonProperty(item, "index", index, false);
                 JsonProperty(item, "prop", prop.m_prop == null ? string.Empty : prop.m_prop.name, true);
                 JsonProperty(item, "final_prop", prop.m_finalProp == null ? string.Empty : prop.m_finalProp.name, true);
+                JsonProperty(item, "max_render_distance", prop.m_finalProp == null ? 0f : prop.m_finalProp.m_maxRenderDistance, true);
                 JsonProperty(item, "tree", prop.m_tree == null ? string.Empty : prop.m_tree.name, true);
                 JsonProperty(item, "position_x", prop.m_position.x, true);
                 JsonProperty(item, "position_y", prop.m_position.y, true);
