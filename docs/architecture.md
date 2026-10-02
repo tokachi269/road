@@ -19,6 +19,7 @@ Blender UIとJSONは編集adapterであり、同じ判断を独自に実装し�
 | 車道の0.30 m低下 | `domain.py`の固定値と道路単位の設定 | 全mode |
 | 道路線の3規則 | 道路定義の既定値とCS1配置時の道路単位選択 | boundary style、新規segmentのIMT初期値 |
 | lane既定値とIMT外観 | `domain.py`のglobal既定値、Scene内の1段profile、laneの明示override | Blender UI、JSON、Runtime bundle |
+| 標準車両lane variant | `domain.py`のmirror正規化済み組合せ | Blender道路一覧、Runtime catalog、preview bundle |
 | atlas領域とUV profile | `textures/dimensions.json` | Blender、texture検証 |
 | Blender preview mesh | 生成後のBlender mesh | Runtime preview bundle |
 | CS1向けentry | Output Entry Plan | RoadImporter、RuntimeHost |
@@ -40,6 +41,8 @@ lane adjacency、boundary ID、断面幅、marking roleを下流で再推論し�
 - lane追加時は、隣接関係が変わったboundaryだけを置換する。
 - 路肩は歩道間幅、lane合計幅、分離帯幅から導出する。
 - 寸法が収まらない場合は入力を黙って縮めず、Blenderで警告する。
+- 標準familyは片方向0〜4 vehicle lane、合計最大8とし、左右反転で同一になる
+  `(a, b)`と`(b, a)`を別道路にしない。`(0, 0)`を除く14種類を生成する。
 
 ## Mesh registration boundary
 

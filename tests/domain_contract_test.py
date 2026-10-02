@@ -237,6 +237,19 @@ class DomainContractTest(unittest.TestCase):
         self.assertEqual(legacy_imt, {"texture": 0.4})
         self.assertIn("imt_preview", source["styles"])
 
+    def test_vehicle_lane_family_has_14_mirror_normalized_variants(self) -> None:
+        variants = domain.vehicle_lane_variants()
+        self.assertEqual(14, len(variants))
+        self.assertEqual((0, 1), variants[0][:2])
+        self.assertEqual((4, 4), variants[-1][:2])
+        self.assertEqual(14, len({item.road_id for item in variants}))
+        self.assertTrue(all(0 <= item.backward_lanes <= item.forward_lanes <= 4 for item in variants))
+        self.assertTrue(all(1 <= item.vehicle_lane_count <= 8 for item in variants))
+        self.assertEqual(
+            {(0, count) for count in range(1, 5)},
+            {(item.backward_lanes, item.forward_lanes) for item in variants if item.backward_lanes == 0},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

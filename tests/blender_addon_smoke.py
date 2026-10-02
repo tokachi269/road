@@ -1294,6 +1294,7 @@ assert "cs1_road.reload_surface_texture" in panel_layout.operator_ids
 assert "cs1_road.road_add" in panel_layout.operator_ids
 assert "cs1_road.road_duplicate" in panel_layout.operator_ids
 assert "cs1_road.road_remove" in panel_layout.operator_ids
+assert "cs1_road.add_vehicle_variants" in panel_layout.operator_ids
 assert "cs1_road.import_spec_new" in panel_layout.operator_ids
 assert "cs1_road.export_all_specs" in panel_layout.operator_ids
 assert "cs1_road.import_profiles" in panel_layout.operator_ids
@@ -1357,6 +1358,28 @@ assert len(scene.cs1_roads) == original_count
 assert bpy.ops.cs1_road.road_add() == {"FINISHED"}
 assert len(road_builder.active_road(scene).lanes) == 4
 assert bpy.ops.cs1_road.road_remove() == {"FINISHED"}
+assert len(scene.cs1_roads) == original_count
+expected_variants = {
+    item.road_id: item for item in road_builder.vehicle_lane_variants()
+}
+assert bpy.ops.cs1_road.add_vehicle_variants() == {"FINISHED"}
+created_variants = {
+    road.runtime_road_id: road
+    for road in scene.cs1_roads
+    if road.runtime_road_id in expected_variants
+}
+assert set(created_variants) == set(expected_variants)
+for road_id, road in created_variants.items():
+    variant = expected_variants[road_id]
+    vehicle_lanes = [lane for lane in road.lanes if lane.lane_type == "VEHICLE"]
+    assert len(vehicle_lanes) == variant.vehicle_lane_count
+    assert sum(lane.direction == "BACKWARD" for lane in vehicle_lanes) == variant.backward_lanes
+    assert sum(lane.direction == "FORWARD" for lane in vehicle_lanes) == variant.forward_lanes
+    assert road.between_sidewalks_width == variant.vehicle_lane_count * 3.0 + 1.0
+for index in range(len(scene.cs1_roads) - 1, -1, -1):
+    if scene.cs1_roads[index].runtime_road_id in expected_variants:
+        scene.cs1_roads.remove(index)
+scene.cs1_active_road_index = min(source_index, len(scene.cs1_roads) - 1)
 assert len(scene.cs1_roads) == original_count
 assert bpy.ops.cs1_road.import_spec_new(filepath=str(spec_output)) == {"FINISHED"}
 assert len(scene.cs1_roads) == original_count + 1

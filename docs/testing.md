@@ -61,6 +61,7 @@ Blenderの代表経路はbackground Blenderで確認する。
 
 - JSON importとround-trip
 - v3からv4への保全migration、profile入出力、global/profile/road overrideの解決順
+- 片方向0〜4・合計最大8の14 vehicle-lane variantとcatalog/bundle lane一致
 - Scene内の複数道路一覧、追加、複製、削除、Reload Scripts後のactive road
 - 全5 modeの生成
 - 64 m長、slice、node中央分割

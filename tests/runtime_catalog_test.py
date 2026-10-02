@@ -13,9 +13,10 @@ class RuntimeCatalogTest(unittest.TestCase):
     def test_sample_catalog_compiles_with_stable_priority_and_signatures(self):
         catalog = load_catalog(ROOT / "catalog")
         self.assertEqual(1, catalog["schema_version"])
-        self.assertEqual("example-road", catalog["roads"][0]["road_id"])
+        self.assertEqual(14, len(catalog["roads"]))
+        self.assertEqual("jp-1l-oneway", catalog["roads"][0]["road_id"])
         self.assertEqual(1, catalog["roads"][0]["ui_priority"])
-        self.assertEqual(4, len(catalog["roads"][0]["lanes"]))
+        self.assertEqual(3, len(catalog["roads"][0]["lanes"]))
         self.assertEqual(0.3, catalog["roads"][0]["lanes"][0]["vertical_offset"])
         self.assertEqual(0.0, catalog["roads"][0]["lanes"][0]["stop_offset"])
         self.assertEqual(64, len(catalog["roads"][0]["structural_signature"]))
@@ -38,7 +39,7 @@ class RuntimeCatalogTest(unittest.TestCase):
             placements = source / "prop_placements.tsv"
             placements.write_text(
                 placements.read_text(encoding="utf-8")
-                + "bad\texample-road\tmissing\texample-decal\t\t0\t0\t0\t0\t0\t100\n",
+                + "bad\tjp-1l-oneway\tmissing\texample-decal\t\t0\t0\t0\t0\t0\t100\n",
                 encoding="utf-8",
             )
             with self.assertRaises(CatalogError):

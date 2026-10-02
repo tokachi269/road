@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$PreviewPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +12,21 @@ $target = Join-Path $config.CitiesSkylinesDataDir 'Addons\Mods\RoadRuntimeHost'
 $runtimeTarget = Join-Path $target 'runtime'
 if (-not (Test-Path -LiteralPath (Join-Path $target 'RoadRuntimeHost.Loader.dll'))) {
     throw "Road Runtime Host is not installed. Run install-runtime-host.ps1 once while the game is stopped."
+}
+
+if ($PreviewPath) {
+    $resolvedPreview = [IO.Path]::GetFullPath($PreviewPath)
+    if (-not (Test-Path -LiteralPath $resolvedPreview -PathType Container)) {
+        throw "Preview directory not found: $resolvedPreview"
+    }
+    foreach ($required in 'catalog.json', 'manifest.json') {
+        if (-not (Test-Path -LiteralPath (Join-Path $resolvedPreview $required) -PathType Leaf)) {
+            throw "Preview directory is missing $required`: $resolvedPreview"
+        }
+    }
+    $previewTemporary = Join-Path $target 'preview.path.tmp'
+    [IO.File]::WriteAllText($previewTemporary, "$resolvedPreview`n", [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $previewTemporary -Destination (Join-Path $target 'preview.path') -Force
 }
 
 & (Join-Path $PSScriptRoot 'build-runtime-host.ps1') -Configuration $Configuration
@@ -43,3 +59,4 @@ Get-ChildItem -LiteralPath $runtimeTarget -Filter 'RoadRuntimeHost.Runtime.*.dll
         catch { Write-Warning "Obsolete Runtime could not be removed until CS1 exits: $($_.FullName): $($_.Exception.Message)" }
     }
 Write-Host "Published hot Runtime: $runtimeName ($runtimeIdentity)"
+if ($PreviewPath) { Write-Host "Preview input: $resolvedPreview" }

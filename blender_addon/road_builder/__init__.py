@@ -45,6 +45,8 @@ from .domain import (
     PROFILE_SCHEMA_VERSION,
     ROADWAY_DEPRESSION,
     SIDEWALK_LANE_TOTAL_INSET,
+    STANDARD_SHOULDER_WIDTH,
+    STANDARD_VEHICLE_LANE_WIDTH,
     SEGMENT_SLICES,
     allocate_cross_section,
     cross_section_widths,
@@ -59,6 +61,7 @@ from .domain import (
     resolve_setting,
     sidewalk_lane_width,
     strip_id,
+    vehicle_lane_variants,
 )
 from .geometry_plan import plan_main_girders
 from .runtime_export import (
@@ -1502,6 +1505,66 @@ def _add_default_lanes(props) -> None:
         lane.vertical_offset = lane_vertical_offset(zone, props.depress_roadway)
 
 
+def _add_standard_lane(
+    props, lane_id: str, name: str, zone: str, width: float,
+    direction: str, lane_type: str, vehicle_type: str,
+) -> None:
+    lane = props.lanes.add()
+    lane.lane_id = lane_id
+    lane.name = name
+    lane.zone = zone
+    lane.width = width
+    lane.direction = direction
+    lane.lane_type = lane_type
+    lane.vehicle_type = vehicle_type
+    lane.speed_limit = (
+        GLOBAL_LANE_DEFAULTS["pedestrian_speed_limit"]
+        if lane_type == "PEDESTRIAN"
+        else GLOBAL_LANE_DEFAULTS["road_speed_limit"]
+    )
+    lane.stop_offset = GLOBAL_LANE_DEFAULTS["stop_offset"]
+    lane.allow_connect = GLOBAL_LANE_DEFAULTS["allow_connect"]
+
+
+def _configure_vehicle_variant(road, variant) -> None:
+    road.road_name = variant.name
+    road.runtime_road_id = variant.road_id
+    road.runtime_prefab_name = variant.name
+    road.runtime_template_name = "Basic Road"
+    road.profile_id = DEFAULT_PROFILE_ID
+    road.provenance_version = 1
+    road.sidewalk_width = 2.5
+    road.between_sidewalks_width = (
+        variant.vehicle_lane_count * STANDARD_VEHICLE_LANE_WIDTH
+        + 2.0 * STANDARD_SHOULDER_WIDTH
+    )
+    road.roadside_use = "SHOULDER"
+    road.median_profile = "NONE"
+    road.lanes.clear()
+    road.boundaries.clear()
+    road.next_lane_id = 1
+    _add_standard_lane(
+        road, "lane-left-sidewalk", "Left sidewalk", "LEFT_SIDEWALK", 2.0,
+        "BOTH", "PEDESTRIAN", "NONE",
+    )
+    for index in range(1, variant.backward_lanes + 1):
+        _add_standard_lane(
+            road, f"lane-backward-{index}", f"Backward {index}", "ROAD",
+            STANDARD_VEHICLE_LANE_WIDTH, "BACKWARD", "VEHICLE", "CAR",
+        )
+    for index in range(1, variant.forward_lanes + 1):
+        _add_standard_lane(
+            road, f"lane-forward-{index}", f"Forward {index}", "ROAD",
+            STANDARD_VEHICLE_LANE_WIDTH, "FORWARD", "VEHICLE", "CAR",
+        )
+    _add_standard_lane(
+        road, "lane-right-sidewalk", "Right sidewalk", "RIGHT_SIDEWALK", 2.0,
+        "BOTH", "PEDESTRIAN", "NONE",
+    )
+    _ensure_lane_ids(road)
+    _sync_cross_section_state(road)
+
+
 def _active_median_width(props) -> float:
     return props.median_width if props.median_enabled else 0.0
 
@@ -2733,6 +2796,34 @@ class CS1ROAD_OT_road_add(Operator):
         return {"FINISHED"}
 
 
+class CS1ROAD_OT_add_vehicle_variants(Operator):
+    bl_idname = "cs1_road.add_vehicle_variants"
+    bl_label = "Add 14 vehicle-lane variants"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        global _LIVE_PREVIEW_REBUILDING
+        scene = context.scene
+        _ensure_default_profile(scene)
+        existing = {road.runtime_road_id for road in scene.cs1_roads}
+        added = 0
+        previous = _LIVE_PREVIEW_REBUILDING
+        _LIVE_PREVIEW_REBUILDING = True
+        try:
+            for variant in vehicle_lane_variants():
+                if variant.road_id in existing:
+                    continue
+                road = scene.cs1_roads.add()
+                scene.cs1_active_road_index = len(scene.cs1_roads) - 1
+                _configure_vehicle_variant(road, variant)
+                existing.add(variant.road_id)
+                added += 1
+        finally:
+            _LIVE_PREVIEW_REBUILDING = previous
+        self.report({"INFO"}, f"Added {added} vehicle-lane variants")
+        return {"FINISHED"}
+
+
 class CS1ROAD_OT_road_duplicate(Operator):
     bl_idname, bl_label, bl_options = "cs1_road.road_duplicate", "Duplicate road", {"REGISTER", "UNDO"}
 
@@ -3928,6 +4019,11 @@ class CS1ROAD_PT_main(Panel):
         buttons.operator("cs1_road.road_add", text="", icon="ADD")
         buttons.operator("cs1_road.road_duplicate", text="", icon="DUPLICATE")
         buttons.operator("cs1_road.road_remove", text="", icon="REMOVE")
+        layout.operator(
+            "cs1_road.add_vehicle_variants",
+            text="Add standard vehicle-lane variants",
+            icon="PRESET",
+        )
         summary = layout.box()
         road_lanes = sum(lane.zone == "ROAD" for lane in props.lanes)
         pedestrian_lanes = sum(lane.lane_type == "PEDESTRIAN" for lane in props.lanes)
@@ -4256,7 +4352,8 @@ class CS1ROAD_PT_development(_CS1RoadChildPanel, Panel):
 CLASSES = (
     CS1RoadLane, CS1RoadBoundary, CS1RoadProfile, CS1RoadBuilderProperties,
     CS1ROAD_UL_roads, CS1ROAD_UL_profiles, CS1ROAD_UL_boundaries,
-    CS1ROAD_OT_road_add, CS1ROAD_OT_road_duplicate, CS1ROAD_OT_road_remove,
+    CS1ROAD_OT_road_add, CS1ROAD_OT_add_vehicle_variants,
+    CS1ROAD_OT_road_duplicate, CS1ROAD_OT_road_remove,
     CS1ROAD_OT_profile_add, CS1ROAD_OT_profile_duplicate,
     CS1ROAD_OT_profile_remove, CS1ROAD_OT_profile_assign_active,
     CS1ROAD_OT_profile_override_toggle,

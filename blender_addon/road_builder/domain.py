@@ -27,6 +27,38 @@ GLOBAL_LANE_DEFAULTS = {
     "stop_offset": 0.0,
     "allow_connect": True,
 }
+STANDARD_VEHICLE_LANE_WIDTH = 3.0
+STANDARD_SHOULDER_WIDTH = 0.5
+
+
+class VehicleLaneVariant(NamedTuple):
+    backward_lanes: int
+    forward_lanes: int
+    road_id: str
+    name: str
+
+    @property
+    def vehicle_lane_count(self) -> int:
+        return self.backward_lanes + self.forward_lanes
+
+
+def vehicle_lane_variants(
+    max_per_direction: int = 4, max_total: int = 8,
+) -> tuple[VehicleLaneVariant, ...]:
+    """Return mirror-normalized vehicle-lane variants for the road family."""
+    variants = []
+    for backward in range(max_per_direction + 1):
+        for forward in range(max(backward, 1), max_per_direction + 1):
+            if backward + forward > max_total:
+                continue
+            if backward == 0:
+                road_id = f"jp-{forward}l-oneway"
+                name = f"JP {forward} Lane One-way"
+            else:
+                road_id = f"jp-{backward}x{forward}l"
+                name = f"JP {backward}+{forward} Lane"
+            variants.append(VehicleLaneVariant(backward, forward, road_id, name))
+    return tuple(variants)
 
 
 class ResolvedSetting(NamedTuple):

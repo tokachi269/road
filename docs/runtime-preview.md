@@ -53,6 +53,22 @@ Road sidebarの`Runtime preview`で次を設定する。
 4. `Build and export runtime bundle`で全modeをbuildしてexportする。
 5. 継続編集時は`Auto export every second`を有効にする。
 
+標準14 variantをまとめてゲーム確認用directoryへ出す場合は次を実行する。
+
+```powershell
+.\scripts\run-blender.ps1 -Script .\generator\export_vehicle_variants.py -ScriptArguments @('--output', '.\build\vehicle-variants-preview')
+.\scripts\stage-runtime-host.ps1 -PreviewPath (Join-Path $PWD 'build\vehicle-variants-preview')
+# ゲーム停止中
+.\scripts\install-runtime-host.ps1 -PreviewPath (Join-Path $PWD 'build\vehicle-variants-preview')
+# ゲーム起動中
+.\scripts\publish-runtime-hot.ps1 -PreviewPath (Join-Path $PWD 'build\vehicle-variants-preview')
+```
+
+1コマンド目はBlender Sceneへ14道路を構築し、全modeのbundleと確認用authoring JSONを
+出力する。2コマンド目は同じdirectoryへcatalogをcompileする。ゲーム停止中はinstall、
+起動中はhot publishでRuntime Hostの`preview.path`をそのdirectoryへ向ける。ゲーム内の見た目と接続はこの処理だけでは
+確認済みにならない。
+
 auto exportは約1秒ごとにPropertyGroup、入力端部mesh、生成mesh、Generator PNGのfile versionを比較する。設定が変わった場合は全modeをbuildしてから対象roadのbundleだけを置換する。生成meshを直接編集した場合は再buildせず現在meshをexportする。PNGだけが変わった場合はmeshをbuildせず画像とmanifestだけを更新する。road bundleとtextureを書き終えてからmanifestをatomic replaceするため、Hostは途中の出力を正規更新として読まない。
 
 Prop/Decalは選択Meshを`Export selected Prop/Decal mesh`で出す。使用materialは現状1つだけに制限している。catalogの`mesh_bundle`へ`props/<prop-id>.json`を指定する。`textures`にはshader property名とpreview directory相対画像path、`material_properties`には`_DecalSize`等のfloatまたは2/4要素vectorをJSONで指定できる。値はRuntimeがmeshから推測しない。新規Prop登録には実在する`template_name`が必要で、未指定時にRuntimeが推測して適当なvanilla Propを選ぶことはしない。

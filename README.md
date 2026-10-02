@@ -42,7 +42,9 @@ Blenderのテスト結果は`build/smoke/`へ出力されます。RoadImporter�
 Runtime側で断面meshは生成しません。Blenderで生成・編集した完成meshをbundleへ書き出し、通常マップ用Hostが同名Prefabへ反映します。
 
 ```powershell
-.\scripts\stage-runtime-host.ps1 -PreviewPath (Join-Path $PWD 'build\runtime-preview')
+.\scripts\run-blender.ps1 -Script .\generator\export_vehicle_variants.py -ScriptArguments @('--output', '.\build\vehicle-variants-preview')
+.\scripts\stage-runtime-host.ps1 -PreviewPath (Join-Path $PWD 'build\vehicle-variants-preview')
+.\scripts\publish-runtime-hot.ps1 -PreviewPath (Join-Path $PWD 'build\vehicle-variants-preview')
 ```
 
 初回だけ`install-runtime-host.ps1`でLoaderを配置します。以後はBlenderの`Runtime preview`で同じdirectoryへ出力し、必要なときだけstagingしたversioned Runtime DLLをMods directoryへ上書きします。詳細、制約、未検証項目は[docs/runtime-preview.md](docs/runtime-preview.md)と[docs/runtime-workboard.md](docs/runtime-workboard.md)に記載しています。
@@ -64,15 +66,16 @@ Runtime側で断面meshは生成しません。Blenderで生成・編集した�
 Blenderを通常起動し、3D Viewで`N`キーを押し、`Road`タブを開きます。以下をUIから編集できます。
 
 - 道路名と、左から右へ並ぶlane一覧
-- laneごとの領域、幅、方向、種別、車種、速度、縦/停止offset、接続可否
+- laneごとの領域、幅、方向、種別、車種と、速度・停止offset・接続可否のsource/override
 - 歩道幅、curb高さ、左右路肩幅
-- Strip間boundaryの一覧と、boundaryごとの線ON/OFF・意味・style
+- 道路単位の路側線、lane間線、中央線規則
 - 共有marking styleの線幅、asphalt余白を含むmarking領域幅
 - Ground / Elevated / Bridge / Tunnel Entrance / Tunnel
 - 高架・橋梁の高さと床版厚
 - Elevated左右端へ反転配置するカスタム側面・手すりMesh
 - トンネル深さと建築限界
 - JSONの読み込み・保存
+- 片方向0〜4、合計最大8の標準vehicle-lane道路14種類の一括追加
 - 64 m固定のnode、道路中央`X=0`での左右メッシュ分割
 - 地面同高路面とcurb高さ分だけ低い路面、およびnode内の接続スロープ
 

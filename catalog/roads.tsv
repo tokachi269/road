@@ -1,2 +1,15 @@
 road_id	prefab_name	template_name	display_name	category	family	family_order	variant_order	test_scenario_id	metadata
-example-road	Road Runtime Example	Basic Road	Road Runtime Example	RoadRuntimeHost	basic	10	10	standard-road	{}
+jp-1l-oneway	JP 1 Lane One-way	Basic Road	JP 1 Lane One-way	RoadRuntimeHost	jp-standard	10	10	standard-road	{"backward_lanes":0,"forward_lanes":1}
+jp-2l-oneway	JP 2 Lane One-way	Basic Road	JP 2 Lane One-way	RoadRuntimeHost	jp-standard	10	20	standard-road	{"backward_lanes":0,"forward_lanes":2}
+jp-3l-oneway	JP 3 Lane One-way	Basic Road	JP 3 Lane One-way	RoadRuntimeHost	jp-standard	10	30	standard-road	{"backward_lanes":0,"forward_lanes":3}
+jp-4l-oneway	JP 4 Lane One-way	Basic Road	JP 4 Lane One-way	RoadRuntimeHost	jp-standard	10	40	standard-road	{"backward_lanes":0,"forward_lanes":4}
+jp-1x1l	JP 1+1 Lane	Basic Road	JP 1+1 Lane	RoadRuntimeHost	jp-standard	10	50	standard-road	{"backward_lanes":1,"forward_lanes":1}
+jp-1x2l	JP 1+2 Lane	Basic Road	JP 1+2 Lane	RoadRuntimeHost	jp-standard	10	60	standard-road	{"backward_lanes":1,"forward_lanes":2}
+jp-1x3l	JP 1+3 Lane	Basic Road	JP 1+3 Lane	RoadRuntimeHost	jp-standard	10	70	standard-road	{"backward_lanes":1,"forward_lanes":3}
+jp-1x4l	JP 1+4 Lane	Basic Road	JP 1+4 Lane	RoadRuntimeHost	jp-standard	10	80	standard-road	{"backward_lanes":1,"forward_lanes":4}
+jp-2x2l	JP 2+2 Lane	Basic Road	JP 2+2 Lane	RoadRuntimeHost	jp-standard	10	90	standard-road	{"backward_lanes":2,"forward_lanes":2}
+jp-2x3l	JP 2+3 Lane	Basic Road	JP 2+3 Lane	RoadRuntimeHost	jp-standard	10	100	standard-road	{"backward_lanes":2,"forward_lanes":3}
+jp-2x4l	JP 2+4 Lane	Basic Road	JP 2+4 Lane	RoadRuntimeHost	jp-standard	10	110	standard-road	{"backward_lanes":2,"forward_lanes":4}
+jp-3x3l	JP 3+3 Lane	Basic Road	JP 3+3 Lane	RoadRuntimeHost	jp-standard	10	120	standard-road	{"backward_lanes":3,"forward_lanes":3}
+jp-3x4l	JP 3+4 Lane	Basic Road	JP 3+4 Lane	RoadRuntimeHost	jp-standard	10	130	standard-road	{"backward_lanes":3,"forward_lanes":4}
+jp-4x4l	JP 4+4 Lane	Basic Road	JP 4+4 Lane	RoadRuntimeHost	jp-standard	10	140	standard-road	{"backward_lanes":4,"forward_lanes":4}

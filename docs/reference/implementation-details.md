@@ -13,7 +13,7 @@
 現在のBlender prototypeでは、順序付きlane、共有断面値、mode固有構造値、marking設定からpreviewを生成している。
 
 - Laneはstable ID、順序、幅、方向、CS1 lane metadataを所有する。
-- Blenderの断面表は、network lane各行に加えて左右共通の歩道surface幅と導出された路肩幅を`not lane`行として表示する。通常laneは各行で種別・幅・向き・乗り物・速度を直接編集する。歩道lane幅はsurface幅から合計0.50mの余白を引いて導出し、独立入力にしない。歩道の`Both/Pedestrian/None`と通常の高さも導出し、`stop_offset=0`と`allow_connect=true`は通常時の既定値として内部に保持する。いずれも選択行の詳細フォームには出さない。
+- Blenderの断面表は、network lane各行に加えて左右共通の歩道surface幅と導出された路肩幅を`not lane`行として表示する。通常laneは各行で種別・幅・向き・乗り物と実効速度を表示する。速度、停止offset、接続可否は選択laneの詳細でsourceを確認し、明示overrideの追加またはResetを行う。歩道lane幅はsurface幅から合計0.50mの余白を引いて導出し、独立入力にしない。歩道の`Both/Pedestrian/None`と通常の高さも導出する。
 - 歩道間幅、歩道幅、分離帯profile・全幅・路面からの高さは共有断面値が所有する。路肩幅は`(歩道間幅 - 車道lane合計 - 分離帯幅) / 2`から導出し、負になる場合は0として明示寸法を縮めず、超過量をBlenderで警告する。残幅を駐車に使う設定では、指定幅が左右とも収まる場合だけ実際のParking laneを2本導出し、片側だけは作らない。通常の車道高低差は道路単位の真偽値から`domain.py`の固定値0.30mを導出し、個別laneやmodeでは編集しない。
 - Nodeの角を道路幅とは独立して広げる必須値は`NetInfo.m_minCornerOffset`として保持し、全modeへ同じ値を適用する。`m_halfWidth`は道路全幅の半分であり、node寸法の代替として倍化しない。
 - Road colorは道路定義の`styles.surface.road_color`が所有し、全modeの共通surface Materialへ同じ値を適用する。mode固有値やtexture mask側へ重複保持しない。
