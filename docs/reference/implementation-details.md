@@ -127,7 +127,7 @@ stable Loader ──loads──> versioned Runtime DLL
                               └──> NetInfo / PropInfo in-place update
 ```
 
-Runtimeは断面値からmeshを生成しない。Blenderで確定した頂点、法線、UV、三角形、material区分をUnity `Mesh`へ復元するだけである。TSVのlane値は`NetInfo.Lane`、Prop配置、構造signature、試験区画の再生成判断に使う。
+Runtimeは断面値からmeshを生成しない。Blenderで確定した頂点、法線、UV、三角形、material区分をUnity `Mesh`へ復元するだけである。`NetInfo.Lane`へ適用する値はBlender authoring bundleを使う。TSV由来catalogのlane値は移行期間中のcontract checkerとして比較し、不一致なら道路全体を拒否するが、一致後にbundle laneをcatalog laneへ置換しない。catalogのProp配置、構造signature、試験区画設定は引き続き各Runtime処理で使う。
 
 Runtime exportは存在するGenerator PNGをpreview directoryの`textures`へatomic copyし、その内容hashをmanifestの`texture_revision`へ入れる。RuntimeHostは画像pathごとにsource Texture2Dを1つだけ共有し、source path集合ごとにpacked Texture2Dを共有する。`texture_revision`だけが変わった場合はsourceを同じTexture2Dへ再読込し、APR/XYSを同じpacked Texture2Dへ再構築するため、道路meshや既設segmentを作り直さない。
 

@@ -109,6 +109,7 @@ $previewPath = Join-Path $PWD 'build\smoke\runtime-preview'
 成功事象と意図的な型不一致が、専用JSON Linesログへ分類されることも確認する。
 Blender smokeは、Scene共通の出力先へ全道路を一括Runtime exportし、manifestがScene内道路だけを含むことも確認する。
 catalogとbundleのlane不一致は`lane_contract_mismatch`として拒否する。
+一致時はcatalog laneへ置換せず、比較したBlender bundle lane配列そのものをRuntime適用へ返す。
 配置時の3規則がsegment用style snapshotへ変換されること、CS1用panel型が存在すること、
 全segment走査経路がないこともreflection contractで確認する。2-segment nodeでは、
 片側入口のboundary順序と反対側入口の逆順を接続し、segmentのInvert状態が異なっても

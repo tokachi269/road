@@ -298,8 +298,8 @@ namespace RoadRuntimeHost.Runtime
                 if (catalogRoad == null) DiagnosticLog.Warn("DATA_MISSING", "road_catalog_row_missing", "Road bundle has no matching catalog row; bundle lane snapshot will be used", "road_id", entry.RoadId ?? string.Empty);
                 if (catalogRoad != null)
                 {
-                    LaneContractValidator.RequireMatch(entry.RoadId, bundle.Lanes, catalogRoad.Lanes);
-                    bundle.Lanes = catalogRoad.Lanes;
+                    bundle.Lanes = LaneContractValidator.RequireMatch(
+                        entry.RoadId, bundle.Lanes, catalogRoad.Lanes);
                     DiagnosticLog.Info("SUCCESS", "lane_contract_match", "Blender bundle lanes match catalog lanes", "road_id", entry.RoadId ?? string.Empty, "lane_count", (bundle.Lanes == null ? 0 : bundle.Lanes.Length).ToString());
                 }
                 NetInfo info = _updater.ApplyRoad(bundle, catalogRoad);

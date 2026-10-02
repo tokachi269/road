@@ -8,7 +8,7 @@ namespace RoadRuntimeHost.Runtime
     {
         private const float Tolerance = 0.0001f;
 
-        public static void RequireMatch(string roadId, LaneBundle[] blenderLanes, LaneBundle[] catalogLanes)
+        public static LaneBundle[] RequireMatch(string roadId, LaneBundle[] blenderLanes, LaneBundle[] catalogLanes)
         {
             LaneBundle[] blender = blenderLanes ?? new LaneBundle[0];
             LaneBundle[] catalog = catalogLanes ?? new LaneBundle[0];
@@ -40,7 +40,7 @@ namespace RoadRuntimeHost.Runtime
                     differences.Add(lane + ".allow_connect blender=" + left.AllowConnect + " catalog=" + right.AllowConnect);
             }
 
-            if (differences.Count == 0) return;
+            if (differences.Count == 0) return blender;
             string detail = string.Join("; ", differences.ToArray());
             throw new DiagnosticException(
                 "DATA_INVALID", "lane_contract_mismatch",

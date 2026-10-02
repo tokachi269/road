@@ -23,6 +23,7 @@ Blender UIとJSONは編集adapterであり、同じ判断を独自に実装し�
 | 標準車両lane variant | `domain.py`のmirror正規化済み組合せ | Blender道路一覧、Runtime catalog、preview bundle |
 | atlas領域とUV profile | `textures/dimensions.json` | Blender、texture検証 |
 | Blender preview mesh | 生成後のBlender mesh | Runtime preview bundle |
+| Runtimeへ適用するlane値 | Blender authoring bundle | RuntimeHost |
 | CS1向けentry | Output Entry Plan | RoadImporter、RuntimeHost |
 
 `layout.strips`はcompiled topologyであり、編集正本にしない。
@@ -53,6 +54,8 @@ lane adjacency、boundary ID、断面幅、marking roleを下流で再推論し�
 
 Blenderはgeometryを生成し、RoadImporterとRuntimeHostはCS1向けentryへ変換する。
 RoadImporter XMLとRuntime bundleを編集正本にしない。
+Runtime catalogのlane列は移行期間中のcontract checkerとして残す。bundleと一致しなければ
+拒否するが、一致後にRuntimeへ適用する値をcatalog laneへ置換しない。
 
 `surface`、`structure`、`tunnel`はgeometryを整理する呼称である。
 CS1の登録単位はselector、shader、texture setも含めて決める。

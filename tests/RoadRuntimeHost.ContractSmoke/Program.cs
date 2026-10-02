@@ -32,6 +32,7 @@ namespace RoadRuntimeHost.ContractSmoke
                 ValidateCrosswalkWallRenderingContract(runtime.Assembly);
                 ValidateImtNodePolicyContract(runtime.Assembly);
                 ValidateRoadPlacementMarkingContract(runtime.Assembly);
+                LaneOwnershipContract.Validate(runtime.Assembly);
                 string temp = Path.Combine(Path.GetTempPath(), "RoadRuntimeHost.ContractSmoke." + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(temp);
                 try
