@@ -61,6 +61,8 @@ catalog正本や同期frameworkを追加しない。
 道路を複製してもprofile参照は共有したまま、明示overrideだけを複製する。
 Blender UIは実効値のsourceと不要な同値overrideを表示し、overrideを外す操作を
 継承値へのresetとして扱う。
+複数道路の正規Runtime出力はScene単位とし、全道路・全profile利用者を1回のexportで更新する。
+道路単位のexportとauto exportは局所デバッグ用として残し、正規出力とは扱わない。
 
 現在のBlender previewはmodeごとにsegmentとnodeを生成する。
 最終的なentry数、LOD、selector構成はゲーム内検証が終わるまで固定しない。

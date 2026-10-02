@@ -432,6 +432,35 @@ def export_runtime_bundle(
     return payload
 
 
+def finalize_runtime_manifest(output_root: Path, road_ids: list[str]) -> dict:
+    """Restrict one completed batch export to the roads in the Blender Scene."""
+    manifest_path = output_root / "manifest.json"
+    if not manifest_path.exists():
+        raise ValueError("Runtime manifest was not created")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != BUNDLE_SCHEMA_VERSION:
+        raise ValueError("Runtime manifest schema does not match the exporter")
+    requested = {safe_road_id(value) for value in road_ids}
+    entries = {
+        item.get("road_id"): item
+        for item in manifest.get("roads", [])
+        if isinstance(item, dict) and item.get("road_id") in requested
+    }
+    missing = sorted(requested - set(entries))
+    if missing:
+        raise ValueError(
+            "Runtime manifest is missing exported roads: " + ", ".join(missing)
+        )
+    finalized = {
+        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "texture_revision": manifest.get("texture_revision", ""),
+        "roads": [entries[key] for key in sorted(entries)],
+    }
+    finalized["revision"] = _hash(finalized)
+    _atomic_write_json(manifest_path, finalized)
+    return finalized
+
+
 def export_prop_bundle(output_root: Path, prop_id: str, obj: bpy.types.Object, shader: str) -> dict:
     prop_id = safe_road_id(prop_id)
     meshes = serialize_mesh_entries(obj, shader)

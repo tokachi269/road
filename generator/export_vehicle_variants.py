@@ -48,12 +48,10 @@ def main() -> None:
             f"extra={sorted(actual_ids - expected_ids)}"
         )
 
-    for index, road in enumerate(scene.cs1_roads):
-        scene.cs1_active_road_index = index
-        road.runtime_output_dir = str(output)
-        result = bpy.ops.cs1_road.export_runtime()
-        if result != {"FINISHED"}:
-            raise RuntimeError(f"Runtime export failed: {road.runtime_road_id}")
+    scene.cs1_runtime_output_dir = str(output)
+    result = bpy.ops.cs1_road.export_all_runtime()
+    if result != {"FINISHED"}:
+        raise RuntimeError("Runtime export failed")
 
     authoring = output / "authoring"
     result = bpy.ops.cs1_road.export_all_specs(directory=str(authoring))

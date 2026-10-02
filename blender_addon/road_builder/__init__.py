@@ -67,6 +67,7 @@ from .geometry_plan import plan_main_girders
 from .runtime_export import (
     export_prop_bundle,
     export_runtime_bundle,
+    finalize_runtime_manifest,
     geometry_fingerprint,
     safe_road_id,
     texture_fingerprint,
@@ -2206,6 +2207,9 @@ def _initialize_scene_lanes():
             road = scene.cs1_roads.add()
             _copy_property_group(legacy, road)
             scene.cs1_active_road_index = 0
+        if not scene.is_property_set("cs1_runtime_output_dir"):
+            previous_output = active_road(scene).runtime_output_dir.strip()
+            scene.cs1_runtime_output_dir = previous_output or DEFAULT_RUNTIME_OUTPUT
         for road in scene.cs1_roads:
             _ensure_default_lanes(road)
             if road.provenance_version == 0:
@@ -3309,8 +3313,14 @@ def _runtime_output_path(props) -> Path:
     return Path(bpy.path.abspath(props.runtime_output_dir)).resolve()
 
 
-def _export_runtime_scene(scene):
+def _scene_runtime_output_path(scene) -> Path:
+    return Path(bpy.path.abspath(scene.cs1_runtime_output_dir)).resolve()
+
+
+def _export_runtime_scene(scene, output_root=None):
     props = active_road(scene)
+    if output_root is None:
+        output_root = _runtime_output_path(props)
     profile = _profile_for_road(scene, props)
     if profile is None:
         raise ValueError(f"Road profile not found: {props.profile_id}")
@@ -3321,7 +3331,7 @@ def _export_runtime_scene(scene):
     if not modes:
         raise ValueError("Build at least one road mode before runtime export")
     return export_runtime_bundle(
-        _runtime_output_path(props),
+        output_root,
         safe_road_id(props.runtime_road_id),
         props.runtime_prefab_name.strip() or props.road_name,
         props.runtime_template_name.strip() or "Basic Road",
@@ -3487,6 +3497,52 @@ class CS1ROAD_OT_export_runtime(Operator):
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         self.report({"INFO"}, f"Runtime bundle {payload['revision'][:12]}")
+        return {"FINISHED"}
+
+
+class CS1ROAD_OT_export_all_runtime(Operator):
+    bl_idname = "cs1_road.export_all_runtime"
+    bl_label = "Build and export Runtime bundle"
+
+    def execute(self, context):
+        scene = context.scene
+        if not scene.cs1_roads:
+            self.report({"ERROR"}, "No roads to export")
+            return {"CANCELLED"}
+        output_root = _scene_runtime_output_path(scene)
+        if any(not road.runtime_road_id.strip() for road in scene.cs1_roads):
+            self.report({"ERROR"}, "Every road needs a Runtime road ID")
+            return {"CANCELLED"}
+        road_ids = [safe_road_id(road.runtime_road_id) for road in scene.cs1_roads]
+        if len(set(road_ids)) != len(road_ids):
+            self.report({"ERROR"}, "Runtime road IDs must be unique")
+            return {"CANCELLED"}
+
+        previous_index = scene.cs1_active_road_index
+        try:
+            for index in range(len(scene.cs1_roads)):
+                scene.cs1_active_road_index = index
+                for mode, _, _ in MODE_ITEMS:
+                    build_mode(scene, mode)
+                _export_runtime_scene(scene, output_root)
+            manifest = finalize_runtime_manifest(output_root, road_ids)
+        except (OSError, ValueError, TypeError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        finally:
+            scene.cs1_active_road_index = min(
+                previous_index, len(scene.cs1_roads) - 1,
+            )
+            try:
+                for mode, _, _ in MODE_ITEMS:
+                    build_mode(scene, mode)
+            except (RuntimeError, ValueError):
+                pass
+
+        self.report(
+            {"INFO"},
+            f"Exported {len(manifest['roads'])} roads to {output_root}",
+        )
         return {"FINISHED"}
 
 
@@ -4324,7 +4380,11 @@ class CS1ROAD_PT_runtime(_CS1RoadChildPanel, Panel):
         runtime.prop(props, "runtime_template_name")
         runtime.prop(props, "runtime_output_dir")
         runtime.prop(props, "runtime_auto_export")
-        runtime.operator("cs1_road.export_runtime", icon="EXPORT")
+        runtime.operator("cs1_road.export_runtime", text="Export active road", icon="EXPORT")
+        runtime.separator()
+        runtime.prop(context.scene, "cs1_runtime_output_dir")
+        runtime.operator("cs1_road.export_all_runtime", text="Export all roads", icon="EXPORT")
+        runtime.label(text="Exports every road in this Scene.")
         runtime.separator()
         runtime.prop(props, "runtime_prop_id")
         runtime.prop(props, "runtime_prop_shader")
@@ -4361,7 +4421,8 @@ CLASSES = (
     CS1ROAD_OT_lane_move, CS1ROAD_OT_lane_select, CS1ROAD_OT_lane_override_toggle,
     CS1ROAD_OT_boundaries_sync,
     CS1ROAD_OT_build_preview, CS1ROAD_OT_build_all, CS1ROAD_OT_reload_surface_texture,
-    CS1ROAD_OT_import_spec, CS1ROAD_OT_export_spec, CS1ROAD_OT_export_runtime,
+    CS1ROAD_OT_import_spec, CS1ROAD_OT_export_spec,
+    CS1ROAD_OT_export_runtime, CS1ROAD_OT_export_all_runtime,
     CS1ROAD_OT_import_profiles, CS1ROAD_OT_export_profiles,
     CS1ROAD_OT_import_spec_new, CS1ROAD_OT_export_all_specs,
     CS1ROAD_OT_export_runtime_prop,
@@ -4379,6 +4440,9 @@ def register():
     bpy.types.Scene.cs1_active_road_index = IntProperty(default=0, min=0)
     bpy.types.Scene.cs1_road_profiles = CollectionProperty(type=CS1RoadProfile)
     bpy.types.Scene.cs1_active_profile_index = IntProperty(default=0, min=0)
+    bpy.types.Scene.cs1_runtime_output_dir = StringProperty(
+        name="Runtime output", default=DEFAULT_RUNTIME_OUTPUT, subtype="DIR_PATH",
+    )
     if not bpy.app.timers.is_registered(_initialize_scene_lanes):
         bpy.app.timers.register(_initialize_scene_lanes, first_interval=0.0)
     if not bpy.app.timers.is_registered(_runtime_auto_export_timer):
@@ -4395,6 +4459,7 @@ def unregister():
     _AUTO_EXPORT_STATE.clear()
     _AUTO_EXPORT_ERRORS.clear()
     _LIVE_PREVIEW_PENDING.clear()
+    del bpy.types.Scene.cs1_runtime_output_dir
     del bpy.types.Scene.cs1_active_profile_index
     del bpy.types.Scene.cs1_road_profiles
     del bpy.types.Scene.cs1_active_road_index

@@ -49,9 +49,13 @@ Road sidebarの`Runtime preview`で次を設定する。
 
 1. `Runtime road ID`を`roads.tsv`の`road_id`と一致させる。
 2. `Runtime prefab name`と`Template prefab`を設定する。
-3. `Runtime output`をHostの`preview.path`と同じdirectoryへ向ける。
-4. `Build and export runtime bundle`で全modeをbuildしてexportする。
-5. 継続編集時は`Auto export every second`を有効にする。
+3. Scene共通の`Runtime output`をHostの`preview.path`と同じdirectoryへ向ける。
+4. `Build and export Runtime bundle`でScene内の全道路・全modeを一括出力する。
+   manifestはその時点のScene内道路だけに確定する。profileを共有する道路のbundleを
+   一部だけ古い状態にしないため、通常の確認ではこの一括出力を使う。
+
+道路単位の`Export active road`と`Auto export every second`は局所デバッグ用として残す。
+これらは対象道路だけを更新するため、複数道路の正規出力には使わない。
 
 標準14 variantをまとめてゲーム確認用directoryへ出す場合は次を実行する。
 
@@ -69,7 +73,7 @@ Road sidebarの`Runtime preview`で次を設定する。
 起動中はhot publishでRuntime Hostの`preview.path`をそのdirectoryへ向ける。ゲーム内の見た目と接続はこの処理だけでは
 確認済みにならない。
 
-auto exportは約1秒ごとにPropertyGroup、入力端部mesh、生成mesh、Generator PNGのfile versionを比較する。設定が変わった場合は全modeをbuildしてから対象roadのbundleだけを置換する。生成meshを直接編集した場合は再buildせず現在meshをexportする。PNGだけが変わった場合はmeshをbuildせず画像とmanifestだけを更新する。road bundleとtextureを書き終えてからmanifestをatomic replaceするため、Hostは途中の出力を正規更新として読まない。
+一括exportは各road bundleとtextureを書き終えてから、Scene内の道路集合でmanifestをatomic replaceする。Hostは途中の出力を正規更新として読まない。個別auto exportは約1秒ごとに選択中道路の入力差分を比較し、変更時だけ対象bundleを更新する。
 
 Prop/Decalは選択Meshを`Export selected Prop/Decal mesh`で出す。使用materialは現状1つだけに制限している。catalogの`mesh_bundle`へ`props/<prop-id>.json`を指定する。`textures`にはshader property名とpreview directory相対画像path、`material_properties`には`_DecalSize`等のfloatまたは2/4要素vectorをJSONで指定できる。値はRuntimeがmeshから推測しない。新規Prop登録には実在する`template_name`が必要で、未指定時にRuntimeが推測して適当なvanilla Propを選ぶことはしない。
 

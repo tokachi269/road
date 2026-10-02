@@ -1041,6 +1041,7 @@ props.road_color = (0.31, 0.32, 0.33)
 
 runtime_output = ROOT / "build" / "smoke" / "runtime-preview"
 props.runtime_output_dir = str(runtime_output)
+bpy.context.scene.cs1_runtime_output_dir = str(runtime_output)
 props.runtime_road_id = "smoke-road"
 props.runtime_prefab_name = "Smoke Road"
 props.roadside_lines = False
@@ -1301,6 +1302,7 @@ assert "cs1_road.import_profiles" in panel_layout.operator_ids
 assert "cs1_road.export_profiles" in panel_layout.operator_ids
 assert "cs1_road.profile_assign_active" in panel_layout.operator_ids
 assert "cs1_road.profile_override_toggle" in panel_layout.operator_ids
+assert "cs1_road.export_all_runtime" in panel_layout.operator_ids
 assert panel_layout.property_names.count("sidewalk_width") == 2
 assert panel_layout.property_names.count("shoulder_width") == 0
 assert "between_sidewalks_width" in panel_layout.property_names
@@ -1380,6 +1382,32 @@ for index in range(len(scene.cs1_roads) - 1, -1, -1):
     if scene.cs1_roads[index].runtime_road_id in expected_variants:
         scene.cs1_roads.remove(index)
 scene.cs1_active_road_index = min(source_index, len(scene.cs1_roads) - 1)
+assert len(scene.cs1_roads) == original_count
+batch_runtime = ROOT / "build" / "smoke" / "all-road-runtime"
+if batch_runtime.exists():
+    shutil.rmtree(batch_runtime)
+batch_source = road_builder.active_road(scene)
+previous_runtime_output = scene.cs1_runtime_output_dir
+scene.cs1_runtime_output_dir = str(batch_runtime)
+assert bpy.ops.cs1_road.road_duplicate() == {"FINISHED"}
+batch_duplicate = road_builder.active_road(scene)
+assert batch_duplicate.profile_id == batch_source.profile_id
+scene.cs1_active_road_index = source_index
+batch_ids = {
+    road_builder.safe_road_id(road.runtime_road_id)
+    for road in scene.cs1_roads
+}
+assert bpy.ops.cs1_road.export_all_runtime() == {"FINISHED"}
+batch_manifest = json.loads(
+    (batch_runtime / "manifest.json").read_text(encoding="utf-8")
+)
+assert {item["road_id"] for item in batch_manifest["roads"]} == batch_ids
+assert len(batch_manifest["roads"]) == len(scene.cs1_roads)
+assert scene.cs1_active_road_index == source_index
+scene.cs1_active_road_index = len(scene.cs1_roads) - 1
+assert bpy.ops.cs1_road.road_remove() == {"FINISHED"}
+scene.cs1_active_road_index = source_index
+scene.cs1_runtime_output_dir = previous_runtime_output
 assert len(scene.cs1_roads) == original_count
 assert bpy.ops.cs1_road.import_spec_new(filepath=str(spec_output)) == {"FINISHED"}
 assert len(scene.cs1_roads) == original_count + 1
