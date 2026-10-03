@@ -875,6 +875,8 @@ namespace RoadRuntimeHost.Runtime
             List<IEntrancePointData> starts = GetPoints(marking.StartEntrance.EntrancePoints);
             List<IEntrancePointData> ends = GetPoints(marking.EndEntrance.EntrancePoints);
             if (starts.Count < 2 || ends.Count < 2) return;
+            RuntimeSegmentSnapshot runtimeSegment = BuildRuntimeSegmentSnapshot(
+                segmentId, GetPointsByIndex(marking.StartEntrance.EntrancePoints));
 
             HashSet<byte> usedEndIndexes = new HashSet<byte>();
             for (int index = 0; index < starts.Count; ++index)
@@ -896,15 +898,17 @@ namespace RoadRuntimeHost.Runtime
                 }
                 if (_initializedSegmentDefaults.Contains(pairKey)) continue;
 
-                bool edge = index == 0 || index == starts.Count - 1;
-                if (edge && !appearance.RoadsideLines) continue;
-                bool opposing = !edge && IsOpposingBoundary(segmentId, start.Source);
-                IRegularLineStyleData style = edge
+                RuntimeBoundarySemantic semantic = BoundaryMeaningForPoint(
+                    runtimeSegment, start.Index);
+                if (semantic == RuntimeBoundarySemantic.Roadside
+                    && !appearance.RoadsideLines) continue;
+                if (semantic == RuntimeBoundarySemantic.Other) continue;
+                IRegularLineStyleData style = semantic == RuntimeBoundarySemantic.Roadside
                     ? CreateSolidStyle(provider, appearance)
                     : CreateConfiguredLineStyle(
                         provider,
                         appearance,
-                        opposing
+                        semantic == RuntimeBoundarySemantic.OpposingCenter
                             ? appearance.CenterLineStyle
                             : appearance.LaneSeparatorStyle);
                 marking.AddRegularLine(start, end, style);
@@ -923,6 +927,68 @@ namespace RoadRuntimeHost.Runtime
                 | ((ulong)start.Index << 24)
                 | ((ulong)end.EntranceId << 8)
                 | end.Index;
+        }
+
+        private RuntimeSegmentSnapshot BuildRuntimeSegmentSnapshot(
+            ushort segmentId,
+            List<IEntrancePointData> points)
+        {
+            NetManager manager = NetManager.instance;
+            if (manager == null || segmentId == 0
+                || segmentId >= manager.m_segments.m_size)
+                return new RuntimeSegmentSnapshot
+                {
+                    SegmentId = segmentId,
+                    Boundaries = new RuntimeBoundarySnapshot[0],
+                    Lanes = new RuntimeLaneSnapshot[0],
+                };
+            ref NetSegment segment = ref manager.m_segments.m_buffer[segmentId];
+            NetInfo info = segment.Info;
+            RuntimeLaneSnapshot[] lanes = new RuntimeLaneSnapshot[
+                info == null || info.m_lanes == null ? 0 : info.m_lanes.Length];
+            for (int laneIndex = 0; laneIndex < lanes.Length; ++laneIndex)
+            {
+                NetInfo.Lane lane = info.m_lanes[laneIndex];
+                lanes[laneIndex] = new RuntimeLaneSnapshot
+                {
+                    Index = laneIndex,
+                    Flow = ToRuntimeLaneFlow(lane.m_finalDirection),
+                    Vehicle = (lane.m_laneType & (NetInfo.LaneType.Vehicle | NetInfo.LaneType.TransportVehicle)) != 0,
+                    Pedestrian = (lane.m_laneType & NetInfo.LaneType.Pedestrian) != 0,
+                };
+            }
+            List<RuntimeBoundarySnapshot> boundaries = new List<RuntimeBoundarySnapshot>();
+            foreach (IEntrancePointData point in points ?? new List<IEntrancePointData>())
+            {
+                IPointSourceData source = point.Source;
+                boundaries.Add(new RuntimeBoundarySnapshot
+                {
+                    PointIndex = point.Index,
+                    PhysicalOrdinal = boundaries.Count,
+                    LeftLaneIndex = source == null ? -1 : source.LeftIndex,
+                    RightLaneIndex = source == null ? -1 : source.RightIndex,
+                });
+            }
+            return new RuntimeSegmentSnapshot
+            {
+                SegmentId = segmentId,
+                StartNode = segment.m_startNode,
+                EndNode = segment.m_endNode,
+                Invert = (segment.m_flags & NetSegment.Flags.Invert) != 0,
+                Lanes = lanes,
+                Boundaries = boundaries.ToArray(),
+            };
+        }
+
+        private static RuntimeBoundarySemantic BoundaryMeaningForPoint(
+            RuntimeSegmentSnapshot segment,
+            int pointIndex)
+        {
+            if (segment == null || segment.Boundaries == null) return RuntimeBoundarySemantic.Other;
+            foreach (RuntimeBoundarySnapshot boundary in segment.Boundaries)
+                if (boundary.PointIndex == pointIndex)
+                    return RuntimeMarkingPlanBuilder.ClassifyBoundary(segment, boundary);
+            return RuntimeBoundarySemantic.Other;
         }
 
         private static string NodeDefaultKey(
