@@ -101,6 +101,10 @@ namespace RoadRuntimeHost.Runtime
             if (snapshot == null) throw new ArgumentNullException("snapshot");
             RuntimeMarkingPlan plan = new RuntimeMarkingPlan();
             RuntimeSegmentSnapshot[] allSegments = snapshot.Segments ?? new RuntimeSegmentSnapshot[0];
+            if (snapshot.Entrances == null
+                || snapshot.Entrances.Length != allSegments.Length)
+                throw new InvalidOperationException(
+                    "Runtime marking plan requires one IMT entrance per connected segment");
             List<RuntimeSegmentSnapshot> targetSegments = new List<RuntimeSegmentSnapshot>();
             foreach (RuntimeSegmentSnapshot segment in allSegments)
                 if (segment != null && segment.Target) targetSegments.Add(segment);
