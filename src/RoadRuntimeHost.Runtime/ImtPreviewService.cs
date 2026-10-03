@@ -939,6 +939,7 @@ namespace RoadRuntimeHost.Runtime
                 return new RuntimeSegmentSnapshot
                 {
                     SegmentId = segmentId,
+                    Target = true,
                     Boundaries = new RuntimeBoundarySnapshot[0],
                     Lanes = new RuntimeLaneSnapshot[0],
                 };
@@ -972,6 +973,7 @@ namespace RoadRuntimeHost.Runtime
             return new RuntimeSegmentSnapshot
             {
                 SegmentId = segmentId,
+                Target = true,
                 StartNode = segment.m_startNode,
                 EndNode = segment.m_endNode,
                 Invert = (segment.m_flags & NetSegment.Flags.Invert) != 0,
@@ -1224,7 +1226,7 @@ namespace RoadRuntimeHost.Runtime
                     || entrance.Id >= manager.m_segments.m_size) continue;
                 ref NetSegment segment = ref manager.m_segments.m_buffer[entrance.Id];
                 NetInfo info = segment.Info;
-                if (info == null || !_targetInfos.Contains(info)) continue;
+                if (info == null) continue;
                 List<IEntrancePointData> points = GetPointsByIndex(entrance.EntrancePoints);
                 List<RuntimeBoundarySnapshot> boundaries = new List<RuntimeBoundarySnapshot>();
                 foreach (IEntrancePointData point in points)
@@ -1253,6 +1255,7 @@ namespace RoadRuntimeHost.Runtime
                 segments.Add(new RuntimeSegmentSnapshot
                 {
                     SegmentId = entrance.Id,
+                    Target = _targetInfos.Contains(info),
                     StartNode = segment.m_startNode,
                     EndNode = segment.m_endNode,
                     Invert = (segment.m_flags & NetSegment.Flags.Invert) != 0,
@@ -1262,6 +1265,7 @@ namespace RoadRuntimeHost.Runtime
                 runtimeEntrances.Add(new RuntimeEntranceSnapshot
                 {
                     SegmentId = entrance.Id,
+                    Target = _targetInfos.Contains(info),
                     IsStartSide = segment.m_startNode == nodeId,
                     HasPedestrianLane = HasPedestrianLane(info),
                     CrossingAllowed = IsPedestrianCrossingAllowed(

@@ -41,6 +41,7 @@ namespace RoadRuntimeHost.Runtime
     internal sealed class RuntimeSegmentSnapshot
     {
         public ushort SegmentId;
+        public bool Target;
         public ushort StartNode;
         public ushort EndNode;
         public bool Invert;
@@ -51,6 +52,7 @@ namespace RoadRuntimeHost.Runtime
     internal sealed class RuntimeEntranceSnapshot
     {
         public ushort SegmentId;
+        public bool Target;
         public bool IsStartSide;
         public bool HasPedestrianLane;
         public bool CrossingAllowed;
@@ -98,11 +100,14 @@ namespace RoadRuntimeHost.Runtime
         {
             if (snapshot == null) throw new ArgumentNullException("snapshot");
             RuntimeMarkingPlan plan = new RuntimeMarkingPlan();
-            RuntimeSegmentSnapshot[] segments = snapshot.Segments ?? new RuntimeSegmentSnapshot[0];
+            RuntimeSegmentSnapshot[] allSegments = snapshot.Segments ?? new RuntimeSegmentSnapshot[0];
+            List<RuntimeSegmentSnapshot> targetSegments = new List<RuntimeSegmentSnapshot>();
+            foreach (RuntimeSegmentSnapshot segment in allSegments)
+                if (segment != null && segment.Target) targetSegments.Add(segment);
             RuntimeEntranceSnapshot[] entrances = snapshot.Entrances ?? new RuntimeEntranceSnapshot[0];
-            for (int segmentIndex = 0; segmentIndex < segments.Length; ++segmentIndex)
+            for (int segmentIndex = 0; segmentIndex < targetSegments.Count; ++segmentIndex)
             {
-                RuntimeSegmentSnapshot segment = segments[segmentIndex];
+                RuntimeSegmentSnapshot segment = targetSegments[segmentIndex];
                 if (segment == null) continue;
                 RuntimeBoundarySnapshot[] boundaries = OrderedBoundaries(segment.Boundaries);
                 for (int index = 0; index < boundaries.Length; ++index)
@@ -117,15 +122,17 @@ namespace RoadRuntimeHost.Runtime
                 }
             }
 
-            if (segments.Length == 2 && entrances.Length == 2)
-                AddTwoSegmentConnectors(plan, segments, entrances);
+            if (allSegments.Length == 2 && targetSegments.Count == 2
+                && entrances.Length == 2)
+                AddTwoSegmentConnectors(plan, targetSegments.ToArray(), entrances);
 
-            if (segments.Length >= 3)
+            if (allSegments.Length >= 3)
             {
                 for (int index = 0; index < entrances.Length; ++index)
                 {
                     RuntimeEntranceSnapshot entrance = entrances[index];
                     if (entrance == null) continue;
+                    if (!entrance.Target) continue;
                     if (entrance.HasPedestrianLane && entrance.CrossingAllowed)
                         plan.CrosswalkSegments.Add(entrance.SegmentId);
                     if (entrance.HasIncomingVehicleLane && entrance.HasTrafficControl)

@@ -185,6 +185,13 @@ class RuntimeMarkingReferenceTest(unittest.TestCase):
         all_target = build_plan(topology(first, replace(second, target=True)))
         self.assertTrue(all_target.connectors)
 
+    def test_target_entrance_keeps_all_runtime_degree_for_crosswalk_policy(self):
+        first = road(Flow.FORWARD, target=True)
+        second = road(Flow.FORWARD, target=False)
+        third = road(Flow.BACKWARD, target=False)
+        plan = build_plan(topology(first, second, third, degree=3))
+        self.assertEqual(plan.crosswalk_segments, (first.segment_id,))
+
     def test_mirror_preserves_semantic_role_multiset(self):
         original = build_plan(topology(road(Flow.FORWARD, Flow.FORWARD, Flow.BACKWARD)))
         segment = road(Flow.FORWARD, Flow.FORWARD, Flow.BACKWARD)

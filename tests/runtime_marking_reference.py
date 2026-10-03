@@ -182,7 +182,8 @@ def build_plan(topology: Topology) -> MarkingPlan:
     if len(topology.entrances) != len(topology.segments):
         raise IncompleteTopology(
             f"segments={len(topology.segments)} entrances={len(topology.entrances)}")
-    segments = tuple(segment for segment in topology.segments if segment.target)
+    all_segments = tuple(topology.segments)
+    segments = tuple(segment for segment in all_segments if segment.target)
     boundaries = tuple(
         boundary_plan
         for segment in segments
@@ -192,14 +193,16 @@ def build_plan(topology: Topology) -> MarkingPlan:
         connectors = _connectors(segments[0], segments[1], topology.node_id)
     crosswalks = ()
     stops = ()
-    if len(segments) >= 3:
+    if len(all_segments) >= 3:
         crosswalks = tuple(
             entrance.segment_id for entrance in topology.entrances
-            if entrance.pedestrian_lane and entrance.crossing_allowed)
+            if entrance.segment_id in {segment.segment_id for segment in segments}
+            and entrance.pedestrian_lane and entrance.crossing_allowed)
         stops = tuple(
             entrance.segment_id for entrance in topology.entrances
+            if entrance.segment_id in {segment.segment_id for segment in segments}
             if _has_incoming_vehicle(
-                next(segment for segment in segments
+                next(segment for segment in all_segments
                      if segment.segment_id == entrance.segment_id),
                 entrance, topology.node_id)
             and entrance.traffic_control)
