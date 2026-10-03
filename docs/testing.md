@@ -132,6 +132,17 @@ Invert無視、one-wayへのcenter生成、center/separatorの取り違え、物
 authoring/export契約またはproduction APIの局所契約として扱う。これらのgreenだけではRuntime topologyの
 意味解釈、IMT lifecycle、実ゲームのmarking一致を証明しない。
 
+既存ハーネスの証明範囲は次のとおりである。
+
+| ハーネス | 入力 | oracle | productionとの独立性 | greenでも証明しないこと |
+| --- | --- | --- | --- | --- |
+| `tests/domain_contract_test.py` | Blender domainのlane/strip設定 | domainの固定契約 | Runtimeから独立 | CS1のlane finalDirection、IMT point source、marking |
+| `tests/geometry_plan_test.py` | geometry planの断面入力 | geometry導出規則 | Runtimeから独立 | IMTのentrance接続、交差点線 |
+| `tests/RoadRuntimeHost.ContractSmoke` | production assemblyへのreflectionと合成preview | production APIの存在・拒否契約 | semantic oracleではない | role導出が正しいこと、実ゲームの線位置 |
+| 旧`MatchBoundaryRoles` matrix | role enum配列を直接作成 | production policy自身 | 独立していない | `NetInfo`からroleを作る変換 |
+| `tests/runtime_marking_reference_test.py` | raw runtime topology相当 | 道路意味から作るreference model | production role導出をimportしない | 実IMT mutation、実ゲーム表示 |
+| 実ゲームログ | CS1/IMTが作ったnode/entranceと適用結果 | runtimeイベントと警告の観測 | offline testから独立 | 画面上の線の見た目、未作成のsemanticケース |
+
 このcontract smokeは次を証明しない。
 
 - `runtime.current`による実ゲーム中の差し替え
