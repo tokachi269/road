@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Reflection;
 using RoadRuntimeHost.Runtime;
@@ -32,6 +33,7 @@ namespace RoadRuntimeHost.ContractSmoke
                 ValidateReferenceLanePropContract(runtime.Assembly);
                 ValidateCrosswalkWallRenderingContract(runtime.Assembly);
                 ValidateImtNodePolicyContract(runtime.Assembly);
+                ValidateRuntimeMarkingPlanContract(runtime.Assembly);
                 ValidateRoadPlacementMarkingContract(runtime.Assembly);
                 ValidateRoadToolbarRefreshContract(runtime.Assembly);
                 LaneOwnershipContract.Validate(runtime.Assembly);
@@ -471,6 +473,201 @@ namespace RoadRuntimeHost.ContractSmoke
                 if (!first.Add(pairs[index]) || !second.Add(pairs[index + 1]))
                     throw new InvalidOperationException(
                         "lane transition contains a fan connector");
+        }
+
+        private static void ValidateRuntimeMarkingPlanContract(Assembly runtimeAssembly)
+        {
+            Type segmentType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeSegmentSnapshot", true);
+            Type laneType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeLaneSnapshot", true);
+            Type boundaryType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeBoundarySnapshot", true);
+            Type entranceType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeEntranceSnapshot", true);
+            Type nodeType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeNodeSnapshot", true);
+            Type builderType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeMarkingPlanBuilder", true);
+            Type semanticType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeBoundarySemantic", true);
+            MethodInfo build = builderType.GetMethod(
+                "Build", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (build == null) throw new InvalidOperationException(
+                "raw runtime topology marking-plan builder is missing");
+
+            object oneWay = CreateRuntimeSegment(
+                segmentType, laneType, boundaryType, 1, true, 1, 1);
+            object oneWayNode = CreateRuntimeNode(
+                nodeType, entranceType, oneWay, true, true, true, true, true);
+            object oneWayPlan = build.Invoke(null, new object[] { oneWayNode });
+            IList oneWayBoundaries = (IList)oneWayPlan.GetType().GetField(
+                "SegmentBoundaries", BindingFlags.Instance | BindingFlags.Public).GetValue(oneWayPlan);
+            foreach (object boundary in oneWayBoundaries)
+            {
+                object semantic = boundary.GetType().GetField(
+                    "Semantic", BindingFlags.Instance | BindingFlags.Public).GetValue(boundary);
+                if (string.Equals(semantic.ToString(), "OpposingCenter", StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        "raw one-way topology produced an opposing center boundary");
+            }
+
+            object twoWay = CreateRuntimeSegment(
+                segmentType, laneType, boundaryType, 2, true, 1, 2);
+            object twoWayNode = CreateRuntimeNode(
+                nodeType, entranceType, twoWay, true, true, true, true, true);
+            object twoWayPlan = build.Invoke(null, new object[] { twoWayNode });
+            IList twoWayBoundaries = (IList)twoWayPlan.GetType().GetField(
+                "SegmentBoundaries", BindingFlags.Instance | BindingFlags.Public).GetValue(twoWayPlan);
+            int centers = 0;
+            foreach (object boundary in twoWayBoundaries)
+            {
+                object semantic = boundary.GetType().GetField(
+                    "Semantic", BindingFlags.Instance | BindingFlags.Public).GetValue(boundary);
+                if (string.Equals(semantic.ToString(), "OpposingCenter", StringComparison.Ordinal)) ++centers;
+            }
+            if (centers != 1) throw new InvalidOperationException(
+                "raw two-way topology did not produce exactly one opposing center boundary");
+
+            object nonTargetA = CreateRuntimeSegment(
+                segmentType, laneType, boundaryType, 3, true, 1, 1);
+            object nonTargetB = CreateRuntimeSegment(
+                segmentType, laneType, boundaryType, 4, false, 1, 1);
+            object nonTargetC = CreateRuntimeSegment(
+                segmentType, laneType, boundaryType, 5, false, 1, 1);
+            object mixedNode = CreateRuntimeNode(
+                nodeType, entranceType, new object[] { nonTargetA, nonTargetB, nonTargetC },
+                true, true, true, true, true);
+            object mixedPlan = build.Invoke(null, new object[] { mixedNode });
+            IList mixedCrosswalks = (IList)mixedPlan.GetType().GetField(
+                "CrosswalkSegments", BindingFlags.Instance | BindingFlags.Public)
+                .GetValue(mixedPlan);
+            if (mixedCrosswalks.Count != 1)
+                throw new InvalidOperationException(
+                    "target filtering changed the full runtime junction degree or crosswalk ownership");
+
+            object incomplete = CreateRuntimeNode(
+                nodeType, entranceType, new object[] { oneWay, twoWay },
+                true, false, false, false, false);
+            Array incompleteEntrances = Array.CreateInstance(entranceType, 1);
+            incompleteEntrances.SetValue(CreateRuntimeEntrance(
+                entranceType, 1, true, false, false, false, false), 0);
+            SetField(nodeType, incomplete, "Entrances", incompleteEntrances);
+            bool rejected = false;
+            try { build.Invoke(null, new object[] { incomplete }); }
+            catch (TargetInvocationException error)
+            {
+                rejected = error.InnerException is InvalidOperationException;
+            }
+            if (!rejected) throw new InvalidOperationException(
+                "incomplete raw runtime topology was accepted");
+        }
+
+        private static object CreateRuntimeSegment(
+            Type segmentType,
+            Type laneType,
+            Type boundaryType,
+            ushort segmentId,
+            bool target,
+            int leftFlow,
+            int rightFlow)
+        {
+            Type flowType = segmentType.Assembly.GetType(
+                "RoadRuntimeHost.Runtime.RuntimeLaneFlow", true);
+            Array lanes = Array.CreateInstance(laneType, 2);
+            lanes.SetValue(CreateRuntimeLane(laneType, flowType, 0, leftFlow), 0);
+            lanes.SetValue(CreateRuntimeLane(laneType, flowType, 1, rightFlow), 1);
+            Array boundaries = Array.CreateInstance(boundaryType, 3);
+            boundaries.SetValue(CreateRuntimeBoundary(boundaryType, 0, 0, -1, 0), 0);
+            boundaries.SetValue(CreateRuntimeBoundary(boundaryType, 1, 1, 0, 1), 1);
+            boundaries.SetValue(CreateRuntimeBoundary(boundaryType, 2, 2, 1, -1), 2);
+            object result = Activator.CreateInstance(segmentType, true);
+            SetField(segmentType, result, "SegmentId", segmentId);
+            SetField(segmentType, result, "Target", target);
+            SetField(segmentType, result, "StartNode", (ushort)1);
+            SetField(segmentType, result, "EndNode", (ushort)10);
+            SetField(segmentType, result, "Invert", false);
+            SetField(segmentType, result, "Lanes", lanes);
+            SetField(segmentType, result, "Boundaries", boundaries);
+            return result;
+        }
+
+        private static object CreateRuntimeLane(Type laneType, Type flowType, int index, int flow)
+        {
+            object result = Activator.CreateInstance(laneType, true);
+            SetField(laneType, result, "Index", index);
+            SetField(laneType, result, "Flow", Enum.ToObject(flowType, flow));
+            SetField(laneType, result, "Vehicle", true);
+            SetField(laneType, result, "Pedestrian", false);
+            return result;
+        }
+
+        private static object CreateRuntimeBoundary(
+            Type boundaryType, int pointIndex, int ordinal, int left, int right)
+        {
+            object result = Activator.CreateInstance(boundaryType, true);
+            SetField(boundaryType, result, "PointIndex", pointIndex);
+            SetField(boundaryType, result, "PhysicalOrdinal", ordinal);
+            SetField(boundaryType, result, "LeftLaneIndex", left);
+            SetField(boundaryType, result, "RightLaneIndex", right);
+            return result;
+        }
+
+        private static object CreateRuntimeEntrance(
+            Type entranceType, ushort segmentId, bool target,
+            bool pedestrian, bool crossing, bool incoming, bool control)
+        {
+            object result = Activator.CreateInstance(entranceType, true);
+            SetField(entranceType, result, "SegmentId", segmentId);
+            SetField(entranceType, result, "Target", target);
+            SetField(entranceType, result, "IsStartSide", false);
+            SetField(entranceType, result, "HasPedestrianLane", pedestrian);
+            SetField(entranceType, result, "CrossingAllowed", crossing);
+            SetField(entranceType, result, "HasIncomingVehicleLane", incoming);
+            SetField(entranceType, result, "HasTrafficControl", control);
+            SetField(entranceType, result, "Boundaries", Array.CreateInstance(
+                entranceType.Assembly.GetType("RoadRuntimeHost.Runtime.RuntimeBoundarySnapshot", true), 0));
+            return result;
+        }
+
+        private static object CreateRuntimeNode(
+            Type nodeType, Type entranceType, object firstSegment,
+            bool target, bool pedestrian, bool crossing, bool incoming, bool control)
+        {
+            return CreateRuntimeNode(nodeType, entranceType,
+                new object[] { firstSegment }, target, pedestrian, crossing, incoming, control);
+        }
+
+        private static object CreateRuntimeNode(
+            Type nodeType, Type entranceType, object[] segmentValues,
+            bool target, bool pedestrian, bool crossing, bool incoming, bool control)
+        {
+            Type segmentType = segmentValues[0].GetType();
+            Array segments = Array.CreateInstance(segmentType, segmentValues.Length);
+            Array entrances = Array.CreateInstance(entranceType, segmentValues.Length);
+            for (int index = 0; index < segmentValues.Length; ++index)
+            {
+                segments.SetValue(segmentValues[index], index);
+                ushort id = (ushort)segmentType.GetField(
+                    "SegmentId", BindingFlags.Instance | BindingFlags.Public).GetValue(segmentValues[index]);
+                bool isTarget = (bool)segmentType.GetField(
+                    "Target", BindingFlags.Instance | BindingFlags.Public).GetValue(segmentValues[index]);
+                entrances.SetValue(CreateRuntimeEntrance(
+                    entranceType, id, isTarget, pedestrian, crossing, incoming, control), index);
+            }
+            object result = Activator.CreateInstance(nodeType, true);
+            SetField(nodeType, result, "NodeId", (ushort)10);
+            SetField(nodeType, result, "Segments", segments);
+            SetField(nodeType, result, "Entrances", entrances);
+            return result;
+        }
+
+        private static void SetField(Type type, object instance, string name, object value)
+        {
+            FieldInfo field = type.GetField(
+                name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field == null) throw new MissingFieldException(type.FullName, name);
+            field.SetValue(instance, value);
         }
 
         private static void ValidateRoadPlacementMarkingContract(Assembly runtimeAssembly)
