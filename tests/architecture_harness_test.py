@@ -88,7 +88,7 @@ class ArchitectureHarnessTest(unittest.TestCase):
         self.assertIn('"ReleaseSegment"', hook)
         self.assertIn("if (__result && segment != 0)", hook)
         self.assertIn("_pendingNodes", service)
-        self.assertIn("topologyRetryNodes", service)
+        self.assertIn("_pendingTopologyNodes", service)
         self.assertIn("imt_node_topology_not_ready", service)
         self.assertIn("OnImtTopologyUpdated", service)
         self.assertNotIn("m_currentTickIndex", service)

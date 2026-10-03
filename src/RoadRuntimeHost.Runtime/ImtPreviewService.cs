@@ -50,7 +50,7 @@ namespace RoadRuntimeHost.Runtime
         private readonly HashSet<ushort> _pendingNodes = new HashSet<ushort>();
         private readonly HashSet<ushort> _pendingTrafficPolicyNodes = new HashSet<ushort>();
         private readonly HashSet<ushort> _pendingTrafficPolicySegments = new HashSet<ushort>();
-        private readonly HashSet<ushort> _pendingTopologyRetryNodes =
+        private readonly HashSet<ushort> _pendingTopologyNodes =
             new HashSet<ushort>();
         private volatile HashSet<NetInfo> _targetInfos = new HashSet<NetInfo>();
         private volatile bool _segmentBatchPending;
@@ -124,7 +124,7 @@ namespace RoadRuntimeHost.Runtime
                 _pendingTrafficPolicySegments.Clear();
                 _trafficPolicyRefreshPending = false;
             }
-            lock (_pendingSegmentSync) _pendingTopologyRetryNodes.Clear();
+            lock (_pendingSegmentSync) _pendingTopologyNodes.Clear();
             _initializedSegmentDefaults.Clear();
             _ownedNodeLinePairs.Clear();
             _ownedNodeDefaults.Clear();
@@ -430,8 +430,8 @@ namespace RoadRuntimeHost.Runtime
             ushort[] ready;
             lock (_pendingSegmentSync)
             {
-                ready = new List<ushort>(_pendingTopologyRetryNodes).ToArray();
-                _pendingTopologyRetryNodes.Clear();
+                ready = new List<ushort>(_pendingTopologyNodes).ToArray();
+                _pendingTopologyNodes.Clear();
             }
             if (ready.Length == 0) return;
 
@@ -795,7 +795,7 @@ namespace RoadRuntimeHost.Runtime
                 lock (_pendingSegmentSync)
                 {
                     foreach (ushort nodeId in topologyRetryNodes)
-                        _pendingTopologyRetryNodes.Add(nodeId);
+                        _pendingTopologyNodes.Add(nodeId);
                 }
             }
         }
