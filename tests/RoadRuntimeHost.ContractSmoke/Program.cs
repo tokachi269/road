@@ -487,6 +487,8 @@ namespace RoadRuntimeHost.ContractSmoke
                 "RoadRuntimeHost.Runtime.RoadPlacementMarkingController", true);
             Type previewType = runtimeAssembly.GetType(
                 "RoadRuntimeHost.Runtime.ImtPreviewService", true);
+            Type topologyHookType = runtimeAssembly.GetType(
+                "RoadRuntimeHost.Runtime.ImtTopologyUpdatePatch", true);
             if (!typeof(ColossalFramework.UI.UIPanel).IsAssignableFrom(panelType))
                 throw new InvalidOperationException(
                     "road placement markings are not exposed through a CS1 UI panel");
@@ -538,18 +540,16 @@ namespace RoadRuntimeHost.ContractSmoke
                     "ReleasePostfix", BindingFlags.Static | BindingFlags.NonPublic) == null)
                 throw new InvalidOperationException(
                     "event-driven road create/release coverage is incomplete");
-            MethodInfo previewTick = previewType.GetMethod(
-                "Tick", BindingFlags.Instance | BindingFlags.Public);
             Type runtimeType = runtimeAssembly.GetType(
                 "RoadRuntimeHost.Runtime.RuntimeEntry", true);
             MethodInfo runtimeTick = runtimeType.GetMethod(
                 "Tick", BindingFlags.Instance | BindingFlags.Public);
-            if (previewTick == null || runtimeTick == null || !CallsMethod(
-                    runtimeTick,
-                    "RoadRuntimeHost.Runtime.ImtPreviewService",
-                    "Tick"))
+            MethodInfo topologyPostfix = topologyHookType.GetMethod(
+                "UpdatePostfix", BindingFlags.Static | BindingFlags.NonPublic);
+            if (runtimeTick == null || topologyPostfix == null
+                || previewType.GetMethod("Tick", BindingFlags.Instance | BindingFlags.Public) != null)
                 throw new InvalidOperationException(
-                    "stale IMT entrances cannot receive one delayed targeted retry");
+                    "IMT topology completion must be event-driven rather than Runtime tick polling");
 
             object defaults = Activator.CreateInstance(styleType, true);
             styleType.GetField("RoadsideLines").SetValue(defaults, true);

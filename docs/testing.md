@@ -113,8 +113,24 @@ catalogとbundleのlane不一致は`lane_contract_mismatch`として拒否する
 配置時の3規則が共通の一時選択からsegment用style snapshotへ変換されること、CS1用panel型が存在すること、
 全segment走査経路がなく、作成と削除の両hookが存在することもreflection contractで確認する。2-segment nodeでは、
 路側帯線・中央線・流入/流出separatorの接続可否、1～4車線の全16組合せ、端点を重複使用しないこと、対面道路から一方通行道路へ中央線を接続しないこと、135度未満だけ破線を実線化する境界をcontractに含める。
-IMT entrance更新が接続segmentより遅れた場合は部分生成せず、simulation tickが進んだ後に対象nodeだけを1回再投入する経路があり、全node走査へ変化していないことも確認する。3～8入口について歩行者laneと横断許可の全真偽組合せから期待ゼブラ数を求めるmatrixと、影響nodeで期待数と実数を比較する事後条件もcontractに含める。
+IMT entrance更新が接続segmentより遅れた場合は部分生成せず、IMT本体の`IMT.Manager.MarkingManager.Update()`完了後に未成立だった対象nodeだけを再投入する。Runtimeフレームやsimulation tickを監視して再試行する設計ではなく、全node走査もしない。
 参照道路から矢印・信号lane propを抽出する経路と、TM:PEへ信号既定ONを要求する経路の存在も確認する。
+
+### Runtime markingの独立検証
+
+`tests/runtime_marking_reference.py`はproductionの`BoundaryRoles`、`MatchBoundaryRoles`、
+`ImtNodePolicy`をimportしない。`NetInfo lane`相当のfinal direction、segmentのstart/endとInvert、
+IMT PointSourceのLeft/RightIndex、node entranceをraw snapshotとして受け、道路の意味から
+`BoundaryMeaning`と`MarkingPlan`を作る。対応するテストは車線数を仕様分岐にせず、one-way、two-way、
+incoming/outgoing、Invert、lane transition、2-segment接続、3-way交差点、未完成entranceを性質として検査する。
+
+このreference testのgreenは、productionのIMT adapterや実ゲームの表示を証明しない。逆に、
+Invert無視、one-wayへのcenter生成、center/separatorの取り違え、物理左右とlane indexの混同、
+不完全entranceの受け入れを意図的に入れたときに失敗することを、ハーネス自体の検査として含める。
+
+既存の14道路・88 lane検査、`ExpectedCrosswalkCount`、role配列を直接渡すmatrix、contract smokeは、
+authoring/export契約またはproduction APIの局所契約として扱う。これらのgreenだけではRuntime topologyの
+意味解釈、IMT lifecycle、実ゲームのmarking一致を証明しない。
 
 このcontract smokeは次を証明しない。
 

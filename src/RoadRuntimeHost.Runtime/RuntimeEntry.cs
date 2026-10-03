@@ -102,7 +102,6 @@ namespace RoadRuntimeHost.Runtime
         public void Tick(float realTimeDelta, float simulationTimeDelta)
         {
             if (_stopped) return;
-            if (_imtPreview != null) _imtPreview.Tick();
             _elapsed += realTimeDelta;
             if (_elapsed < 1f) return;
             _elapsed = 0f;

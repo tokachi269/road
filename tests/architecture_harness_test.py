@@ -76,6 +76,9 @@ class ArchitectureHarnessTest(unittest.TestCase):
         hook = (
             ROOT / "src" / "RoadRuntimeHost.Runtime" / "NetSegmentCreationHook.cs"
         ).read_text(encoding="utf-8")
+        topology_hook = (
+            ROOT / "src" / "RoadRuntimeHost.Runtime" / "ImtTopologyUpdateHook.cs"
+        ).read_text(encoding="utf-8")
 
         self.assertNotIn("_imtPreview.Poll()", entry)
         self.assertNotIn("public void Poll()", service)
@@ -87,8 +90,20 @@ class ArchitectureHarnessTest(unittest.TestCase):
         self.assertIn("_pendingNodes", service)
         self.assertIn("topologyRetryNodes", service)
         self.assertIn("imt_node_topology_not_ready", service)
-        self.assertIn("m_currentTickIndex", service)
-        self.assertIn("_imtPreview.Tick()", entry)
+        self.assertIn("OnImtTopologyUpdated", service)
+        self.assertNotIn("m_currentTickIndex", service)
+        self.assertNotIn("_imtPreview.Tick()", entry)
+        corner_body = service.split("private void ApplyCornerLines(", 1)[1]
+        self.assertNotIn("BoundaryRoles(", corner_body.split("private RuntimeNodeSnapshot", 1)[0])
+        plan = (ROOT / "src" / "RoadRuntimeHost.Runtime" / "RuntimeMarkingPlan.cs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("RuntimeNodeSnapshot", plan)
+        self.assertIn("RuntimeMarkingPlanBuilder", plan)
+        self.assertIn("RuntimeConnectorPlan", plan)
+        self.assertIn('"IMT.Manager.MarkingManager"', topology_hook)
+        self.assertIn('"Update"', topology_hook)
+        self.assertIn("UpdatePostfix", topology_hook)
         self.assertNotIn("m_segments.m_buffer.Length", service)
 
 

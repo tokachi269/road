@@ -47,6 +47,7 @@
     <Compile Include="ImtInternalAdapter.cs" />
     <Compile Include="ImtNodePolicy.cs" />
     <Compile Include="ImtRestoreDefaultsHook.cs" />
+    <Compile Include="ImtTopologyUpdateHook.cs" />
     <Compile Include="LaneContractValidator.cs" />
     <Compile Include="NetSegmentCreationHook.cs" />
     <Compile Include="PrefabInspectionService.cs" />
@@ -54,6 +55,7 @@
     <Compile Include="RoadPlacementMarkingPanel.cs" />
     <Compile Include="RoadToolbarRefresh.cs" />
     <Compile Include="RuntimeEntry.cs" />
+    <Compile Include="RuntimeMarkingPlan.cs" />
     <Compile Include="TestLayoutManager.cs" />
     <Compile Include="TmpeTrafficPolicy.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
