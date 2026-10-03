@@ -128,6 +128,10 @@ incoming/outgoing、Invert、lane transition、2-segment接続、3-way交差点�
 Invert無視、one-wayへのcenter生成、center/separatorの取り違え、物理左右とlane indexの混同、
 不完全entranceの受け入れを意図的に入れたときに失敗することを、ハーネス自体の検査として含める。
 
+`RoadRuntimeHost.ContractSmoke`にもraw DTOをreflectionで作る別contractを持たせ、productionの
+`RuntimeMarkingPlanBuilder`へrole配列を直接渡さず、one-way/two-way、target外混在、entrance欠落を検査する。
+これはproduction builderの入力経路を確認するもので、Python referenceのoracleとは別の証拠である。
+
 既存の14道路・88 lane検査、`ExpectedCrosswalkCount`、role配列を直接渡すmatrix、contract smokeは、
 authoring/export契約またはproduction APIの局所契約として扱う。これらのgreenだけではRuntime topologyの
 意味解釈、IMT lifecycle、実ゲームのmarking一致を証明しない。
