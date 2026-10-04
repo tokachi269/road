@@ -73,6 +73,9 @@ namespace RoadRuntimeHost.Runtime
         public ushort SegmentId;
         public int PointIndex;
         public RuntimeBoundarySemantic Semantic;
+        public RuntimeLaneFlow FlowAtNode;
+        public int InnerDistance;
+        public int PhysicalOrdinal;
     }
 
     internal sealed class RuntimeConnectorPlan
@@ -96,6 +99,12 @@ namespace RoadRuntimeHost.Runtime
 
     internal static class RuntimeMarkingPlanBuilder
     {
+        public static bool ShouldCreateBoundary(RuntimeBoundarySemantic semantic, bool roadsideEnabled)
+        {
+            return semantic != RuntimeBoundarySemantic.Other
+                && (semantic != RuntimeBoundarySemantic.Roadside || roadsideEnabled);
+        }
+
         public static RuntimeMarkingPlan Build(RuntimeNodeSnapshot snapshot)
         {
             if (snapshot == null) throw new ArgumentNullException("snapshot");
@@ -122,6 +131,9 @@ namespace RoadRuntimeHost.Runtime
                         SegmentId = segment.SegmentId,
                         PointIndex = boundary.PointIndex,
                         Semantic = ClassifyBoundary(segment, boundary),
+                        FlowAtNode = FlowAtNode(segment, boundary, snapshot.NodeId),
+                        InnerDistance = InnerDistance(segment, boundary),
+                        PhysicalOrdinal = boundary.PhysicalOrdinal,
                     });
                 }
             }
@@ -177,6 +189,17 @@ namespace RoadRuntimeHost.Runtime
             if (firstSegment == null || secondSegment == null) return;
             RuntimeBoundaryPlan[] first = BoundaryPlans(plan, firstSegment.SegmentId);
             RuntimeBoundaryPlan[] second = BoundaryPlans(plan, secondSegment.SegmentId);
+            Array.Sort(first, delegate(RuntimeBoundaryPlan left, RuntimeBoundaryPlan right)
+            {
+                if (left.Semantic == RuntimeBoundarySemantic.SameDirectionSeparator
+                    && right.Semantic == left.Semantic)
+                {
+                    int distance = left.InnerDistance.CompareTo(right.InnerDistance);
+                    if (distance != 0) return distance;
+                }
+                int semantic = ((int)left.Semantic).CompareTo((int)right.Semantic);
+                return semantic != 0 ? semantic : left.PhysicalOrdinal.CompareTo(right.PhysicalOrdinal);
+            });
             bool[] used = new bool[second.Length];
             for (int firstIndex = 0; firstIndex < first.Length; ++firstIndex)
             {
@@ -188,8 +211,16 @@ namespace RoadRuntimeHost.Runtime
                     int mirrored = second.Length - 1 - secondIndex;
                     if (used[mirrored]
                         || second[mirrored].Semantic != candidate.Semantic) continue;
+                    if (candidate.Semantic == RuntimeBoundarySemantic.SameDirectionSeparator)
+                    {
+                        if (!IsOneWay(candidate.FlowAtNode)
+                            || second[mirrored].FlowAtNode == candidate.FlowAtNode
+                            || !IsOneWay(second[mirrored].FlowAtNode)) continue;
+                        if (best >= 0 && second[best].InnerDistance <= second[mirrored].InnerDistance)
+                            continue;
+                    }
                     best = mirrored;
-                    break;
+                    if (candidate.Semantic != RuntimeBoundarySemantic.SameDirectionSeparator) break;
                 }
                 if (best < 0) continue;
                 used[best] = true;
@@ -202,6 +233,29 @@ namespace RoadRuntimeHost.Runtime
                     Semantic = candidate.Semantic,
                 });
             }
+        }
+
+        private static RuntimeLaneFlow FlowAtNode(RuntimeSegmentSnapshot segment,
+            RuntimeBoundarySnapshot boundary, ushort nodeId)
+        {
+            RuntimeLaneSnapshot lane = FindLane(segment.Lanes, boundary.LeftLaneIndex);
+            if (lane == null) return RuntimeLaneFlow.None;
+            // Forward here means outgoing; Backward means incoming. A node's
+            // two entrances have opposite normals, so continuity joins unlike flows.
+            return NormalizeFlow(lane.Flow, segment.Invert ^ (segment.EndNode == nodeId));
+        }
+
+        private static int InnerDistance(RuntimeSegmentSnapshot segment, RuntimeBoundarySnapshot boundary)
+        {
+            RuntimeBoundarySnapshot[] ordered = OrderedBoundaries(segment.Boundaries);
+            foreach (RuntimeBoundarySnapshot other in ordered)
+                if (ClassifyBoundary(segment, other) == RuntimeBoundarySemantic.OpposingCenter)
+                    return Math.Abs(boundary.PhysicalOrdinal - other.PhysicalOrdinal);
+            // A one-way road has no center boundary. Use its physical middle,
+            // never the numeric lane index or an arbitrary first matching point.
+            if (ordered.Length == 0) return 0;
+            return Math.Abs(2 * boundary.PhysicalOrdinal
+                - ordered[0].PhysicalOrdinal - ordered[ordered.Length - 1].PhysicalOrdinal);
         }
 
         private static RuntimeBoundaryPlan[] BoundaryPlans(

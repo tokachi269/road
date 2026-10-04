@@ -4,12 +4,42 @@ using IMT.API;
 
 namespace RoadRuntimeHost.Runtime
 {
-    // IMT 1.15's public API cannot retrieve an existing crosswalk provider.
-    // Keep this adapter limited to that compatibility gap and a one-time
+    // IMT 1.15's public API cannot retrieve a crosswalk provider or a regular
+    // node line across two entrances. Keep this adapter limited to those gaps and a one-time
     // recalculation after the wall-aligned boundary hook is installed. It must not own
     // or continuously rewrite IMT geometry.
     internal sealed class ImtInternalAdapter
     {
+        public IRegularLineData GetRegularLine(INodeMarkingData marking,
+            IEntrancePointData start, IEntrancePointData end)
+        {
+            Assembly assembly = marking.GetType().Assembly;
+            RequireSupportedVersion(assembly);
+            object internalMarking = PrivateProperty(marking, "Marking");
+            Type lineType = assembly.GetType("IMT.Manager.MarkingRegularLine", true);
+            MethodInfo lookup = FindGenericTryGetLine(internalMarking.GetType()).MakeGenericMethod(lineType);
+            object[] arguments = new object[] { PrivateProperty(start, "Point"), PrivateProperty(end, "Point"), null };
+            if (!(bool)lookup.Invoke(internalMarking, arguments) || arguments[2] == null)
+                throw new InvalidOperationException("IMT reported an existing regular line but its native line was not found");
+            Type providerType = assembly.GetType("IMT.Utilities.API.RegularLineDataProvider", true);
+            IRegularLineData result = Activator.CreateInstance(providerType,
+                new object[] { start.DataProvider, arguments[2] }) as IRegularLineData;
+            if (result == null) throw new InvalidOperationException("IMT regular-line provider did not implement IRegularLineData");
+            return result;
+        }
+
+        public string LineConfiguration(object lineData)
+        {
+            RequireSupportedVersion(lineData.GetType().Assembly);
+            // IMT's persisted line rules/appearance, not calculated geometry.
+            // A changed configuration relinquishes ownership to the user.
+            object nativeLine = PrivateProperty(lineData, "Line");
+            string line = InvokeNoArguments(nativeLine, "ToXml").ToString();
+            if (lineData is ICrosswalkData)
+                line += InvokeNoArguments(PublicProperty(nativeLine, "Crosswalk"), "ToXml").ToString();
+            return line;
+        }
+
         public ulong GetCrosswalkLineId(ICrosswalkData crosswalk)
         {
             return Convert.ToUInt64(PublicProperty(crosswalk, "Id"));

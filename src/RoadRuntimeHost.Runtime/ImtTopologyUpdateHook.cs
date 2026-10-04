@@ -17,11 +17,12 @@ namespace RoadRuntimeHost.Runtime
             "RoadRuntimeHost.Runtime.ImtTopologyUpdatePatch";
         private static readonly object Sync = new object();
         private static Action _updatedHandler;
+        private static Action _updatingHandler;
         private static bool _startAttempted;
 
-        public static void Start(Action updatedHandler)
+        public static void Start(Action updatedHandler, Action updatingHandler)
         {
-            lock (Sync) _updatedHandler = updatedHandler;
+            lock (Sync) { _updatedHandler = updatedHandler; _updatingHandler = updatingHandler; }
             if (_startAttempted) return;
             _startAttempted = true;
             InvokePatch("Start");
@@ -29,7 +30,7 @@ namespace RoadRuntimeHost.Runtime
 
         public static void Stop()
         {
-            lock (Sync) _updatedHandler = null;
+            lock (Sync) { _updatedHandler = null; _updatingHandler = null; }
             if (_startAttempted) InvokePatch("Stop");
             _startAttempted = false;
         }
@@ -38,6 +39,13 @@ namespace RoadRuntimeHost.Runtime
         {
             Action handler;
             lock (Sync) handler = _updatedHandler;
+            if (handler != null) handler();
+        }
+
+        internal static void NotifyUpdating()
+        {
+            Action handler;
+            lock (Sync) handler = _updatingHandler;
             if (handler != null) handler();
         }
 
@@ -120,12 +128,14 @@ namespace RoadRuntimeHost.Runtime
                     throw new MissingMethodException(markingManagerType.FullName, "Update()");
                 MethodInfo postfix = typeof(ImtTopologyUpdatePatch).GetMethod(
                     "UpdatePostfix", BindingFlags.Static | BindingFlags.NonPublic);
+                MethodInfo prefix = typeof(ImtTopologyUpdatePatch).GetMethod(
+                    "UpdatePrefix", BindingFlags.Static | BindingFlags.NonPublic);
                 if (postfix == null)
                     throw new MissingMethodException(typeof(ImtTopologyUpdatePatch).FullName, "UpdatePostfix");
 
                 _harmony = new Harmony(PatchId);
                 _harmony.Unpatch(_updateOriginal, HarmonyPatchType.All, PatchId);
-                _harmony.Patch(_updateOriginal, null, new HarmonyMethod(postfix));
+                _harmony.Patch(_updateOriginal, new HarmonyMethod(prefix), new HarmonyMethod(postfix));
                 DiagnosticLog.Info(
                     "SUCCESS",
                     "imt_topology_update_hook_installed",
@@ -159,6 +169,11 @@ namespace RoadRuntimeHost.Runtime
         private static void UpdatePostfix()
         {
             if (!_stopped) ImtTopologyUpdateHook.NotifyUpdated();
+        }
+
+        private static void UpdatePrefix()
+        {
+            if (!_stopped) ImtTopologyUpdateHook.NotifyUpdating();
         }
     }
 }

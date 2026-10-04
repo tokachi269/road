@@ -34,6 +34,9 @@ namespace RoadRuntimeHost.ContractSmoke
                 ValidateCrosswalkWallRenderingContract(runtime.Assembly);
                 ValidateImtNodePolicyContract(runtime.Assembly);
                 ValidateRuntimeMarkingPlanContract(runtime.Assembly);
+                ValidateCornerLookupContract(runtime.Assembly);
+                ValidateImtPointSourceContract(runtime.Assembly);
+                ValidateTmpeInterfaceLookup(runtime.Assembly);
                 ValidateRoadPlacementMarkingContract(runtime.Assembly);
                 ValidateRoadToolbarRefreshContract(runtime.Assembly);
                 LaneOwnershipContract.Validate(runtime.Assembly);
@@ -138,6 +141,109 @@ namespace RoadRuntimeHost.ContractSmoke
                 Console.Error.WriteLine(error);
                 return 1;
             }
+        }
+
+        private sealed class CornerPointProbe : IMT.API.IEntrancePointData
+        {
+            private readonly ushort _entrance;
+            public CornerPointProbe(ushort entrance) { _entrance = entrance; }
+            public IMT.API.IDataProviderV1 DataProvider { get { return null; } }
+            public IMT.API.IMarkingData Marking { get { return null; } }
+            public IMT.API.IEntranceData Entrance { get { return null; } }
+            public ushort MarkingId { get { return 0; } }
+            public ushort EntranceId { get { return _entrance; } }
+            public byte Index { get { return 1; } }
+            public IMT.API.IPointSourceData Source { get { return null; } }
+            public float Offset { get; set; }
+            public float Position { get { return 0; } }
+        }
+
+        private static void ValidateCornerLookupContract(Assembly runtimeAssembly)
+        {
+            // Reproduce the installed IMT API's same-entrance guard without a
+            // live NetManager. This is an actual API call, not a mocked oracle.
+            Type providerType = Type.GetType("IMT.Utilities.API.NodeMarkingDataProvider, IntersectionMarkingTool", true);
+            IMT.API.INodeMarkingData provider = (IMT.API.INodeMarkingData)Activator.CreateInstance(providerType);
+            bool rejected = false;
+            try
+            {
+                IMT.API.IRegularLineData ignored;
+                provider.TryGetRegularLine(new CornerPointProbe(1), new CornerPointProbe(2), out ignored);
+            }
+            catch (IMT.API.CreateLineException) { rejected = true; }
+            if (!rejected) throw new InvalidOperationException("IMT cross-entrance lookup constraint changed");
+
+            Type service = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.ImtPreviewService", true);
+            MethodInfo cleanup = service.GetMethod("RemoveOwnedCornerLines", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (CallsMethod(cleanup, "IMT.API.INodeMarkingData", "TryGetRegularLine")
+                || !CallsMethod(cleanup, "RoadRuntimeHost.Runtime.ImtInternalAdapter", "GetRegularLine"))
+                throw new InvalidOperationException("corner cleanup uses IMT's same-entrance-only public lookup");
+        }
+
+        private static void ValidateImtPointSourceContract(Assembly runtimeAssembly)
+        {
+            Type sourceType = Type.GetType("IMT.Utilities.API.PointSourceDataProvider, IntersectionMarkingTool", true);
+            Type service = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.ImtPreviewService", true);
+            MethodInfo convert = service.GetMethod("RuntimeBoundaryFromSource", BindingFlags.NonPublic | BindingFlags.Static);
+            foreach (IMT.API.PointLocation location in new IMT.API.PointLocation[] {
+                IMT.API.PointLocation.Left, IMT.API.PointLocation.Rigth, IMT.API.PointLocation.Between })
+            {
+                // Actual API DTO: absent lane ID and its index are both zero.
+                // Between(0,0) is deliberately NOT an edge: lane zero is valid.
+                object source = Activator.CreateInstance(sourceType, new object[] {
+                    location, location == IMT.API.PointLocation.Left ? (uint)0 : (uint)11, 0,
+                    location == IMT.API.PointLocation.Rigth ? (uint)0 : (uint)12, 0 });
+                object boundary = convert.Invoke(null, new object[] { 1, 0, source });
+                Type type = boundary.GetType();
+                int left = (int)type.GetField("LeftLaneIndex").GetValue(boundary);
+                int right = (int)type.GetField("RightLaneIndex").GetValue(boundary);
+                if (left != (location == IMT.API.PointLocation.Left ? -1 : 0)
+                    || right != (location == IMT.API.PointLocation.Rigth ? -1 : 0))
+                    throw new InvalidOperationException("IMT point location was lost during snapshot conversion: " + location);
+                Type segmentType = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.RuntimeSegmentSnapshot", true);
+                Type laneType = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.RuntimeLaneSnapshot", true);
+                object segment = CreateRuntimeSegment(segmentType, laneType, type, 1, true, 1, 1);
+                Type builder = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.RuntimeMarkingPlanBuilder", true);
+                object semantic = builder.GetMethod("ClassifyBoundary").Invoke(null, new object[] { segment, boundary });
+                bool edge = location != IMT.API.PointLocation.Between;
+                if ((semantic.ToString() == "Roadside") != edge)
+                    throw new InvalidOperationException("IMT edge classified as a lane separator");
+                foreach (bool enabled in new bool[] { false, true })
+                {
+                    bool permitted = (bool)builder.GetMethod("ShouldCreateBoundary").Invoke(null, new object[] { semantic, enabled });
+                    if (permitted != (!edge || enabled)) throw new InvalidOperationException("roadside OFF changed the wrong boundary role");
+                }
+                if (edge)
+                {
+                    Type policy = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.ImtNodePolicy", true);
+                    Type role = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.ImtBoundaryRole", true);
+                    foreach (float angle in new float[] { 90f, 135f, 180f })
+                        if ((string)policy.GetMethod("ConnectorStyle").Invoke(null, new object[] {
+                            Enum.Parse(role, "Roadside"), "DASHED_WHITE", "DASHED_WHITE", angle }) != "SOLID_WHITE")
+                            throw new InvalidOperationException("roadside inherited dashed separator style");
+                }
+            }
+        }
+
+        private interface SignalManagerProbe
+        {
+            bool CanToggleTrafficLight(ushort nodeId);
+        }
+
+        private sealed class ExplicitSignalManagerProbe : SignalManagerProbe
+        {
+            bool SignalManagerProbe.CanToggleTrafficLight(ushort nodeId) { return nodeId == 17; }
+        }
+
+        private static void ValidateTmpeInterfaceLookup(Assembly runtimeAssembly)
+        {
+            Type policy = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.TmpeTrafficPolicy", true);
+            MethodInfo lookup = policy.GetMethod("RequireMethod", BindingFlags.Static | BindingFlags.NonPublic);
+            object manager = new ExplicitSignalManagerProbe();
+            MethodInfo method = (MethodInfo)lookup.Invoke(null, new object[] { manager,
+                "CanToggleTrafficLight", new Type[] { typeof(ushort) } });
+            if (!(bool)method.Invoke(manager, new object[] { (ushort)17 }))
+                throw new InvalidOperationException("explicit TMPE interface method did not resolve");
         }
 
         private static void ValidatePackedTextureContract(Assembly runtimeAssembly)
@@ -561,6 +667,117 @@ namespace RoadRuntimeHost.ContractSmoke
             }
             if (!rejected) throw new InvalidOperationException(
                 "incomplete raw runtime topology was accepted");
+
+            // Node-local physical order differs from prefab lane order. A 1+4
+            // road meeting a 2+3 road must not join the surplus incoming
+            // separator to another incoming separator across the center.
+            object bendA = CreateRuntimeSegment(segmentType, laneType, boundaryType, 11, true, 2, 1);
+            object bendB = CreateRuntimeSegment(segmentType, laneType, boundaryType, 12, true, 2, 1);
+            Array bendLanesA = Array.CreateInstance(laneType, 5);
+            Array bendLanesB = Array.CreateInstance(laneType, 5);
+            Array bendPointsA = Array.CreateInstance(boundaryType, 6);
+            Array bendPointsB = Array.CreateInstance(boundaryType, 6);
+            for (int index = 0; index < 5; ++index)
+            {
+                Type flow = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.RuntimeLaneFlow", true);
+                bendLanesA.SetValue(CreateRuntimeLane(laneType, flow, index, index == 0 ? 2 : 1), index);
+                bendLanesB.SetValue(CreateRuntimeLane(laneType, flow, index, index < 2 ? 2 : 1), index);
+            }
+            for (int index = 0; index < 6; ++index)
+            {
+                bendPointsA.SetValue(CreateRuntimeBoundary(boundaryType, index, index,
+                    index == 0 ? -1 : 5 - index, index == 5 ? -1 : 4 - index), index);
+                bendPointsB.SetValue(CreateRuntimeBoundary(boundaryType, index, index,
+                    index - 1, index == 5 ? -1 : index), index);
+            }
+            SetField(segmentType, bendA, "Lanes", bendLanesA);
+            SetField(segmentType, bendA, "Boundaries", bendPointsA);
+            SetField(segmentType, bendB, "Lanes", bendLanesB);
+            SetField(segmentType, bendB, "Boundaries", bendPointsB);
+            SetField(segmentType, bendB, "StartNode", (ushort)10);
+            SetField(segmentType, bendB, "EndNode", (ushort)20);
+            object bendNode = CreateRuntimeNode(nodeType, entranceType, new object[] { bendA, bendB },
+                true, true, true, true, true);
+            Array bendEntrances = (Array)nodeType.GetField("Entrances").GetValue(bendNode);
+            SetField(entranceType, bendEntrances.GetValue(1), "IsStartSide", true);
+            object bendPlan = build.Invoke(null, new object[] { bendNode });
+            IList connectors = (IList)bendPlan.GetType().GetField("NodeConnectors").GetValue(bendPlan);
+            System.Collections.Generic.HashSet<string> expected = new System.Collections.Generic.HashSet<string>(
+                new string[] { "0:5", "5:0", "4:2", "3:3", "2:4" });
+            foreach (object connector in connectors)
+            {
+                Type type = connector.GetType();
+                string pair = type.GetField("FirstPointIndex").GetValue(connector) + ":"
+                    + type.GetField("SecondPointIndex").GetValue(connector);
+                if (!expected.Remove(pair)) throw new InvalidOperationException(
+                    "asymmetric bend joined wrong flow or outer surplus separator: " + pair);
+            }
+            if (expected.Count != 0) throw new InvalidOperationException("asymmetric bend omitted an inner connector");
+
+            for (int a = 1; a <= 4; ++a)
+            for (int b = 1; b <= 4; ++b)
+            for (int c = 1; c <= 4; ++c)
+            for (int d = 1; d <= 4; ++d)
+            for (int reversed = 0; reversed < 2; ++reversed)
+            {
+                object firstRoad = CreateBendRoad(segmentType, laneType, boundaryType, 21, a, b, false);
+                object secondRoad = CreateBendRoad(segmentType, laneType, boundaryType, 22, c, d, true);
+                if (reversed != 0)
+                {
+                    // Reversing endpoint and Invert together leaves the road's
+                    // physical lanes and flow at this node unchanged.
+                    SetField(segmentType, firstRoad, "StartNode", (ushort)10);
+                    SetField(segmentType, firstRoad, "EndNode", (ushort)1);
+                    SetField(segmentType, firstRoad, "Invert", true);
+                    SetField(segmentType, secondRoad, "StartNode", (ushort)20);
+                    SetField(segmentType, secondRoad, "EndNode", (ushort)10);
+                    SetField(segmentType, secondRoad, "Invert", true);
+                }
+                object rawNode = CreateRuntimeNode(nodeType, entranceType, new object[] { firstRoad, secondRoad },
+                    true, true, true, true, true);
+                object rawPlan = build.Invoke(null, new object[] { rawNode });
+                IList actual = (IList)rawPlan.GetType().GetField("NodeConnectors").GetValue(rawPlan);
+                System.Collections.Generic.HashSet<string> pairs = new System.Collections.Generic.HashSet<string>();
+                pairs.Add("0:" + (c + d));
+                pairs.Add((a + b) + ":0");
+                pairs.Add(b + ":" + c);
+                for (int rank = 1; rank < Math.Min(b, d); ++rank) pairs.Add((b - rank) + ":" + (c + rank));
+                for (int rank = 1; rank < Math.Min(a, c); ++rank) pairs.Add((b + rank) + ":" + (c - rank));
+                foreach (object connector in actual)
+                {
+                    Type type = connector.GetType();
+                    string pair = type.GetField("FirstPointIndex").GetValue(connector) + ":"
+                        + type.GetField("SecondPointIndex").GetValue(connector);
+                    if (!pairs.Remove(pair)) throw new InvalidOperationException("bend flow/rank matrix mismatch: " + pair);
+                }
+                if (pairs.Count != 0) throw new InvalidOperationException("bend flow/rank matrix has missing pairs");
+                // Degree transitions must leave neither a zebra nor a stop line
+                // in corner/end plans, even when crossing and traffic flags remain.
+                IList crosswalks = (IList)rawPlan.GetType().GetField("CrosswalkSegments").GetValue(rawPlan);
+                IList stops = (IList)rawPlan.GetType().GetField("StopLineSegments").GetValue(rawPlan);
+                if (crosswalks.Count != 0 || stops.Count != 0) throw new InvalidOperationException("corner plan retained junction defaults");
+            }
+        }
+
+        private static object CreateBendRoad(Type segmentType, Type laneType, Type boundaryType,
+            ushort id, int backward, int forward, bool start)
+        {
+            object result = CreateRuntimeSegment(segmentType, laneType, boundaryType, id, true, 2, 1);
+            int count = backward + forward;
+            Type flow = segmentType.Assembly.GetType("RoadRuntimeHost.Runtime.RuntimeLaneFlow", true);
+            Array lanes = Array.CreateInstance(laneType, count);
+            Array points = Array.CreateInstance(boundaryType, count + 1);
+            for (int index = 0; index < count; ++index)
+                lanes.SetValue(CreateRuntimeLane(laneType, flow, index, index < backward ? 2 : 1), index);
+            for (int index = 0; index <= count; ++index)
+                points.SetValue(CreateRuntimeBoundary(boundaryType, index, index,
+                    index == 0 ? -1 : (start ? index - 1 : count - index),
+                    index == count ? -1 : (start ? index : count - index - 1)), index);
+            SetField(segmentType, result, "Lanes", lanes);
+            SetField(segmentType, result, "Boundaries", points);
+            SetField(segmentType, result, "StartNode", (ushort)(start ? 10 : 1));
+            SetField(segmentType, result, "EndNode", (ushort)(start ? 20 : 10));
+            return result;
         }
 
         private static object CreateRuntimeSegment(

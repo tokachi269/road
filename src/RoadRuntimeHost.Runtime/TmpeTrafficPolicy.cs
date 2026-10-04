@@ -237,6 +237,16 @@ namespace RoadRuntimeHost.Runtime
                 null,
                 parameters,
                 null);
+            if (method == null)
+            {
+                // TM:PE exposes some operations only through explicit API
+                // interface implementations, not as class methods of this name.
+                foreach (Type contract in target.GetType().GetInterfaces())
+                {
+                    method = contract.GetMethod(name, parameters);
+                    if (method != null) break;
+                }
+            }
             if (method == null) throw new MissingMethodException(target.GetType().FullName, name);
             return method;
         }

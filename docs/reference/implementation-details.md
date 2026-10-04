@@ -70,11 +70,11 @@ Elevatedの左右端部は、Blender内の右側基準Mesh Object 1つで固定�
 
 現在の実装は、接続された一体meshを保ったまま、face semanticごとに共通atlasのregionへUVを割り当てる。通常の道路端は歩道上面1枚、curb壁、既存の路面faceで構成し、`curb.upper`や`curb.lower`のtexture素材を理由に細い面帯を追加しない。歩道上面のUV幅は`sidewalk.default + curb.upper`、壁に接する最外側路面のUV幅は`curb.lower + 接しているasphalt region`とし、共有辺のUをそれぞれ`curb.wall`の上端・下端へ一致させる。合成幅の正本は`textures/dimensions.json`のregion `width_px`であり、Blenderの形状幅へスケールして使用する。生成curb付き分離帯だけは、明示仕様によりcurb上面と中央上面を別faceにする。左右は同じregionを反転利用する。長手方向のslice数は増やさない。
 
-Network materialの長手方向scaleは全geometry familyで`0.5`を基準とし、標準時の4反復相当を2反復相当へ減らす。Texture制作上の1周期は16 m、2048 pxの縦幅は2周期の32 mとして扱う。縦横とも64 px/mを基準とする。日本の標準的な6 m塗装を維持する破線では残り10 mを空白にする。白線の周期だけを理由に別mesh、別material、別segment entryを作らない。縦方向の情報量が不足した場合は、同じmeshのUVに使うV範囲を広げて調整し、面分割やdraw call追加では対応しない。Runtime preview bundleは`main_texture_scale = [1, 0.5]`を明示し、RuntimeHostがUnity Materialへ適用する。最終CRPで同値を復元する保存・load契約はOutput Entry Plan/RoadImporter側の未実装事項として分離する。
+生成surfaceの長手spanは`dimensions.json`の`longitudinal_span_m = 16`を使い、2048 pxで長手128 px/m、横方向128 px/mとする。64 mの生成segment/nodeでは路面・歩道・curbのRoadUVのVを0..2へ広げ、BlenderのV倍率2で4反復とする。Network materialの長手scaleは`0.5`を維持し、Runtime bundleへ同じ生成UVを渡す。fallback線は独立した`fallback_longitudinal_span_m = 32`からVを0..1とし、既存画像の6 m塗装＋10 m空白を維持する。`period_m`と`repeats`はfallback画像の制作値であり、surface密度を決めない。指定meshのauthored UVとstructure/tunnelのUVは変更しない。別mesh、別material、面分割やdraw callは追加しない。Runtime preview bundleは`main_texture_scale = [1, 0.5]`を明示し、RuntimeHostがUnity Materialへ適用する。最終CRPで同値を復元する保存・load契約はOutput Entry Plan/RoadImporter側の未実装事項として分離する。
 
-制作atlasの寸法・固定slot・正規化U座標のDecision ownerは`textures/dimensions.json`とする。PSDとGenerator出力はtexture制作物であり、座標の正本ではない。個別素材は`textures/base_layers`へ置き、基準配置PNGはmanifestから再生成する。2048 pxを制作解像度、1024 pxを縮小候補とし、全region幅は1024側でも整数pxになるよう偶数にする。通常regionの座標は偶数とするが、32 px slot内へ26 pxのline bandを中央配置する場合だけ左右3 pxとなるため開始座標は奇数を許容する。縮小時はUを丸めず、2048と同じ正規化座標（1024上では半画素境界）を維持する。slotは2048側32 px grid、通常の外周paddingは32 pxとし、paddingのedge extrusionとmipmapは個別layerではなく最終atlas出力時に生成する。`surface`は歩道、curb profile、路肩、路面を0..1536へ置き、線用32 px slot群を1536..2048へ置く。curbを路面系から離れた専用bankへ分離しない。lineの26 px bandは内部に透明域を持つため、種類追加は空slotを使用し、容量を超える場合は既存UVを移動せず、新しい共通texture setを追加する。
+制作atlasの寸法・固定slot・正規化U座標のDecision ownerは`textures/dimensions.json`とする。PSDとGenerator出力はtexture制作物であり、座標の正本ではない。個別素材は`textures/base_layers`へ置き、基準配置PNGはmanifestから再生成する。2048 pxを制作解像度、1024 pxを縮小候補とし、全region幅は1024側でも整数pxになるよう偶数にする。通常regionの座標は偶数とするが、32 px slot内へ26 pxのline bandを中央配置する場合だけ左右3 pxとなるため開始座標は奇数を許容する。縮小時はUを丸めず、2048と同じ正規化座標（1024上では半画素境界）を維持する。slotは2048側32 px grid、通常の外周paddingは32 pxとし、paddingのedge extrusionとmipmapは個別layerではなく最終atlas出力時に生成する。`surface`は歩道、curb profile、路肩、路面を0..1984へ置き、fallback線2種類の32 px slotを1984..2048へ置く。curbを路面系から離れた専用bankへ分離しない。lineの26 px bandは内部に透明域を持つため、線用bankには予備slotを確保せず、拡張が必要になった時点で配置を判断する。
 
-道路端用profileは`edge.sidewalk 224..384 / curb.upper 384..390 / curb.wall 390..400 / curb.lower 400..416 / edge.asphalt 416..608 px`として内部paddingなしで連続配置する。歩道上面は`224..390`、壁は`390..400`を使う。路肩・車線の指定幅は側溝上面を含むため、0.5 m路肩は`curb.lower 0.25 m + asphalt 0.25 m`の`400..432`、3.0 m車線へ直接接続する場合は`curb.lower 0.25 m + asphalt 2.75 m`の`400..592`を使う。これらの固定値は`uv_profiles`へ明示し、個別region幅からBlender側で暗黙に再計算しない。これはtexture制作上の区分であり、通常道路へ上面・下面の専用faceを追加する規定ではない。壁面10 pxは将来の見かけ高0.15 mを64 px/mで制作する値であり、現行preview geometryの0.30 m高とは分けて`dimensions.json`へ記録する。UV値は手入力せず、regionの`x_px / atlas_width_px`から生成する。`tools/validate_texture_layout.py`はPNG寸法、slot重複、profile包含、2048から1024への整数幅縮小、正規化UVを検査する。固定pixel値はunit testにも独立に列挙し、manifestと実装が同じ誤値へ同時にずれても検出する。Blenderは同じmanifestからregionを解決し、PSD座標をBlender側へ複製しない。
+道路端用profileは`edge.sidewalk 32..352 / curb.upper 352..364 / curb.wall 364..384 / curb.lower 384..416 / edge.asphalt 416..800 px`として内部paddingなしで連続配置する。歩道上面は`32..364`、壁は`364..384`を使う。狭い歩道では上面profile全体を圧縮せず、壁側のUを固定して歩道外側のUをmanifestのpixels/mに従ってcropする。profileより広い歩道は従来どおり全profileを伸ばし、texture反復だけを理由にfaceを追加しない。路肩・車線の指定幅は側溝上面を含むため、0.5 m路肩は`curb.lower 0.25 m + asphalt 0.25 m`の`384..448`、3.0 m車線へ直接接続する場合は`curb.lower 0.25 m + asphalt 2.75 m`の`384..768`を使う。これらの固定値は`uv_profiles`へ明示し、個別region幅からBlender側で暗黙に再計算しない。これはtexture制作上の区分であり、通常道路へ上面・下面の専用faceを追加する規定ではない。壁面20 pxは将来の見かけ高0.15 mを128 px/mで制作する値であり、現行preview geometryの0.30 m高とは分けて`dimensions.json`へ記録する。UV値は手入力せず、regionの`x_px / atlas_width_px`から生成する。`tools/validate_texture_layout.py`はPNG寸法、slot重複、profile包含、2048から1024への整数幅縮小、正規化UVを検査する。固定pixel値はunit testにも独立に列挙し、manifestと実装が同じ誤値へ同時にずれても検出する。Blenderは同じmanifestからregionを解決し、PSD座標をBlender側へ複製しない。
 
 PhotoshopのGenerator Plugins / Image Assetsが出す`textures/road-assets/<family>_<map>.png`をBlender previewとRuntime previewの画像入力にするが、座標の正本にはしない。familyは`surface / structure / tunnel`、mapは`d / a / p / r / n / s`である。PSD自体はRuntimeへ渡さない。出力directory、family、map ID、ファイル名、Runtime packing、UV座標のDecision ownerは`textures/dimensions.json`である。`d`だけを必須とし、存在する任意mapだけを取り込む。Runtimeでは`d`を`_MainTex`へ割り当て、`a / p / r`を`_APRMap`へ、`n / s`を`_XYSMap`へchannel packする。`_APRMap = (1-a, 1-p, r)`、`_XYSMap = (n.r, n.g, 1-s)`とし、欠損channelの既定値はAPRが`(0, 1, 0)`、XYSが`(0.5, 0.5, 1)`である。Blender previewは`d / a / n / s`をPrincipled BSDFへ接続する。`p / r`は画像nodeとして読み込むが、CS1 theme側のPavement/Road textureが入力にないため、見た目を推測して合成しない。線の種類は同manifestの32 px slot間隔で配置するが、0.4 mの線faceのUはslot内の26 px content regionへ割り当てる。他のsurface faceも各semantic regionへ割り当て、座標をBlender側へ重複定義しない。生成curb付き分離帯もcurb壁・上面・中央面へ同じregionを再利用する。任意指定meshのUVは入力meshのものを保持する。
 
@@ -167,3 +167,24 @@ Loaderはゲームから読み込まれ続ける最小assemblyで、`runtime.cur
 Runtimeは同名のロード済み`NetInfo` / `PropInfo`があればそのobjectを更新し、新規の場合だけtemplate prefabをcloneして登録する。表示変更では既設segmentを削除しない。lane構造signatureが変わったときに作り直すのはHostが所有する試験区画だけであり、ユーザーが敷設した道路は削除しない。既設道路に対するlane数変更のゲーム内安全性は未検証である。
 
 Adaptive Roadsを前提に条件値を`namespace + value_json`で保持する。現在Runtimeが適用するnamespaceは`vanilla.lane`、`vanilla.start_node`、`vanilla.end_node`だけである。Adaptive Roads固有namespaceは失わず警告するが、reflection adapterによる反映は未実装・未検証である。
+
+## Surface atlasのPSD移行
+
+`textures/base_layers`のsurface配置ガイド6枚と`textures/atlas_bases/surface_base_2048.png`は新配置へ更新済み。PSDと`textures/road-assets`は自動変更しない。以下は左端を含み右端を含まないpixel範囲で、全レイヤーの高さは2048 px。
+
+| 素材 | 新しいX範囲 | 幅 |
+| --- | --- | --- |
+| 道路端の歩道 | 32..352 | 320 px |
+| curb上面 | 352..364 | 12 px |
+| curb壁 | 364..384 | 20 px |
+| curb下面 | 384..416 | 32 px |
+| 道路端のasphalt | 416..800 | 384 px |
+| 独立lane | 864..1248 | 384 px |
+| 独立歩道 | 1312..1632 | 320 px |
+| 独立路肩 | 1696..1760 | 64 px |
+| fallback白実線 | 1987..2013 | 26 px・変更なし |
+| fallback白破線 | 2019..2045 | 26 px・変更なし |
+
+配置ガイドは単色であり、既存素材を拡大しただけで細部が増えるわけではない。PSDのsurface各map（d/a/p/r/n/s）を同じ新配置に合わせてGenerator出力し、その後BlenderでReload ScriptsからBuild and export road libraryを実行する。旧Generator出力は2048 pxのままでも配置が異なるため、新UVでは正しい表示にならない。現行の寸法validationだけでは新旧配置を判別できない。
+
+ガイドの再生成は`python -m tools.build_texture_atlas_bases --rebuild-surface-guides`。単色でないbase layerは上書きを拒否する。fallback線の画像とstructure/tunnelの配置・密度は維持する。

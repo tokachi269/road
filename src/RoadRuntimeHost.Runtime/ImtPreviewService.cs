@@ -38,6 +38,7 @@ namespace RoadRuntimeHost.Runtime
         private readonly HashSet<ulong> _initializedSegmentDefaults = new HashSet<ulong>();
         private readonly HashSet<string> _ownedNodeLinePairs = new HashSet<string>();
         private readonly HashSet<string> _ownedNodeDefaults = new HashSet<string>();
+        private readonly Dictionary<string, string> _ownedNodeConfigurations = new Dictionary<string, string>();
         private readonly HashSet<string> _initializedNodeDefaults = new HashSet<string>();
         private readonly HashSet<ulong> _nativeCrosswalksRestored = new HashSet<ulong>();
         private readonly ImtInternalAdapter _internalAdapter = new ImtInternalAdapter();
@@ -63,7 +64,7 @@ namespace RoadRuntimeHost.Runtime
             _placementMarkings = new RoadPlacementMarkingController();
             _trafficPolicy = new TmpeTrafficPolicy(QueueTrafficPolicyRefresh);
             NetSegmentCreationHook.Start(OnSegmentCreated, OnSegmentReleased);
-            ImtTopologyUpdateHook.Start(OnImtTopologyUpdated);
+            ImtTopologyUpdateHook.Start(OnImtTopologyUpdated, OnImtTopologyUpdating);
             ImtRestoreDefaultsHook.Start(CanRestoreDefaults, RestoreDefaults);
         }
 
@@ -128,6 +129,7 @@ namespace RoadRuntimeHost.Runtime
             _initializedSegmentDefaults.Clear();
             _ownedNodeLinePairs.Clear();
             _ownedNodeDefaults.Clear();
+            _ownedNodeConfigurations.Clear();
             _initializedNodeDefaults.Clear();
             _nativeCrosswalksRestored.Clear();
         }
@@ -427,6 +429,7 @@ namespace RoadRuntimeHost.Runtime
         private void OnImtTopologyUpdated()
         {
             if (_stopped) return;
+            ProcessPendingSegments();
             ushort[] ready;
             lock (_pendingSegmentSync)
             {
@@ -440,6 +443,37 @@ namespace RoadRuntimeHost.Runtime
             // explicit topology-count precondition; there is no frame/tick
             // polling and no scan of unrelated nodes.
             ApplySegmentBatch(new PendingSegment[0], ready, false);
+        }
+
+        private void OnImtTopologyUpdating()
+        {
+            if (_stopped || !_segmentBatchPending) return;
+            ushort[] changed;
+            lock (_pendingSegmentSync)
+                changed = new List<ushort>(_pendingNodes).ToArray();
+            if (changed.Length == 0) return;
+            IDataProviderV1 provider = GetProvider();
+            if (provider == null) return;
+            foreach (ushort nodeId in changed)
+            {
+                if (nodeId == 0 || nodeId >= NetManager.instance.m_nodes.m_size) continue;
+                try
+                {
+                    INodeMarkingData marking;
+                    if (!provider.TryGetNodeMarking(nodeId, out marking)) continue;
+                    // Remove only our untouched defaults while old entrance IDs and
+                    // point sources still exist, before IMT remaps them from XML.
+                    RemoveOwnedCornerLines(marking);
+                    if (CountSegments(NetManager.instance.m_nodes.m_buffer[nodeId]) < 3)
+                        RemoveOwnedCrosswalksAndStopLines(marking);
+                }
+                catch (Exception error)
+                {
+                    DiagnosticLog.Error("MOD_COMPATIBILITY", "imt_topology_cleanup_failed",
+                        "Could not remove generated defaults before IMT topology update", error,
+                        "node_id", nodeId.ToString());
+                }
+            }
         }
 
         private void OnSegmentCreated(ushort segmentId, NetInfo info)
@@ -470,7 +504,7 @@ namespace RoadRuntimeHost.Runtime
                 _segmentBatchPending = true;
             }
 
-            SimulationManager.instance.AddAction(ProcessPendingSegments);
+            // The IMT completion hook drains this mutation batch.
         }
 
         private void OnSegmentReleased(
@@ -496,7 +530,7 @@ namespace RoadRuntimeHost.Runtime
                 if (_segmentBatchPending) return;
                 _segmentBatchPending = true;
             }
-            SimulationManager.instance.AddAction(ProcessPendingSegments);
+            // The IMT completion hook drains this mutation batch.
         }
 
         private void AddCurrentSegmentNodes(
@@ -519,6 +553,7 @@ namespace RoadRuntimeHost.Runtime
 
         private void ProcessPendingSegments()
         {
+            if (!_segmentBatchPending) return;
             PendingSegment[] segments;
             ushort[] nodes;
             lock (_pendingSegmentSync)
@@ -708,6 +743,13 @@ namespace RoadRuntimeHost.Runtime
                 ref NetNode node = ref manager.m_nodes.m_buffer[nodeId];
                 if (CountSegments(node) < 2)
                 {
+                    INodeMarkingData endMarking;
+                    if (provider.TryGetNodeMarking(nodeId, out endMarking))
+                    {
+                        RemoveOwnedCornerLines(endMarking);
+                        RemoveOwnedCrosswalksAndStopLines(endMarking);
+                        manager.UpdateNodeRenderer(nodeId, true);
+                    }
                     ForgetNodeDefaults(nodeId);
                     continue;
                 }
@@ -886,6 +928,9 @@ namespace RoadRuntimeHost.Runtime
                 if (end == null) continue;
                 usedEndIndexes.Add(end.Index);
 
+                RuntimeBoundarySemantic semantic = BoundaryMeaningForPoint(runtimeSegment, start.Index);
+                if (!RuntimeMarkingPlanBuilder.ShouldCreateBoundary(semantic, appearance.RoadsideLines)) continue;
+
                 // IMT 1.15's SegmentMarkingDataProvider.TryGetRegularLine has a
                 // contradictory same-entrance guard. RegularLineExist and
                 // RemoveRegularLine accept the valid cross-entrance pair.
@@ -898,11 +943,6 @@ namespace RoadRuntimeHost.Runtime
                 }
                 if (_initializedSegmentDefaults.Contains(pairKey)) continue;
 
-                RuntimeBoundarySemantic semantic = BoundaryMeaningForPoint(
-                    runtimeSegment, start.Index);
-                if (semantic == RuntimeBoundarySemantic.Roadside
-                    && !appearance.RoadsideLines) continue;
-                if (semantic == RuntimeBoundarySemantic.Other) continue;
                 IRegularLineStyleData style = semantic == RuntimeBoundarySemantic.Roadside
                     ? CreateSolidStyle(provider, appearance)
                     : CreateConfiguredLineStyle(
@@ -961,14 +1001,7 @@ namespace RoadRuntimeHost.Runtime
             List<RuntimeBoundarySnapshot> boundaries = new List<RuntimeBoundarySnapshot>();
             foreach (IEntrancePointData point in points ?? new List<IEntrancePointData>())
             {
-                IPointSourceData source = point.Source;
-                boundaries.Add(new RuntimeBoundarySnapshot
-                {
-                    PointIndex = point.Index,
-                    PhysicalOrdinal = boundaries.Count,
-                    LeftLaneIndex = source == null ? -1 : source.LeftIndex,
-                    RightLaneIndex = source == null ? -1 : source.RightIndex,
-                });
+                boundaries.Add(RuntimeBoundaryFromSource(point.Index, boundaries.Count, point.Source));
             }
             return new RuntimeSegmentSnapshot
             {
@@ -1016,6 +1049,10 @@ namespace RoadRuntimeHost.Runtime
             RemoveKeysContaining(_initializedNodeDefaults, token);
             RemoveKeysContaining(_ownedNodeDefaults, token);
             RemoveKeysContaining(_ownedNodeLinePairs, token);
+            List<string> configurations = new List<string>(_ownedNodeConfigurations.Keys);
+            foreach (string key in configurations)
+                if (key.IndexOf(token, StringComparison.Ordinal) >= 0)
+                    _ownedNodeConfigurations.Remove(key);
         }
 
         private static void RemoveKeysContaining(
@@ -1046,10 +1083,12 @@ namespace RoadRuntimeHost.Runtime
             int segmentCount = CountSegments(node);
             if (ImtNodePolicy.ShouldConnectRoadLines(segmentCount))
             {
+                // Crosswalk removal can invalidate dependent regular-line
+                // rules in IMT. Never create corner rules before removing it.
+                RemoveOwnedCrosswalksAndStopLines(marking);
                 ApplyCornerLines(
                     provider, marking, appearance,
                     ref linesAdded, ref linesExisting);
-                RemoveOwnedCrosswalksAndStopLines(marking);
                 return;
             }
             RemoveOwnedCornerLines(marking);
@@ -1101,6 +1140,7 @@ namespace RoadRuntimeHost.Runtime
                             ICrosswalkData createdCrosswalk = marking.AddCrosswalk(crosswalkStart, crosswalkEnd, CreateCrosswalkStyle(provider, appearance));
                             effectiveCrosswalk = createdCrosswalk;
                             _ownedNodeDefaults.Add(crosswalkKey);
+                            _ownedNodeConfigurations[crosswalkKey] = _internalAdapter.LineConfiguration(createdCrosswalk);
                             ++crosswalksAdded;
                         }
                         _initializedNodeDefaults.Add(crosswalkKey);
@@ -1143,8 +1183,9 @@ namespace RoadRuntimeHost.Runtime
                         continue;
                     }
                     if (_initializedNodeDefaults.Contains(stopLineKey)) continue;
-                    marking.AddStopLine(stopStart, stopEnd, CreateStopLineStyle(provider, appearance));
+                    IStopLineData createdStop = marking.AddStopLine(stopStart, stopEnd, CreateStopLineStyle(provider, appearance));
                     _ownedNodeDefaults.Add(stopLineKey);
+                    _ownedNodeConfigurations[stopLineKey] = _internalAdapter.LineConfiguration(createdStop);
                     _initializedNodeDefaults.Add(stopLineKey);
                     ++stopLinesAdded;
                 }
@@ -1183,6 +1224,8 @@ namespace RoadRuntimeHost.Runtime
                     secondEntrance, connector.SecondPointIndex);
                 if (start == null || end == null) continue;
                 ImtBoundaryRole role = ToImtBoundaryRole(connector.Semantic);
+                if (!RuntimeMarkingPlanBuilder.ShouldCreateBoundary(connector.Semantic,
+                    firstAppearance.RoadsideLines && secondAppearance.RoadsideLines)) continue;
                 string defaultKey = NodeDefaultKey("line", marking.Id, start, end);
                 if (marking.RegularLineExist(start, end))
                 {
@@ -1192,9 +1235,6 @@ namespace RoadRuntimeHost.Runtime
                 }
                 if (_initializedNodeDefaults.Contains(defaultKey)) continue;
 
-                if (role == ImtBoundaryRole.Roadside
-                    && (!firstAppearance.RoadsideLines
-                    || !secondAppearance.RoadsideLines)) continue;
                 string connectorStyle = ImtNodePolicy.ConnectorStyle(
                     role,
                     role == ImtBoundaryRole.Center
@@ -1206,8 +1246,9 @@ namespace RoadRuntimeHost.Runtime
                     connectorAngle);
                 IRegularLineStyleData style = CreateConfiguredLineStyle(
                     provider, firstAppearance, connectorStyle);
-                marking.AddRegularLine(start, end, style);
+                IRegularLineData createdLine = marking.AddRegularLine(start, end, style);
                 _ownedNodeLinePairs.Add(defaultKey);
+                _ownedNodeConfigurations[defaultKey] = _internalAdapter.LineConfiguration(createdLine);
                 _initializedNodeDefaults.Add(defaultKey);
                 ++added;
             }
@@ -1231,14 +1272,7 @@ namespace RoadRuntimeHost.Runtime
                 List<RuntimeBoundarySnapshot> boundaries = new List<RuntimeBoundarySnapshot>();
                 foreach (IEntrancePointData point in points)
                 {
-                    IPointSourceData source = point.Source;
-                    boundaries.Add(new RuntimeBoundarySnapshot
-                    {
-                        PointIndex = point.Index,
-                        PhysicalOrdinal = boundaries.Count,
-                        LeftLaneIndex = source == null ? -1 : source.LeftIndex,
-                        RightLaneIndex = source == null ? -1 : source.RightIndex,
-                    });
+                    boundaries.Add(RuntimeBoundaryFromSource(point.Index, boundaries.Count, point.Source));
                 }
                 RuntimeLaneSnapshot[] lanes = new RuntimeLaneSnapshot[info.m_lanes == null ? 0 : info.m_lanes.Length];
                 for (int laneIndex = 0; laneIndex < lanes.Length; ++laneIndex)
@@ -1283,6 +1317,22 @@ namespace RoadRuntimeHost.Runtime
                 NodeId = nodeId,
                 Segments = segments.ToArray(),
                 Entrances = runtimeEntrances.ToArray(),
+            };
+        }
+
+        private static RuntimeBoundarySnapshot RuntimeBoundaryFromSource(
+            int pointIndex, int ordinal, IPointSourceData source)
+        {
+            if (source == null || source.Location == PointLocation.None)
+                throw new InvalidOperationException("IMT entrance point has no supported boundary source location");
+            return new RuntimeBoundarySnapshot
+            {
+                PointIndex = pointIndex,
+                PhysicalOrdinal = ordinal,
+                // Missing IMT lanes have index 0, not -1. Only Location tells
+                // an edge apart from a real lane-zero adjacency.
+                LeftLaneIndex = source.Location == PointLocation.Left ? -1 : source.LeftIndex,
+                RightLaneIndex = source.Location == PointLocation.Rigth ? -1 : source.RightIndex,
             };
         }
 
@@ -1376,9 +1426,22 @@ namespace RoadRuntimeHost.Runtime
                         {
                             string defaultKey = NodeDefaultKey(
                                 "line", marking.Id, start, end);
-                            if (!_ownedNodeLinePairs.Remove(defaultKey)) continue;
-                            if (marking.RegularLineExist(start, end))
+                            if (!_ownedNodeLinePairs.Contains(defaultKey)) continue;
+                            bool existed = marking.RegularLineExist(start, end);
+                            IRegularLineData current = existed
+                                ? _internalAdapter.GetRegularLine(marking, start, end) : null;
+                            _ownedNodeLinePairs.Remove(defaultKey);
+                            if (!existed)
+                            {
+                                // A missing initialized line may have been
+                                // deleted in IMT. Retain its tombstone.
+                                _ownedNodeConfigurations.Remove(defaultKey);
+                                continue;
+                            }
+                            if (existed && !CanRemoveOwnedConfiguration(defaultKey, current)) continue;
+                            if (existed)
                                 marking.RemoveRegularLine(start, end);
+                            _ownedNodeConfigurations.Remove(defaultKey);
                             _initializedNodeDefaults.Remove(defaultKey);
                         }
                     }
@@ -1437,10 +1500,22 @@ namespace RoadRuntimeHost.Runtime
                 {
                     string key = NodeDefaultKey(
                         "crosswalk", marking.Id, crosswalkStart, crosswalkEnd);
-                    if (_ownedNodeDefaults.Remove(key)
-                        && marking.CrosswalkExist(crosswalkStart, crosswalkEnd))
-                        marking.RemoveCrosswalk(crosswalkStart, crosswalkEnd);
-                    _initializedNodeDefaults.Remove(key);
+                    if (_ownedNodeDefaults.Remove(key))
+                    {
+                        bool existed = marking.CrosswalkExist(crosswalkStart, crosswalkEnd);
+                        if (!existed)
+                        {
+                            _ownedNodeConfigurations.Remove(key);
+                            continue;
+                        }
+                        if (CanRemoveOwnedConfiguration(key,
+                            _internalAdapter.GetCrosswalk(marking, crosswalkStart, crosswalkEnd)))
+                        {
+                            if (existed) marking.RemoveCrosswalk(crosswalkStart, crosswalkEnd);
+                            _initializedNodeDefaults.Remove(key);
+                            _ownedNodeConfigurations.Remove(key);
+                        }
+                    }
                 }
 
                 List<IEntrancePointData> points = GetPoints(entrance.EntrancePoints);
@@ -1451,13 +1526,28 @@ namespace RoadRuntimeHost.Runtime
                         string key = NodeDefaultKey(
                             "stop", marking.Id, points[startIndex], points[endIndex]);
                         IStopLineData stopLine;
-                        if (_ownedNodeDefaults.Remove(key)
-                            && marking.TryGetStopLine(points[startIndex], points[endIndex], out stopLine))
-                            marking.RemoveStopLine(points[startIndex], points[endIndex]);
+                        if (!_ownedNodeDefaults.Remove(key)) continue;
+                        bool existed = marking.TryGetStopLine(points[startIndex], points[endIndex], out stopLine);
+                        if (!existed)
+                        {
+                            _ownedNodeConfigurations.Remove(key);
+                            continue;
+                        }
+                        if (existed && !CanRemoveOwnedConfiguration(key, stopLine)) continue;
+                        if (existed) marking.RemoveStopLine(points[startIndex], points[endIndex]);
                         _initializedNodeDefaults.Remove(key);
+                        _ownedNodeConfigurations.Remove(key);
                     }
                 }
             }
+        }
+
+        private bool CanRemoveOwnedConfiguration(string key, object current)
+        {
+            string original;
+            if (!_ownedNodeConfigurations.TryGetValue(key, out original)) return false;
+            _ownedNodeConfigurations.Remove(key);
+            return string.Equals(original, _internalAdapter.LineConfiguration(current), StringComparison.Ordinal);
         }
 
         private bool IsPedestrianCrossingAllowed(

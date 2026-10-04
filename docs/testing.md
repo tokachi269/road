@@ -132,6 +132,26 @@ Invert無視、one-wayへのcenter生成、center/separatorの取り違え、物
 `RuntimeMarkingPlanBuilder`へrole配列を直接渡さず、one-way/two-way、target外混在、entrance欠落を検査する。
 これはproduction builderの入力経路を確認するもので、Python referenceのoracleとは別の証拠である。
 
+コーナーの回帰検査では、両道路の各方向1〜4 laneの組合せとstart/end+Invert反転を
+raw DTOからproduction builderへ渡す。期待する接続pointは流入→流出、中央側からの
+順位で独立に計算し、余ったseparatorを反対の交通流へ接続しないことを検査する。
+旧検査はseparatorの交通流と内側からの順位を区別せず、同じ意味の線の件数だけでは
+交差した接続を検出できなかった。非対称1+4→2+3のfixtureは修正前productionで失敗した。
+
+IMT 1.15のPointSourceは、隣接laneが存在しない側もindexを`0`として返す。
+snapshot adapterは`PointLocation.Left / Rigth / Between`から端の欠落を正規化する。
+実IMTのPointSource providerを使うcontractで、lane index 0を欠落と混同しないこと、
+両端がRoadsideになること、路側帯OFFがseparatorを消さずRoadsideだけを抑止すること、
+Roadsideのコーナー線が角度やseparator設定にかかわらず白実線になることを検査する。
+従来の合成fixtureは欠落indexを最初から`-1`で作り、このadapterの誤変換を飛ばしていた。
+
+道路削除時のIMT mutationは上の接続検査とは別の証拠が必要である。
+IMT入口の更新前に、変更されたnodeの未編集の生成線だけを除去し、更新完了後に
+corner/endへ再評価する。生成時のIMT保存設定と異なる線はユーザー編集として保全する。
+実ゲームではintersection→corner→end、corner→intersection、IMT編集・手動削除後の
+道路削除を確認する。新Runtimeへhot reloadする前に作られた線のownershipは引き継がれないため、
+既存線を一律に生成線とみなして消さない。offline接続matrixのgreenはこの削除処理や表示の証明ではない。
+
 既存の14道路・88 lane検査、`ExpectedCrosswalkCount`、role配列を直接渡すmatrix、contract smokeは、
 authoring/export契約またはproduction APIの局所契約として扱う。これらのgreenだけではRuntime topologyの
 意味解釈、IMT lifecycle、実ゲームのmarking一致を証明しない。

@@ -3,13 +3,14 @@
   "atlas_width_px": 2048,
   "downscale_size_px": 1024,
   "authoring_scale": 2,
-  "logical_pixels_per_meter": 32.0,
+  "logical_pixels_per_meter": 64.0,
   "placement_grid_px": 32,
   "default_padding_px": 32,
-  "longitudinal_span_m": 32.0,
+  "longitudinal_span_m": 16.0,
+  "fallback_longitudinal_span_m": 32.0,
   "period_m": 16.0,
   "repeats": 2,
-  "pixels_per_meter": 64.0,
+  "pixels_per_meter": 128.0,
   "photoshop_generator": {
     "assets_directory": "road-assets",
     "maps": {
@@ -78,98 +79,98 @@
         {
           "id": "surface",
           "x_px": 0,
-          "width_px": 1536
+          "width_px": 1984
         },
         {
           "id": "line",
-          "x_px": 1536,
-          "width_px": 512,
+          "x_px": 1984,
+          "width_px": 64,
           "slot_width_px": 32,
-          "capacity": 16
+          "capacity": 2
         }
       ],
       "slots": [
         {
           "id": "lane.default",
-          "slot_x_px": 736,
-          "slot_width_px": 256,
+          "slot_x_px": 832,
+          "slot_width_px": 448,
           "padding_left_px": 32,
           "padding_right_px": 32,
           "regions": [
             {
               "id": "lane.default",
               "file": "surface_lane_3m.png",
-              "x_px": 768,
-              "width_px": 192
+              "x_px": 864,
+              "width_px": 384
             }
           ]
         },
         {
           "id": "sidewalk.default",
-          "slot_x_px": 992,
-          "slot_width_px": 224,
+          "slot_x_px": 1280,
+          "slot_width_px": 384,
           "padding_left_px": 32,
           "padding_right_px": 32,
           "regions": [
             {
               "id": "sidewalk.default",
               "file": "surface_sidewalk_2p5m.png",
-              "x_px": 1024,
-              "width_px": 160
+              "x_px": 1312,
+              "width_px": 320
             }
           ]
         },
         {
           "id": "shoulder.default",
-          "slot_x_px": 640,
-          "slot_width_px": 96,
+          "slot_x_px": 1664,
+          "slot_width_px": 128,
           "padding_left_px": 32,
           "padding_right_px": 32,
           "regions": [
             {
               "id": "shoulder.default",
               "file": "surface_shoulder_0p5m.png",
-              "x_px": 672,
-              "width_px": 32
+              "x_px": 1696,
+              "width_px": 64
             }
           ]
         },
         {
           "id": "road.edge.profile",
-          "slot_x_px": 192,
-          "slot_width_px": 448,
+          "slot_x_px": 0,
+          "slot_width_px": 832,
           "padding_left_px": 32,
           "padding_right_px": 32,
           "regions": [
             {
               "id": "edge.sidewalk",
               "file": "surface_sidewalk_2p5m.png",
-              "x_px": 224,
-              "width_px": 160
+              "x_px": 32,
+              "width_px": 320
             },
             {
               "id": "curb.upper",
               "file": "surface_curb_upper_sidewalk_0p1m.png",
-              "x_px": 384,
-              "width_px": 6
+              "x_px": 352,
+              "width_px": 12
             },
             {
               "id": "curb.wall",
               "file": "surface_curb_wall_0p3m.png",
-              "x_px": 390,
-              "width_px": 10
+              "x_px": 364,
+              "width_px": 20
             },
             {
               "id": "curb.lower",
               "file": "surface_curb_lower_roadway_0p25m.png",
-              "x_px": 400,
-              "width_px": 16
+              "x_px": 384,
+              "width_px": 32
             },
             {
               "id": "edge.asphalt",
               "file": "surface_lane_3m.png",
               "x_px": 416,
-              "width_px": 192
+              "width_px": 384
             }
           ]
         },
@@ -322,25 +323,25 @@
   "uv_profiles": {
     "sidewalk.default+curb.upper": {
       "atlas": "surface",
-      "x_px": 224,
-      "width_px": 166
+      "x_px": 32,
+      "width_px": 332
     },
     "curb.lower+shoulder.default": {
       "atlas": "surface",
-      "x_px": 400,
-      "width_px": 32
+      "x_px": 384,
+      "width_px": 64
     },
     "curb.lower+lane.default": {
       "atlas": "surface",
-      "x_px": 400,
-      "width_px": 192
+      "x_px": 384,
+      "width_px": 384
     }
   },
   "layers": [
     {
       "file": "surface_lane_3m.png",
       "meters": 3.0,
-      "width_px": 192,
+      "width_px": 384,
       "height_px": 2048,
       "color": "#5B86D8",
       "content": "solid"
@@ -348,7 +349,7 @@
     {
       "file": "surface_shoulder_0p5m.png",
       "meters": 0.5,
-      "width_px": 32,
+      "width_px": 64,
       "height_px": 2048,
       "color": "#87A670",
       "content": "solid"
@@ -356,7 +357,7 @@
     {
       "file": "surface_sidewalk_2p5m.png",
       "meters": 2.5,
-      "width_px": 160,
+      "width_px": 320,
       "height_px": 2048,
       "color": "#A2DED4",
       "content": "solid"
@@ -365,7 +366,7 @@
       "file": "surface_curb_wall_0p3m.png",
       "meters": 0.15,
       "geometry_height_m": 0.3,
-      "width_px": 10,
+      "width_px": 20,
       "height_px": 2048,
       "color": "#539268",
       "content": "0.15m authored curb wall; current preview geometry remains 0.30m"
@@ -373,7 +374,7 @@
     {
       "file": "surface_curb_upper_sidewalk_0p1m.png",
       "meters": 0.1,
-      "width_px": 6,
+      "width_px": 12,
       "height_px": 2048,
       "color": "#E2A66B",
       "content": "JIS L-gutter 250A curb top on the sidewalk side"
@@ -381,7 +382,7 @@
     {
       "file": "surface_curb_lower_roadway_0p25m.png",
       "meters": 0.25,
-      "width_px": 16,
+      "width_px": 32,
       "height_px": 2048,
       "color": "#6BB7E2",
       "content": "JIS L-gutter 250A drainage surface on the roadway side"

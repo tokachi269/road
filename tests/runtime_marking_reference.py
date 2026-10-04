@@ -152,29 +152,43 @@ def _segment_plan(segment: Segment, node_id: int) -> Tuple[BoundaryPlan, ...]:
 
 
 def _connectors(first: Segment, second: Segment, node_id: int) -> Tuple[ConnectorPlan, ...]:
-    left = _segment_plan(first, node_id)
-    right = _segment_plan(second, node_id)
-    used = set()
     result = []
-    for boundary in left:
-        if boundary.meaning in (BoundaryMeaning.OTHER, BoundaryMeaning.ROADSIDE):
-            allowed = {BoundaryMeaning.ROADSIDE} if boundary.meaning is BoundaryMeaning.ROADSIDE else set()
-        else:
-            allowed = {boundary.meaning}
-        chosen = None
-        for index in range(len(right) - 1, -1, -1):
-            candidate = right[index]
-            if index in used or candidate.meaning not in allowed:
+
+    def group(segment, meaning, incoming=None):
+        physical = _ordered_boundaries(segment)
+        centers = [p.physical_ordinal for p in physical
+                   if boundary_meaning(segment, p, node_id) is BoundaryMeaning.CENTER]
+        middle = centers[0] if centers else (physical[0].physical_ordinal + physical[-1].physical_ordinal) / 2
+        selected = []
+        for point in physical:
+            if boundary_meaning(segment, point, node_id) is not meaning:
                 continue
-            chosen = (index, candidate)
-            break
-        if chosen is None:
-            continue
-        index, candidate = chosen
-        used.add(index)
-        result.append(ConnectorPlan(boundary.segment_id, boundary.point_index,
-                                    candidate.segment_id, candidate.point_index,
-                                    boundary.meaning))
+            if incoming is not None:
+                lane = _lane(segment, point.source.left_index)
+                if lane is None or lane.final_direction not in (Flow.FORWARD, Flow.BACKWARD):
+                    continue
+                entrance = Entrance(segment.segment_id, segment.start_node == node_id,
+                                    False, False, False, False)
+                toward = Flow.BACKWARD if entrance.is_start_side else Flow.FORWARD
+                if segment.invert:
+                    toward = _flip(toward)
+                if (lane.final_direction is toward) != incoming:
+                    continue
+            selected.append(point)
+        if meaning is BoundaryMeaning.SEPARATOR:
+            selected.sort(key=lambda p: (abs(p.physical_ordinal - middle), p.physical_ordinal))
+        return selected
+
+    # Independent grouping/rank formulation: each traffic stream has its own
+    # sequence counted outwards from the center; no greedy role-only search.
+    for meaning, incoming in ((BoundaryMeaning.ROADSIDE, None), (BoundaryMeaning.CENTER, None),
+                              (BoundaryMeaning.SEPARATOR, True), (BoundaryMeaning.SEPARATOR, False)):
+        left = group(first, meaning, incoming)
+        right = group(second, meaning, None if incoming is None else not incoming)
+        if meaning is BoundaryMeaning.ROADSIDE:
+            right.reverse()
+        result.extend(ConnectorPlan(first.segment_id, a.point_index, second.segment_id,
+                                    b.point_index, meaning) for a, b in zip(left, right))
     return tuple(result)
 
 

@@ -314,7 +314,24 @@ for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
         assert len(obj.data.uv_layers) == 1, obj.name
         for uv in (loop.uv for loop in obj.data.uv_layers[0].data):
             assert -1e-6 <= uv.x <= 1.0 + 1e-6, (obj.name, uv[:])
-            assert -1e-6 <= uv.y <= 1.0 + 1e-6, (obj.name, uv[:])
+            assert -1e-6 <= uv.y <= 2.0 + 1e-6, (obj.name, uv[:])
+        # Measure real generated segment/node faces in metres; a global
+        # material-scale change must not silently shorten fallback dashes.
+        regions = obj.data.attributes["cs1_uv_region"]
+        checked_surface = 0
+        for face in obj.data.polygons:
+            region = road_builder.UV_REGION_NAMES[regions.data[face.index].value]
+            if region not in {"lane.default", "curb.wall", "line.dashed.white", "line.solid.white"}:
+                continue
+            ys = [obj.data.vertices[i].co.y for i in face.vertices]
+            vs = [obj.data.uv_layers[0].data[i].uv.y for i in face.loop_indices]
+            dy = max(ys) - min(ys)
+            if dy < 1e-6:
+                continue
+            expected = dy / (64 if region.startswith("line.") else 32)
+            assert abs(max(vs) - min(vs) - expected) < 1e-5, (obj.name, region)
+            checked_surface += not region.startswith("line.")
+        assert checked_surface, obj.name
 
 shared_surface = bpy.data.materials[road_builder.SHARED_SURFACE_MATERIAL]
 shared_structure = bpy.data.materials[road_builder.SHARED_STRUCTURE_MATERIAL]
@@ -371,14 +388,14 @@ structure_regions = {
 tunnel_regions = {"tunnel.roof", "tunnel.wall"}
 
 locked_region_pixels = {
-    "edge.sidewalk": ("surface", 224, 384),
-    "curb.upper": ("surface", 384, 390),
-    "curb.wall": ("surface", 390, 400),
-    "curb.lower": ("surface", 400, 416),
-    "edge.asphalt": ("surface", 416, 608),
-    "shoulder.default": ("surface", 672, 704),
-    "lane.default": ("surface", 768, 960),
-    "sidewalk.default": ("surface", 1024, 1184),
+    "edge.sidewalk": ("surface", 32, 352),
+    "curb.upper": ("surface", 352, 364),
+    "curb.wall": ("surface", 364, 384),
+    "curb.lower": ("surface", 384, 416),
+    "edge.asphalt": ("surface", 416, 800),
+    "shoulder.default": ("surface", 1696, 1760),
+    "lane.default": ("surface", 864, 1248),
+    "sidewalk.default": ("surface", 1312, 1632),
     "line.solid.white": ("surface", 1987, 2013),
     "line.dashed.white": ("surface", 2019, 2045),
     "deck.underside": ("structure", 32, 800),
@@ -394,9 +411,9 @@ for region_id, (atlas_name, x_min, x_max) in locked_region_pixels.items():
     assert actual == (x_min / 2048.0, x_max / 2048.0), (region_id, actual)
 
 locked_profile_pixels = {
-    "sidewalk.default+curb.upper": (224, 390),
-    "curb.lower+shoulder.default": (400, 432),
-    "curb.lower+lane.default": (400, 592),
+    "sidewalk.default+curb.upper": (32, 364),
+    "curb.lower+shoulder.default": (384, 448),
+    "curb.lower+lane.default": (384, 768),
 }
 for region_id, (x_min, x_max) in locked_profile_pixels.items():
     atlas_name, u_min, u_max = road_builder._uv_region_bounds(region_id)
@@ -473,8 +490,8 @@ outer_uv_spans = [
 ]
 assert len(outer_uv_spans) == 2
 for span in outer_uv_spans:
-    assert abs((span.u_range[1] - span.u_range[0]) * 2048.0 - 64.0) < 1e-6
-    curb_visible_width = (span.x_max - span.x_min) * 16.0 / 64.0
+    assert abs((span.u_range[1] - span.u_range[0]) * 2048.0 - 128.0) < 1e-6
+    curb_visible_width = (span.x_max - span.x_min) * 32.0 / 128.0
     assert abs(curb_visible_width - 0.25) < 1e-6
 assert {"deck.underside", "elevated.fascia", "girder.bottom", "girder.side"} <= initial_regions[("elevated", "segment")]
 assert {"deck.underside", "bridge.fascia", "girder.bottom", "girder.side"} <= initial_regions[("bridge", "segment")]
@@ -620,7 +637,7 @@ assert u_values_at_coordinate(basic_segment, (7.5, -32.0, -0.3)) == {
 uv_layer = basic_segment.data.uv_layers[0]
 for uv in (loop.uv for loop in uv_layer.data):
     assert -1e-6 <= uv.x <= 1.0 + 1e-6, uv[:]
-    assert -1e-6 <= uv.y <= 1.0 + 1e-6, uv[:]
+    assert -1e-6 <= uv.y <= 2.0 + 1e-6, uv[:]
 marking_uv = []
 marking_region_attribute = basic_segment.data.attributes["cs1_uv_region"]
 for polygon in polygons_of_kind(basic_segment, "marking"):
@@ -1570,6 +1587,81 @@ profile_name = active_profile.name
 active_profile.name = "Temporary profile name"
 assert bpy.ops.cs1_road.import_profiles(filepath=str(profile_file)) == {"FINISHED"}
 assert active_profile.name == profile_name
+# Measure curb coverage in metres on generated faces, not just atlas bounds.
+curb_test_road = road_builder.active_road(scene)
+previous_sidewalk_width = curb_test_road.sidewalk_width
+try:
+    for sidewalk_width in (1.0, 2.5):
+        curb_test_road.sidewalk_width = sidewalk_width
+        road_builder.build_mode(scene, "basic")
+        obj = bpy.data.objects["basic_segment"]
+        attribute = obj.data.attributes["cs1_uv_region"]
+        uv = obj.data.uv_layers["RoadUV"]
+        checked_upper = checked_lower = 0
+        for face in obj.data.polygons:
+            region = road_builder.UV_REGION_NAMES[attribute.data[face.index].value]
+            xs = [obj.data.vertices[index].co.x for index in face.vertices]
+            us = [uv.data[index].uv.x for index in face.loop_indices]
+            dx, du = max(xs) - min(xs), max(us) - min(us)
+            if dx < 1e-7 or du < 1e-7:
+                continue
+            if region == "sidewalk.default+curb.upper":
+                assert abs(dx * (12 / 2048) / du - 12 / 128) < 1e-5, (sidewalk_width, dx, du)
+                checked_upper += 1
+            elif region.startswith("curb.lower+"):
+                assert abs(dx * (32 / 2048) / du - 0.25) < 1e-5, (sidewalk_width, dx, du)
+                checked_lower += 1
+        assert checked_upper and checked_lower
+finally:
+    curb_test_road.sidewalk_width = previous_sidewalk_width
+
+
+class ErrorReportProbe:
+    def __init__(self):
+        self.errors = []
+
+    def report(self, levels, message):
+        self.errors.append((levels, message))
+
+
+# A missing required Generator image must cancel build/export without a
+# traceback, erasing an existing preview, or failing again in export's finally.
+original_atlas_path = road_builder._generated_atlas_path
+missing_atlas = texture_fixture_root / "missing-required-surface.png"
+assert not missing_atlas.exists()
+for operator_type in (road_builder.CS1ROAD_OT_build_preview, road_builder.CS1ROAD_OT_build_all,
+                      road_builder.CS1ROAD_OT_export_runtime, road_builder.CS1ROAD_OT_export_all_runtime):
+    previous_index = scene.cs1_active_road_index
+    preview_objects = {obj.as_pointer() for mode, _, _ in road_builder.MODE_ITEMS
+                       for obj in road_builder._mode_collection(scene, mode).objects}
+    surface_nodes = {node.as_pointer() for node in bpy.data.materials[road_builder.SHARED_SURFACE_MATERIAL].node_tree.nodes}
+    probe = ErrorReportProbe()
+    road_builder._generated_atlas_path = lambda family, map_id="d": (
+        missing_atlas if (family, map_id) == ("surface", "d") else original_atlas_path(family, map_id))
+    try:
+        assert operator_type.execute(probe, bpy.context) == {"CANCELLED"}
+    finally:
+        road_builder._generated_atlas_path = original_atlas_path
+    assert scene.cs1_active_road_index == previous_index
+    assert preview_objects == {obj.as_pointer() for mode, _, _ in road_builder.MODE_ITEMS
+                               for obj in road_builder._mode_collection(scene, mode).objects}
+    assert surface_nodes == {node.as_pointer() for node in bpy.data.materials[road_builder.SHARED_SURFACE_MATERIAL].node_tree.nodes}
+    assert probe.errors and "Photoshop Generator" in probe.errors[0][1]
+
+# Generated surface density changes without changing fallback or authored UV.
+for kind, region, expected_v in (
+    ("surface", "lane.default", 2.0),
+    ("surface", "curb.wall", 2.0),
+    ("marking", "line.dashed.white", 1.0),
+    ("surface", "authored", 1.0),
+    ("structure", "deck.underside", 1.0),
+):
+    probe_mesh = road_builder._SurfaceMesh()
+    probe_mesh.quad((0, 0, 0), (1, 0, 0), (1, 64, 0), (0, 64, 0),
+                    kind=kind, uv_region=region,
+                    uvs=((0, 0), (1, 0), (1, 1), (0, 1)))
+    assert max(v for u, v in probe_mesh.face_uvs[0]) == expected_v, region
+
 before_reload_count = len(scene.cs1_roads)
 before_reload_name = road_builder.active_road(scene).road_name
 
@@ -1577,6 +1669,8 @@ before_reload_name = road_builder.active_road(scene).road_name
 # child modules and register cleanly again without restarting Blender.
 road_builder.unregister()
 road_builder = importlib.reload(road_builder)
+road_builder.DEFAULT_TEXTURE_LAYOUT = texture_fixture_manifest
+road_builder._TEXTURE_LAYOUT_CACHE = None
 road_builder.register()
 road_builder._initialize_scene_lanes()
 reloaded_props = road_builder.active_road(bpy.context.scene)

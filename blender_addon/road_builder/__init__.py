@@ -189,6 +189,7 @@ MARKING_TEXTURE_REGIONS = {
     "SOLID_YELLOW": "line.solid.white",
 }
 SHARED_SURFACE_MATERIAL = "CS1 Road Shared Surface"
+SURFACE_PREVIEW_V_SCALE = 2.0
 SHARED_STRUCTURE_MATERIAL = "CS1 Road Shared Structure"
 SHARED_TUNNEL_MATERIAL = "CS1 Road Shared Tunnel"
 DEFAULT_ROAD_COLOR = (0.12, 0.14, 0.16)
@@ -400,7 +401,7 @@ def _image_texture_material(
     uv_map.uv_map = "RoadUV"
     mapping = nodes.new("ShaderNodeMapping")
     mapping.location = (-800.0, 100.0)
-    mapping.inputs["Scale"].default_value = (1.0, 2.0, 1.0)
+    mapping.inputs["Scale"].default_value = (1.0, SURFACE_PREVIEW_V_SCALE, 1.0)
     texture = nodes.new("ShaderNodeTexImage")
     texture.name = "CS1 Diffuse"
     texture.label = "CS1 Diffuse"
@@ -422,6 +423,7 @@ def _material(
     paint_width: float, region_width: float, road_color,
     force_texture_reload: bool = False,
 ) -> bpy.types.Material:
+    image = _surface_atlas_image(force_texture_reload)
     material = (
         bpy.data.materials.get(SHARED_SURFACE_MATERIAL)
         or bpy.data.materials.new(SHARED_SURFACE_MATERIAL)
@@ -446,7 +448,7 @@ def _material(
     texture.label = "CS1 Diffuse"
     texture.location = (-520.0, 420.0)
     texture.width = 240.0
-    texture.image = _surface_atlas_image(force_texture_reload)
+    texture.image = image
     texture.extension = "REPEAT"
     links.new(uv_map.outputs["UV"], mapping.inputs["Vector"])
     links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
@@ -576,6 +578,16 @@ class _SurfaceMesh:
             seams = ("",) * len(points)
         self.faces.append(tuple(self._vertex(point, seam) for point, seam in zip(points, seams)))
         self.face_kinds.append(kind)
+        if uvs is not None and kind in {"surface", "marking"} and uv_region != "authored":
+            # Generated surface only: keep fallback markings and authored UVs
+            # unchanged while sharing the same material and draw call.
+            span_key = ("fallback_longitudinal_span_m" if kind == "marking"
+                        else "longitudinal_span_m")
+            span = float(_texture_layout_manifest()[span_key])
+            if not 0.0 < span < float("inf"):
+                raise ValueError(f"{span_key} must be finite and positive")
+            scale = MODE_LENGTH / (SURFACE_PREVIEW_V_SCALE * span)
+            uvs = tuple((u, v * scale) for u, v in uvs)
         self.face_uvs.append(tuple(uvs) if uvs is not None else None)
         self.face_uv_regions.append(uv_region)
 
@@ -1313,6 +1325,13 @@ def _add_cross_section_top(
     )
     if abs(sidewalk_u_max - wall_u_min) > 1e-8:
         raise ValueError("sidewalk and curb.upper UV do not meet curb.wall")
+    manifest = _texture_layout_manifest()
+    # Crop the outer sidewalk end rather than squeezing the whole authored
+    # profile into a narrower sidewalk. Keep the curb edge anchored to its wall.
+    # Wider sidewalks retain the existing full-profile stretch; no extra face
+    # is introduced just to repeat the sidewalk texture.
+    sidewalk_u_min = max(sidewalk_u_min, sidewalk_u_max - (total_half - road_half)
+                         * float(manifest["pixels_per_meter"]) / float(manifest["atlas_width_px"]))
     for index in range(slices):
         t0, t1 = index / slices, (index + 1) / slices
         ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
@@ -2413,13 +2432,14 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
             if custom_edge_segments[0].connector_x >= custom_edge_segments[1].connector_x:
                 raise ValueError("Elevated edge mesh lowest edges cross at the deck underside")
 
-    collection = _mode_collection(scene, mode)
-    _clear_collection(collection)
     material = _material(
         props.marking_paint_width, props.marking_region_width, props.road_color,
     )
     structure_material = _structure_material()
     tunnel_material = _tunnel_material()
+    # Required Generator images must load before replacing the current preview.
+    collection = _mode_collection(scene, mode)
+    _clear_collection(collection)
     road_half = roadway_width * 0.5
     configured_markings, edge_centers, median_range = _marking_layout(props)
     segment_markings = configured_markings if props.line_mesh_enabled else []
@@ -3351,7 +3371,7 @@ class CS1ROAD_OT_build_preview(Operator):
         props = active_road(context.scene)
         try:
             build_mode(context.scene, props.mode)
-        except ValueError as error:
+        except (OSError, RuntimeError, ValueError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         if warning := _cross_section_warning(props):
@@ -3368,7 +3388,7 @@ class CS1ROAD_OT_build_all(Operator):
         try:
             for mode, _, _ in MODE_ITEMS:
                 build_mode(context.scene, mode)
-        except ValueError as error:
+        except (OSError, RuntimeError, ValueError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         if warning := _cross_section_warning(props):
@@ -3664,7 +3684,7 @@ class CS1ROAD_OT_export_all_runtime(Operator):
             try:
                 for mode, _, _ in MODE_ITEMS:
                     build_mode(scene, mode)
-            except (RuntimeError, ValueError):
+            except (OSError, RuntimeError, ValueError):
                 pass
 
         self.report(
