@@ -1288,7 +1288,7 @@ basic_segment = mode_entries["basic"][0]["mesh"]
 assert len(basic_segment["vertices"]) == len(basic_segment["normals"])
 assert len(basic_segment["uv"]) * 3 == len(basic_segment["vertices"]) * 2
 assert len(basic_segment["triangles"]) > 0
-assert basic_segment["material"]["shader"] == "Custom/Net/Road"
+assert basic_segment["material"]["shader"] == "Custom/Net/RoadBridge"
 assert min(basic_segment["vertices"][2::3]) == -32.0
 assert max(basic_segment["vertices"][2::3]) == 32.0
 for entries in mode_entries.values():
@@ -1562,6 +1562,29 @@ batch_manifest = json.loads(
 )
 assert {item["road_id"] for item in batch_manifest["roads"]} == batch_ids
 assert len(batch_manifest["roads"]) == len(scene.cs1_roads)
+assert {item["placement_index"] for item in batch_manifest["roads"]} == {
+    f"placement/{road_id}/index.json" for road_id in batch_ids}
+assert all(len(item["placement_revision"]) == 64 for item in batch_manifest["roads"])
+menu_only = batch_runtime / batch_manifest["roads"][0]["placement_index"]
+menu_bytes = menu_only.read_bytes()
+try:
+    # Even an index-only revision must be observable without pretending the
+    # Base Road mesh/lane bundle changed. This is an independent change event.
+    menu_only.write_bytes(menu_bytes + b"\n")
+    refreshed_manifest = road_builder.finalize_runtime_manifest(batch_runtime, list(batch_ids))
+    assert refreshed_manifest["revision"] != batch_manifest["revision"]
+    assert [(item["road_id"], item["revision"]) for item in refreshed_manifest["roads"]] == [
+        (item["road_id"], item["revision"]) for item in batch_manifest["roads"]]
+finally:
+    menu_only.write_bytes(menu_bytes)
+    road_builder.finalize_runtime_manifest(batch_runtime, list(batch_ids))
+for road_id in batch_ids:
+    placement_index = json.loads((batch_runtime / f"placement/{road_id}/index.json").read_text())
+    assert len(placement_index["choices"]) == 162
+    assert placement_index["default_key"] == "NARROW|CENTERED|NONE|STANDARD|DEPRESSED"
+    assert {c["key"].split("|")[1] for c in placement_index["choices"]} == {
+        "CENTERED", "OFFSET_LEFT", "OFFSET_RIGHT"}
+    assert {c["key"].split("|")[4] for c in placement_index["choices"]} == {"FLUSH", "DEPRESSED"}
 assert scene.cs1_active_road_index == source_index
 scene.cs1_active_road_index = len(scene.cs1_roads) - 1
 assert bpy.ops.cs1_road.road_remove() == {"FINISHED"}
@@ -1661,6 +1684,29 @@ for kind, region, expected_v in (
                     kind=kind, uv_region=region,
                     uvs=((0, 0), (1, 0), (1, 1), (0, 1)))
     assert max(v for u, v in probe_mesh.face_uvs[0]) == expected_v, region
+
+# Non-default subdivisions affect actual mesh and survive authoring JSON.
+slice_road = road_builder.active_road(scene)
+previous_slices = (slice_road.segment_slices, slice_road.node_slices)
+slice_road.segment_slices, slice_road.node_slices = 12, 5
+for slice_mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
+    road_builder.build_mode(scene, slice_mode)
+    for part, expected in (("segment", 12), ("node", 5)):
+        obj = bpy.data.objects[f"{slice_mode}_{part}"]
+        assert obj["cs1_longitudinal_slices"] == expected
+        # Inspect generated road faces, not just the custom metadata property.
+        region = obj.data.attributes["cs1_uv_region"]
+        ys = {round(obj.data.vertices[i].co.y, 5)
+              for face in obj.data.polygons
+              if road_builder.UV_REGION_NAMES[region.data[face.index].value] == "lane.default"
+              for i in face.vertices}
+        assert len(ys) == expected + 1, (slice_mode, part, sorted(ys))
+slice_file = ROOT / "build" / "smoke" / "subdivision-roundtrip.json"
+assert bpy.ops.cs1_road.export_spec(filepath=str(slice_file)) == {"FINISHED"}
+slice_road.segment_slices, slice_road.node_slices = previous_slices
+assert bpy.ops.cs1_road.import_spec(filepath=str(slice_file)) == {"FINISHED"}
+assert (slice_road.segment_slices, slice_road.node_slices) == (12, 5)
+slice_road.segment_slices, slice_road.node_slices = previous_slices
 
 before_reload_count = len(scene.cs1_roads)
 before_reload_name = road_builder.active_road(scene).road_name

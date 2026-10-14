@@ -7,9 +7,14 @@ import re
 import shutil
 import struct
 import tempfile
+import gzip
+import io
+from contextlib import nullcontext
 from pathlib import Path
+from array import array
 
 import bpy
+from mathutils import Vector
 
 
 BUNDLE_SCHEMA_VERSION = 2
@@ -28,18 +33,28 @@ def _hash(value) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
-def _atomic_write_json(path: Path, value) -> None:
+def _atomic_write_json(path: Path, value, *, compact: bool = False, compressed: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent),
     )
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, sort_keys=True, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        with os.fdopen(descriptor, "wb") as raw:
+            writer = gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=6) if compressed else nullcontext(raw)
+            with writer as output:
+                stream = io.TextIOWrapper(output, encoding="utf-8", newline="\n")
+                try:
+                    json.dump(value, stream, ensure_ascii=False, sort_keys=True,
+                              indent=None if compact else 2, separators=(",", ":") if compact else None)
+                    stream.write("\n")
+                    stream.flush()
+                finally:
+                    # The gzip footer must be written before syncing the raw
+                    # file; detach without letting TextIOWrapper close it.
+                    stream.detach()
+            raw.flush()
+            os.fsync(raw.fileno())
         os.replace(temporary, path)
     finally:
         if temporary.exists():
@@ -277,6 +292,15 @@ def serialize_mesh_object(
     # the explicitly exported loop normal.
     reverse_winding = basis.determinant() > 0.0
     uv_layer = mesh.uv_layers.active
+    loop_vertex_indices = array("i", [0]) * len(mesh.loops)
+    coordinates = array("f", [0.0]) * (len(mesh.vertices) * 3)
+    corner_normals = array("f", [0.0]) * (len(mesh.loops) * 3)
+    mesh.loops.foreach_get("vertex_index", loop_vertex_indices)
+    mesh.vertices.foreach_get("co", coordinates)
+    mesh.corner_normals.foreach_get("vector", corner_normals)
+    texture_uvs = array("f", [0.0]) * (len(mesh.loops) * 2)
+    if uv_layer is not None:
+        uv_layer.data.foreach_get("uv", texture_uvs)
     vertices = []
     normals = []
     uvs = []
@@ -287,12 +311,12 @@ def serialize_mesh_object(
         material_index = min(max(triangle.material_index, 0), material_count - 1)
         triangle_loops = reversed(triangle.loops) if reverse_winding else triangle.loops
         for loop_index in triangle_loops:
-            loop = mesh.loops[loop_index]
-            vertex = mesh.vertices[loop.vertex_index]
-            vertices.extend(_unity_vector(basis @ vertex.co))
-            normals.extend(_unity_vector((normal_matrix @ loop.normal).normalized()))
-            uv = uv_layer.data[loop_index].uv if uv_layer is not None else (0.0, 0.0)
-            uvs.extend((float(uv[0]), float(uv[1])))
+            offset = loop_vertex_indices[loop_index] * 3
+            vertices.extend(_unity_vector(basis @ Vector(coordinates[offset:offset + 3])))
+            offset = loop_index * 3
+            normals.extend(_unity_vector((normal_matrix @ Vector(corner_normals[offset:offset + 3])).normalized()))
+            offset = loop_index * 2
+            uvs.extend((float(texture_uvs[offset]), float(texture_uvs[offset + 1])))
             submeshes[material_index].append(len(vertices) // 3 - 1)
 
     materials = []
@@ -344,6 +368,100 @@ def serialize_mesh_entries(
     return result
 
 
+def serialize_network_modes(modes, material_families, texture_bindings) -> list[dict]:
+    """One network shader/entry owner for regular and placement exports."""
+    serialized = []
+    for mode, objects in sorted(modes.items()):
+        entries = []
+        # Temporary Ground normal-map trial; keep the policy in this one owner.
+        shader = "Custom/Net/RoadBridge"
+        for index, obj in enumerate(objects):
+            for mesh in serialize_mesh_entries(obj, shader, material_families, texture_bindings):
+                entries.append({"kind": "segment" if index == 0 else "node", "mesh": mesh})
+        serialized.append({"mode": mode, "entries": entries})
+    return serialized
+
+
+def _serialize_placement_modes(modes, material_families, bindings):
+    serialized = serialize_network_modes(modes, material_families, bindings)
+    # Blender object auto-suffixes are editor identity, not variant identity.
+    for mode in serialized:
+        for index, entry in enumerate(mode["entries"]):
+            mesh = entry["mesh"]
+            mesh["name"] = f"{mode['mode']}_{entry['kind']}_{index}"
+            # A material entry must not carry unused vertices from the other
+            # material entries. Keep all used loop vertices, normals and UVs;
+            # do not weld intentional node seams to reduce size.
+            used = sorted(set(mesh["triangles"]))
+            remap = {old: new for new, old in enumerate(used)}
+            for field, dimensions in (("vertices", 3), ("normals", 3), ("uv", 2)):
+                values = mesh[field]
+                mesh[field] = [values[old * dimensions + axis] for old in used for axis in range(dimensions)]
+            mesh["triangles"] = [remap[old] for old in mesh["triangles"]]
+    return serialized
+
+
+def _write_placement_snapshot(output_root, payload):
+    payload["identity"] = _hash(payload)
+    path = f"placement/{payload['base_road_id']}/{payload['identity']}.json.gz"
+    _atomic_write_json(output_root / path, payload, compact=True, compressed=True)
+    return {"identity": payload["identity"], "bundle_path": path,
+            "content_sha256": _file_sha256(output_root / path)}
+
+
+def export_placement_snapshot(
+    output_root: Path, base_road_id: str, geometry_identity: str,
+    template_name: str, node_min_corner_offset: float, section: dict,
+    lanes: list[dict], modes: dict, texture_layout_path: Path, material_families: dict,
+    node_reference_pavement_width: float,
+    *, texture_bindings: dict | None = None,
+) -> dict:
+    """Write an immutable compiled variant, without adding a Toolbar road entry."""
+    base_road_id = safe_road_id(base_road_id)
+    bindings = texture_bindings
+    if bindings is None:
+        bindings, _texture_revision = stage_runtime_textures(output_root, texture_layout_path)
+    payload = {
+        "schema_version": 2,
+        "base_road_id": base_road_id,
+        "geometry_identity": geometry_identity,
+        "template_name": template_name,
+        "node_min_corner_offset": node_min_corner_offset,
+        "node_reference_pavement_width": node_reference_pavement_width,
+        "section": section,
+        "lanes": lanes,
+        "modes": _serialize_placement_modes(modes, material_families, bindings),
+    }
+    return _write_placement_snapshot(output_root, payload)
+
+
+def export_height_transition_snapshot(output_root: Path, base_road_id: str,
+                                     geometry_identity: str, start_identity: str,
+                                     end_identity: str, modes: dict,
+                                     material_families: dict, texture_bindings: dict) -> dict:
+    """Reference normal endpoint snapshots; carry only the temporary segments."""
+    if any(len(objects) != 1 for objects in modes.values()):
+        raise ValueError("Height transition payload requires segment meshes only")
+    return _write_placement_snapshot(output_root, {
+        "schema_version": 1, "base_road_id": safe_road_id(base_road_id),
+        "geometry_identity": geometry_identity,
+        "start_identity": start_identity, "end_identity": end_identity,
+        "modes": _serialize_placement_modes(modes, material_families, texture_bindings),
+    })
+
+
+def export_placement_index(output_root: Path, base_road_id: str, choices: list[dict], default_key: str,
+                           *, height_transitions: list[dict] | None = None) -> str:
+    """Publish the available choice set last; old snapshots are not deleted."""
+    relative = f"placement/{safe_road_id(base_road_id)}/index.json"
+    _atomic_write_json(output_root / relative, {
+        "schema_version": 2, "base_road_id": safe_road_id(base_road_id), "choices": choices,
+        "default_key": default_key,
+        "height_transitions": height_transitions or [],
+    })
+    return relative
+
+
 def export_runtime_bundle(
     output_root: Path,
     road_id: str,
@@ -362,19 +480,7 @@ def export_runtime_bundle(
     texture_bindings, texture_revision = stage_runtime_textures(
         output_root, texture_layout_path,
     )
-    serialized_modes = []
-    for mode, objects in sorted(modes.items()):
-        shader = "Custom/Net/Road" if mode == "basic" else "Custom/Net/RoadBridge"
-        entries = []
-        for index, obj in enumerate(objects):
-            for mesh in serialize_mesh_entries(
-                obj, shader, material_families, texture_bindings,
-            ):
-                entries.append({
-                    "kind": "segment" if index == 0 else "node",
-                    "mesh": mesh,
-                })
-        serialized_modes.append({"mode": mode, "entries": entries})
+    serialized_modes = serialize_network_modes(modes, material_families, texture_bindings)
 
     structural_signature = _hash({
         "template_name": template_name,
@@ -452,10 +558,18 @@ def finalize_runtime_manifest(output_root: Path, road_ids: list[str]) -> dict:
             "Runtime manifest is missing exported roads: " + ", ".join(missing)
         )
     finalized = {
+        # Menu-only changes must wake Runtime without changing the Base Road
+        # bundle revision or adding variants to the Toolbar manifest.
         "schema_version": BUNDLE_SCHEMA_VERSION,
         "texture_revision": manifest.get("texture_revision", ""),
         "roads": [entries[key] for key in sorted(entries)],
     }
+    for road_id, entry in entries.items():
+        relative = f"placement/{road_id}/index.json"
+        index_path = output_root / relative
+        if index_path.exists():
+            entry["placement_index"] = relative
+            entry["placement_revision"] = _file_sha256(index_path)
     finalized["revision"] = _hash(finalized)
     _atomic_write_json(manifest_path, finalized)
     return finalized

@@ -34,6 +34,10 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="LaneOwnershipContract.cs" />
+    <Compile Include="SegmentLaneIsolationContract.cs" />
+    <Compile Include="SharedHeightContract.cs" />
+    <Compile Include="NetworkGeometryCacheContract.cs" />
+    <Compile Include="RoadIconContract.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

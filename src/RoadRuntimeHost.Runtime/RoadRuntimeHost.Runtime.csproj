@@ -39,6 +39,11 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BundleModels.cs" />
+    <Compile Include="AdaptiveRoadsBridge.cs" />
+    <Compile Include="SharedHeightFamily.cs" />
+    <Compile Include="SharedHeightHook.cs" />
+    <Compile Include="SharedHeightPatch.cs" />
+    <Compile Include="NetworkGeometryCache.cs" />
     <Compile Include="CrosswalkWallGeometry.cs" />
     <Compile Include="DiagnosticLog.cs" />
     <Compile Include="JsonFiles.cs" />
@@ -52,8 +57,13 @@
     <Compile Include="NetSegmentCreationHook.cs" />
     <Compile Include="PrefabInspectionService.cs" />
     <Compile Include="PrefabUpdater.cs" />
+    <Compile Include="PlacementVariantLibrary.cs" />
+    <Compile Include="PlacementHeightTransitionHook.cs" />
+    <Compile Include="RoadPlacementGeometryController.cs" />
     <Compile Include="RoadPlacementMarkingPanel.cs" />
     <Compile Include="RoadToolbarRefresh.cs" />
+    <Compile Include="RoadIconRaster.cs" />
+    <Compile Include="RoadToolbarIcons.cs" />
     <Compile Include="RuntimeEntry.cs" />
     <Compile Include="RuntimeMarkingPlan.cs" />
     <Compile Include="TestLayoutManager.cs" />

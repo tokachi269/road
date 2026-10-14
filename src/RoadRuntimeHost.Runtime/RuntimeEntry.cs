@@ -22,6 +22,7 @@ namespace RoadRuntimeHost.Runtime
             public string StructuralSignature;
             public string TestSignature;
             public NetInfo Info;
+            public ImtMarkingStyleBundle Style;
         }
 
         private readonly Dictionary<string, AppliedRoad> _roads = new Dictionary<string, AppliedRoad>();
@@ -38,6 +39,7 @@ namespace RoadRuntimeHost.Runtime
         private TestLayoutManager _layouts;
         private PrefabInspectionService _inspector;
         private ImtPreviewService _imtPreview;
+        private RoadPlacementGeometryController _placementGeometry;
         private bool _reportedMissingCatalog;
         private bool _reportedMissingManifest;
         private string _catalogFailureSignature;
@@ -94,6 +96,10 @@ namespace RoadRuntimeHost.Runtime
             _layouts = new TestLayoutManager();
             _inspector = new PrefabInspectionService(_previewPath);
             _imtPreview = new ImtPreviewService();
+            _placementGeometry = new RoadPlacementGeometryController(_updater, _imtPreview);
+            SharedHeightHook.Start(_placementGeometry.SharedPlacementCode, _placementGeometry.OnTransitionPlaced);
+            PlacementHeightTransitionHook.Start(_placementGeometry.IsTransitionArmed, _placementGeometry.OnTransitionPlaced);
+            _imtPreview.BindPlacementGeometry(_placementGeometry);
             _stopped = false;
             DiagnosticLog.Info("MOD", "runtime_start", "Hot runtime started", "preview_path", _previewPath, "load_mode", loadMode, "log_path", logPath);
             Poll(true);
@@ -113,6 +119,8 @@ namespace RoadRuntimeHost.Runtime
             if (_stopped) return;
             _stopped = true;
             if (_imtPreview != null) _imtPreview.Stop();
+            PlacementHeightTransitionHook.Stop();
+            SharedHeightHook.Stop();
             if (_layouts != null) _layouts.ReleaseAll();
             int appliedRoadCount = _roads.Count;
             _roads.Clear();
@@ -165,6 +173,11 @@ namespace RoadRuntimeHost.Runtime
                     else ++rejected;
                 }
                 if (applied != 0) RoadToolbarRefresh.Refresh();
+                foreach (ManifestRoad entry in entries)
+                {
+                    AppliedRoad road;
+                    if (_roads.TryGetValue(entry.RoadId, out road)) RegisterPlacementMenu(entry, road, false);
+                }
                 _manifestRevision = manifest.Revision;
                 _textureRevision = manifest.TextureRevision;
                 _manifestRejectedFileVersion = null;
@@ -281,6 +294,18 @@ namespace RoadRuntimeHost.Runtime
                 && string.Equals(rejected, RoadInputSignature(entry), StringComparison.Ordinal);
         }
 
+        private void RegisterPlacementMenu(ManifestRoad entry, AppliedRoad road, bool force)
+        {
+            try {
+                _placementGeometry.Register(_previewPath, entry.RoadId, road.Info, FindCatalogRoad(entry.RoadId), road.Style,
+                    entry.PlacementIndex, entry.PlacementRevision, force);
+            }
+            catch (Exception menuError) {
+                DiagnosticLog.Error(DiagnosticLog.Classify(menuError), "placement_menu_registration_failed",
+                    "Base Road was applied, but its placement menu is unavailable", menuError, "road_id", entry.RoadId);
+            }
+        }
+
         private bool Apply(ManifestRoad entry, AppliedRoad current)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
@@ -316,6 +341,7 @@ namespace RoadRuntimeHost.Runtime
                 applied.StructuralSignature = effectiveStructuralSignature;
                 applied.TestSignature = testSignature;
                 applied.Info = info;
+                applied.Style = bundle.ImtMarkingStyle;
                 _roads[entry.RoadId] = applied;
                 string previousFailure;
                 if (_roadFailureSignatures.TryGetValue(roadKey, out previousFailure))
@@ -331,6 +357,7 @@ namespace RoadRuntimeHost.Runtime
                     else _layouts.Release(entry.RoadId);
                 }
                 _imtPreview.ApplyRoad(entry.RoadId, info, bundle.ImtMarkingStyle);
+                RegisterPlacementMenu(entry, applied, true);
                 DiagnosticLog.Info("SUCCESS", "road_apply_success", "Road bundle applied", "road_id", entry.RoadId ?? string.Empty, "revision", entry.Revision ?? string.Empty, "mode_count", (bundle.Modes == null ? 0 : bundle.Modes.Length).ToString(), "lane_count", (bundle.Lanes == null ? 0 : bundle.Lanes.Length).ToString(), "structural_changed", structuralChanged.ToString(), "test_changed", testChanged.ToString(), "elapsed_ms", stopwatch.ElapsedMilliseconds.ToString());
                 return true;
             }
@@ -359,6 +386,9 @@ namespace RoadRuntimeHost.Runtime
 
         private static void RequireRoadDimensions(string roadId, RoadBundle bundle)
         {
+            if (float.IsInfinity(bundle.SurfaceLevel))
+                throw new DiagnosticException("DATA_INVALID", "road_surface_level_invalid",
+                    "Road surface level must be finite for " + roadId);
             if (bundle.HalfWidth <= 0f || bundle.PavementWidth < 0f || bundle.PavementWidth >= bundle.HalfWidth)
                 throw new DiagnosticException(
                     "DATA_INVALID",

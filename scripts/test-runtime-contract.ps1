@@ -8,6 +8,11 @@ $managedDir = Join-Path $config.CitiesSkylinesDir 'Cities_Data\Managed'
 if (-not $PreviewPath) { $PreviewPath = Join-Path $repoRoot 'build\smoke\runtime-preview' }
 $project = Join-Path $repoRoot 'tests\RoadRuntimeHost.ContractSmoke\RoadRuntimeHost.ContractSmoke.csproj'
 
+# The placement reader must consume real Blender output, not only a DTO fixture.
+& (Join-Path $PSScriptRoot 'run-blender.ps1') -Script (Join-Path $repoRoot 'tests\blender_placement_smoke.py')
+if ($LASTEXITCODE -ne 0) { throw 'Blender placement fixtures failed' }
+$placementPreview = Join-Path $repoRoot 'build\smoke\placement-runtime'
+
 & $config.MSBuildExe $project /t:Build /p:Configuration=Release "/p:CitiesSkylinesManagedDir=$managedDir" /m /nologo /v:minimal
 if ($LASTEXITCODE -ne 0) { throw "Runtime contract smoke build failed with exit code $LASTEXITCODE" }
 $runtimeDll = Join-Path $repoRoot 'src\RoadRuntimeHost.Runtime\bin\Release\RoadRuntimeHost.Runtime.dll'
@@ -15,5 +20,5 @@ $runtimeReferences = ([Reflection.Assembly]::LoadFile($runtimeDll)).GetReference
 $unsupported = @('System.ServiceModel.Web', 'System.Runtime.Serialization') | Where-Object { $runtimeReferences -contains $_ }
 if ($unsupported) { throw "Runtime references assemblies unavailable or unusable in CS1 Mono: $($unsupported -join ', ')" }
 $exe = Join-Path $repoRoot 'tests\RoadRuntimeHost.ContractSmoke\bin\Release\RoadRuntimeHost.ContractSmoke.exe'
-& $exe ([IO.Path]::GetFullPath($PreviewPath))
+& $exe ([IO.Path]::GetFullPath($PreviewPath)) $placementPreview
 if ($LASTEXITCODE -ne 0) { throw "Runtime contract smoke failed with exit code $LASTEXITCODE" }

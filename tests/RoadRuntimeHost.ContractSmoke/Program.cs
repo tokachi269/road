@@ -6,6 +6,7 @@ using RoadRuntimeHost.Runtime;
 using RoadRuntimeHost.Loader;
 using ICities;
 using UnityEngine;
+using ColossalFramework.Math;
 
 namespace RoadRuntimeHost.ContractSmoke
 {
@@ -13,13 +14,21 @@ namespace RoadRuntimeHost.ContractSmoke
     {
         private static int Main(string[] args)
         {
-            if (args.Length != 1)
+            if (args.Length != 2)
             {
-                Console.Error.WriteLine("usage: RoadRuntimeHost.ContractSmoke <preview-path>");
+                Console.Error.WriteLine("usage: RoadRuntimeHost.ContractSmoke <preview-path> <placement-preview-path>");
                 return 2;
             }
             try
             {
+                ValidatePlacementLibrary(typeof(RuntimeEntry).Assembly, args[1]);
+                ValidatePlacementSelection(typeof(RuntimeEntry).Assembly);
+                ValidatePlacementCompression(typeof(RuntimeEntry).Assembly);
+                ValidateHeightTransitionKernel(typeof(RuntimeEntry).Assembly);
+                SegmentLaneIsolationContract.Validate(typeof(RuntimeEntry).Assembly);
+                SharedHeightContract.Validate(typeof(RuntimeEntry).Assembly, args[1]);
+                NetworkGeometryCacheContract.Validate(typeof(RuntimeEntry).Assembly, args[1]);
+                RoadIconContract.Validate(typeof(RuntimeEntry).Assembly);
                 if (!typeof(IUserMod).IsAssignableFrom(typeof(RoadRuntimeHostMod))) throw new InvalidOperationException("loader mod entry is missing");
                 if (!typeof(ILoadingExtension).IsAssignableFrom(typeof(RoadRuntimeHostLoading))) throw new InvalidOperationException("loader loading entry is missing");
                 if (!typeof(IThreadingExtension).IsAssignableFrom(typeof(RoadRuntimeHostThreading))) throw new InvalidOperationException("loader threading entry is missing");
@@ -30,6 +39,7 @@ namespace RoadRuntimeHost.ContractSmoke
                     throw new InvalidOperationException("hot runtime reflection contract is incomplete");
                 ValidatePrefabInspectionContract(runtime.Assembly);
                 ValidatePackedTextureContract(runtime.Assembly);
+                ValidateMeshTangentContract(runtime.Assembly);
                 ValidateReferenceLanePropContract(runtime.Assembly);
                 ValidateCrosswalkWallRenderingContract(runtime.Assembly);
                 ValidateImtNodePolicyContract(runtime.Assembly);
@@ -270,6 +280,437 @@ namespace RoadRuntimeHost.ContractSmoke
             Color32[] xysDefaults = (Color32[])packXys.Invoke(null, new object[] { null, null, 1 });
             if (xysDefaults[0].r != 128 || xysDefaults[0].g != 128 || xysDefaults[0].b != 255)
                 throw new InvalidOperationException("XYS default channels are invalid");
+        }
+
+        private static void ValidatePlacementCompression(Assembly assembly)
+        {
+            MethodInfo decode = assembly.GetType("RoadRuntimeHost.Runtime.PlacementVariantLibrary", true)
+                .GetMethod("DecodeSnapshot", BindingFlags.Static | BindingFlags.NonPublic);
+            if (decode == null) throw new InvalidOperationException("Placement snapshot decoder is missing");
+            byte[] text = System.Text.Encoding.UTF8.GetBytes("placement");
+            if ((string)decode.Invoke(null, new object[] { text, false }) != "placement")
+                throw new InvalidOperationException("Legacy plain snapshot decoding changed");
+            // Fixed gzip bytes produced outside the C# decoder, with a literal
+            // expected value rather than a round-trip through production code.
+            byte[] knownGzip = Convert.FromBase64String("H4sIAAAAAAAC/yvISUxOzU3NKwEADnXbSAkAAAA=");
+            if ((string)decode.Invoke(null, new object[] { knownGzip, true }) != "placement")
+                throw new InvalidOperationException("Known gzip snapshot payload decoded incorrectly");
+            using (MemoryStream packed = new MemoryStream())
+            {
+                using (System.IO.Compression.GZipStream zipper = new System.IO.Compression.GZipStream(
+                    packed, System.IO.Compression.CompressionMode.Compress, true))
+                {
+                    byte[] chunk = new byte[1024 * 1024];
+                    for (int i = 0; i < 33; ++i) zipper.Write(chunk, 0, chunk.Length);
+                }
+                bool refused = false;
+                try { decode.Invoke(null, new object[] { packed.ToArray(), true }); }
+                catch (TargetInvocationException error) { refused = error.InnerException is InvalidDataException; }
+                if (!refused) throw new InvalidOperationException("Oversized expanded snapshot was accepted");
+            }
+        }
+
+        private static void ValidatePlacementSelection(Assembly assembly)
+        {
+            Type type = assembly.GetType("RoadRuntimeHost.Runtime.PlacementOptionSelection", true);
+            string original = "NARROW|CENTERED|NONE|STANDARD|DEPRESSED";
+            object selection = Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.Public,
+                null, new object[] { original }, null);
+            MethodInfo propose = type.GetMethod("Propose");
+            MethodInfo commit = type.GetMethod("Commit");
+            PropertyInfo key = type.GetProperty("Key");
+            string wide = "WIDE|CENTERED|NONE|STANDARD|DEPRESSED";
+            string offset = "WIDE|OFFSET_LEFT|NONE|STANDARD|DEPRESSED";
+            string[] menu = { original, wide, offset };
+            object proposed = propose.Invoke(selection, new object[] { menu, 0, "WIDE" });
+            if ((string)proposed != wide || (string)key.GetValue(selection, null) != original)
+                throw new InvalidOperationException("Proposing a placement change mutated active options before registration");
+            commit.Invoke(selection, new object[] { proposed });
+            object next = propose.Invoke(selection, new object[] { menu, 1, "OFFSET_LEFT" });
+            if ((string)next != offset) throw new InvalidOperationException("Placement selection lost previously selected width");
+            bool refused = false;
+            try { propose.Invoke(selection, new object[] { menu, 2, "WIDE" }); }
+            catch (TargetInvocationException e) { refused = e.InnerException is InvalidDataException; }
+            if (!refused || (string)key.GetValue(selection, null) != wide)
+                throw new InvalidOperationException("An unavailable choice was guessed or changed active options");
+            // Switching Base Road does not reset the shared options. The new
+            // one-way menu cannot accommodate OFFSET_LEFT; no silent centering.
+            commit.Invoke(selection, new object[] { next });
+            refused = false;
+            try { propose.Invoke(selection, new object[] { new string[] { wide }, 4, "DEPRESSED" }); }
+            catch (TargetInvocationException e) { refused = e.InnerException is InvalidDataException; }
+            if (!refused || (string)key.GetValue(selection, null) != offset)
+                throw new InvalidOperationException("Changing Base Road silently remapped the common placement selection");
+        }
+
+        private static void ValidateHeightTransitionKernel(Assembly assembly)
+        {
+            Type kernel = assembly.GetType("RoadRuntimeHost.Runtime.HeightTransitionKernel", true);
+            MethodInfo offsets = kernel.GetMethod("CurveYOffsets", BindingFlags.Static | BindingFlags.Public);
+            MethodInfo joins = kernel.GetMethod("LevelsJoin", BindingFlags.Static | BindingFlags.Public);
+            foreach (float a in new float[] { -0.3f, 0f })
+                foreach (float b in new float[] { -0.3f, 0f })
+                    if ((bool)joins.Invoke(null, new object[] { a, b }) != (a == b))
+                        throw new InvalidOperationException("Direct D0/D30 step was permitted or equal levels were refused");
+            float[] forward = (float[])offsets.Invoke(null, new object[] { -0.3f, 0f, -0.3f, false });
+            float[] reversed = (float[])offsets.Invoke(null, new object[] { -0.3f, 0f, -0.3f, true });
+            float[] up = { 0f, 0.1f, 0.2f, 0.3f }, down = { 0.3f, 0.2f, 0.1f, 0f };
+            for (int i = 0; i < 4; ++i)
+                if (Math.Abs(forward[i] - up[i]) > 0.0001f || Math.Abs(reversed[i] - down[i]) > 0.0001f)
+                    throw new InvalidOperationException("Height curve controls do not form the specified linear ramp");
+            // The curve is physically segment-start -> segment-end. Lane
+            // direction does not enter this API. Preserve an existing terrain
+            // curve by adding only the local physical profile.
+            foreach (float t in new float[] { 0f, 0.25f, 0.5f, 0.75f, 1f })
+            {
+                float v = 1f - t;
+                float added = v*v*v*forward[0] + 3f*v*v*t*forward[1] + 3f*v*t*t*forward[2] + t*t*t*forward[3];
+                if (Math.Abs(added - 0.3f*t) > 0.0001f)
+                    throw new InvalidOperationException("Height curve interpolates nonlinearly");
+            }
+            float[] walk = (float[])offsets.Invoke(null, new object[] { 0f, 0f, 0f, false });
+            foreach (float value in walk) if (value != 0f) throw new InvalidOperationException("Transition lowered pedestrians");
+            Bezier3 terrain = new Bezier3(new Vector3(1f, 3f, 2f), new Vector3(2f, 5f, 4f),
+                new Vector3(4f, 4f, 6f), new Vector3(7f, 8f, 9f));
+            Bezier3 graded = (Bezier3)kernel.GetMethod("OffsetCurve").Invoke(null,
+                new object[] { terrain, -0.3f, 0f, -0.3f, false });
+            if (graded.a.x != 1f || graded.a.z != 2f || graded.b.x != 2f || graded.b.z != 4f
+                || graded.c.x != 4f || graded.c.z != 6f || graded.d.x != 7f || graded.d.z != 9f
+                || Math.Abs(graded.a.y-3f) > 0.0001f || Math.Abs(graded.b.y-5.1f) > 0.0001f
+                || Math.Abs(graded.c.y-4.2f) > 0.0001f || Math.Abs(graded.d.y-8.3f) > 0.0001f)
+                throw new InvalidOperationException("Transition replaced the existing terrain/edited curve instead of adding its profile");
+            Type runType = assembly.GetType("RoadRuntimeHost.Runtime.HeightTransitionPlacementRun", true);
+            object run = Activator.CreateInstance(runType, new object[] { "transition", "target" });
+            MethodInfo choose = runType.GetMethod("Choose", new Type[] { typeof(string) }), complete = runType.GetMethod("Complete");
+            if ((string)choose.Invoke(run, new object[] { "other" }) != "other") throw new InvalidOperationException("Unrelated split prefab was changed");
+            complete.Invoke(run, new object[] { "other", true });
+            complete.Invoke(run, new object[] { "transition", false });
+            if ((string)choose.Invoke(run, new object[] { "transition" }) != "transition") throw new InvalidOperationException("Failure consumed the transition");
+            complete.Invoke(run, new object[] { "transition", true });
+            if ((string)choose.Invoke(run, new object[] { "transition" }) != "target") throw new InvalidOperationException("Transition repeated in one placement operation");
+            object next = Activator.CreateInstance(runType, new object[] { "transition", "target" });
+            if ((string)choose.Invoke(next, new object[] { "transition" }) != "transition") throw new InvalidOperationException("Transition state leaked into the next operation");
+            MethodInfo oriented = runType.GetMethod("Choose", new Type[] { typeof(string), typeof(bool) });
+            foreach (bool invert in new bool[] { false, true })
+            {
+                object stroke = Activator.CreateInstance(runType, new object[] { "forward-ramp", "reverse-ramp", "ordinary-target" });
+                string first = (string)oriented.Invoke(stroke, new object[] { "forward-ramp", invert });
+                if (first != (invert ? "reverse-ramp" : "forward-ramp")) throw new InvalidOperationException("Draw inversion chose the wrong physical ramp");
+                complete.Invoke(stroke, new object[] { first, false });
+                if ((string)oriented.Invoke(stroke, new object[] { "forward-ramp", invert }) != first)
+                    throw new InvalidOperationException("Failed inverted placement consumed the ramp");
+                complete.Invoke(stroke, new object[] { first, true });
+                foreach (bool subsequentInvert in new bool[] { false, true })
+                    if ((string)oriented.Invoke(stroke, new object[] { "forward-ramp", subsequentInvert }) != "ordinary-target")
+                        throw new InvalidOperationException("A multi-segment stroke repeated its ramp after success");
+            }
+            Type patch = assembly.GetType("RoadRuntimeHost.Runtime.PlacementHeightTransitionPatch", true);
+            MethodInfo placement = (MethodInfo)patch.GetMethod("PlacementMethod", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, null);
+            ParameterInfo[] operationParameters = placement.GetParameters();
+            if (operationParameters.Length != 19 || operationParameters[6].Name != "test"
+                || operationParameters[7].Name != "testEnds" || operationParameters[8].Name != "visualize"
+                || operationParameters[14].ParameterType != typeof(ushort).MakeByRefType()
+                || operationParameters[16].Name != "segment")
+                throw new InvalidOperationException("Hook did not select the shipped CS1 placement operation");
+            Type updater = assembly.GetType("RoadRuntimeHost.Runtime.PrefabUpdater", true);
+            Type segmentType = typeof(NetInfo.Segment);
+            object raw = Activator.CreateInstance(segmentType);
+            updater.GetMethod("ConfigureHeightSegmentFacing", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { raw });
+            MethodInfo check = segmentType.GetMethod("CheckFlags");
+            foreach (bool inverted in new bool[] { false, true })
+            {
+                object[] args = { inverted ? NetSegment.Flags.Invert : NetSegment.Flags.Created, NetSegment.Flags2.None, false };
+                if (!(bool)check.Invoke(raw, args) || (bool)args[2] != inverted)
+                    throw new InvalidOperationException("Native transition selector and physical inversion disagree");
+            }
+            NetInfo.Node sourceStart = new NetInfo.Node(), sourceEnd = new NetInfo.Node();
+            sourceStart.flagsRequired = NetNode.FlagsLong.Junction;
+            sourceEnd.flagsRequired = NetNode.FlagsLong.Junction;
+            NetInfo.Node[] selected = (NetInfo.Node[])updater.GetMethod("HeightEndpointNodes", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { new NetInfo.Node[] { sourceStart }, new NetInfo.Node[] { sourceEnd } });
+            if (selected.Length != 2 || ReferenceEquals(selected[0], sourceStart) || ReferenceEquals(selected[1], sourceEnd)
+                || !selected[0].CheckFlags(NetNode.FlagsLong.Junction | NetNode.FlagsLong.OnSegmentStart)
+                || selected[0].CheckFlags(NetNode.FlagsLong.Junction | NetNode.FlagsLong.OnSegmentEnd)
+                || !selected[1].CheckFlags(NetNode.FlagsLong.Junction | NetNode.FlagsLong.OnSegmentEnd)
+                || selected[1].CheckFlags(NetNode.FlagsLong.Junction | NetNode.FlagsLong.OnSegmentStart)
+                || sourceStart.flagsRequired != NetNode.FlagsLong.Junction || sourceEnd.flagsRequired != NetNode.FlagsLong.Junction)
+                throw new InvalidOperationException("Endpoint node selector changed the ordinary source or chose the wrong side");
+        }
+
+        private static void ValidateHeightTransitionLibrary(Type libraryType, object library)
+        {
+            MethodInfo resolve = libraryType.GetMethod("ResolveHeightTransition");
+            if (resolve == null) throw new InvalidOperationException("Height transition has no compiled reader");
+            const string lower = "NARROW|CENTERED|NONE|NONE|DEPRESSED";
+            const string flush = "NARROW|CENTERED|NONE|NONE|FLUSH";
+            object edge = resolve.Invoke(library, new object[] { lower, flush });
+            Type edgeType = edge.GetType();
+            object start = edgeType.GetField("Start").GetValue(edge);
+            object end = edgeType.GetField("End").GetValue(edge);
+            object segment = edgeType.GetField("Segment").GetValue(edge);
+            Type updater = libraryType.Assembly.GetType("RoadRuntimeHost.Runtime.PrefabUpdater", true);
+            object compiled = updater.GetMethod("CompileHeightTransition", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { edge });
+            float[] starts = (float[])compiled.GetType().GetField("StartOffsets").GetValue(compiled);
+            float[] ends = (float[])compiled.GetType().GetField("EndOffsets").GetValue(compiled);
+            float[] physicalStart = { 0f, -0.3f, -0.3f, -0.3f, 0f };
+            if (starts.Length != 5 || ends.Length != 5) throw new InvalidOperationException("Native transition lost lane endpoints");
+            for (int i = 0; i < 5; ++i)
+                if (Math.Abs(starts[i] - physicalStart[i]) > 0.0001f || ends[i] != 0f)
+                    throw new InvalidOperationException("Native transition guessed endpoint lane heights");
+            Type packetType = start.GetType();
+            Type segmentType = segment.GetType();
+            object startSection = packetType.GetField("Section").GetValue(start);
+            object endSection = packetType.GetField("Section").GetValue(end);
+            Type sectionType = startSection.GetType();
+            if (Math.Abs((float)sectionType.GetField("RoadwayZ").GetValue(startSection) + 0.3f) > 0.0001f
+                || Math.Abs((float)sectionType.GetField("RoadwayZ").GetValue(endSection)) > 0.0001f
+                || (string)segmentType.GetField("StartIdentity").GetValue(segment) != (string)packetType.GetField("Identity").GetValue(start)
+                || (string)segmentType.GetField("EndIdentity").GetValue(segment) != (string)packetType.GetField("Identity").GetValue(end))
+                throw new InvalidOperationException("Height transition lost its ordered ordinary endpoints");
+            Array startLanes = (Array)packetType.GetField("Lanes").GetValue(start);
+            Array endLanes = (Array)packetType.GetField("Lanes").GetValue(end);
+            for (int i = 0; i < startLanes.Length; ++i)
+            {
+                object a = startLanes.GetValue(i), b = endLanes.GetValue(i);
+                Type laneType = a.GetType();
+                bool car = (string)laneType.GetField("LaneType").GetValue(a) == "VEHICLE";
+                if (Math.Abs((float)laneType.GetField("VerticalOffset").GetValue(a) - (car ? -0.3f : 0f)) > 0.0001f
+                    || Math.Abs((float)laneType.GetField("VerticalOffset").GetValue(b)) > 0.0001f)
+                    throw new InvalidOperationException("Height transition lane endpoints do not match the road/walk levels");
+            }
+            Array modes = (Array)segmentType.GetField("Modes").GetValue(segment);
+            if (modes.Length != 5) throw new InvalidOperationException("Height transition lost network modes");
+            foreach (object mode in modes)
+                foreach (object entry in (Array)mode.GetType().GetField("Entries").GetValue(mode))
+                    if ((string)entry.GetType().GetField("Kind").GetValue(entry) != "segment")
+                        throw new InvalidOperationException("Height transition duplicated endpoint nodes");
+            object reverse = resolve.Invoke(library, new object[] { flush, lower });
+            object reverseSegment = edgeType.GetField("Segment").GetValue(reverse);
+            if ((string)segmentType.GetField("Identity").GetValue(segment) == (string)segmentType.GetField("Identity").GetValue(reverseSegment))
+                throw new InvalidOperationException("Opposite transitions have the same identity");
+            bool rejected = false;
+            try { resolve.Invoke(library, new object[] { lower, lower }); }
+            catch (TargetInvocationException error) { rejected = error.InnerException is InvalidDataException; }
+            if (!rejected) throw new InvalidOperationException("Ordinary road was guessed as a transition");
+            MethodInfo require = libraryType.GetMethod("RequireHeightTransition", BindingFlags.Static | BindingFlags.NonPublic);
+            sectionType.GetField("CurbRight").SetValue(endSection, 7f);
+            rejected = false;
+            try { require.Invoke(null, new object[] { segment, start, end }); }
+            catch (TargetInvocationException error) { rejected = error.InnerException is InvalidDataException; }
+            if (!rejected) throw new InvalidOperationException("Height-only transition accepted a changed horizontal endpoint");
+            object fresh = resolve.Invoke(library, new object[] { lower, flush });
+            object freshEnd = edgeType.GetField("End").GetValue(fresh);
+            object freshSection = packetType.GetField("Section").GetValue(freshEnd);
+            if (Math.Abs((float)sectionType.GetField("CurbRight").GetValue(freshSection) - 6f) > 0.0001f)
+                throw new InvalidOperationException("A consumer changed cached transition endpoints");
+            // Faults at independent representation boundaries: endpoint identity,
+            // lane semantics, and accidental node entries in a segment payload.
+            object intact = resolve.Invoke(library, new object[] { lower, flush });
+            object intactStart = edgeType.GetField("Start").GetValue(intact);
+            object intactEnd = edgeType.GetField("End").GetValue(intact);
+            object intactSegment = edgeType.GetField("Segment").GetValue(intact);
+            segmentType.GetField("EndIdentity").SetValue(intactSegment, (string)packetType.GetField("Identity").GetValue(intactStart));
+            AssertTransitionRejected(require, intactSegment, intactStart, intactEnd, "Reversed/identical endpoint reference was accepted");
+            intact = resolve.Invoke(library, new object[] { lower, flush });
+            intactStart = edgeType.GetField("Start").GetValue(intact);
+            intactEnd = edgeType.GetField("End").GetValue(intact);
+            intactSegment = edgeType.GetField("Segment").GetValue(intact);
+            Array metadata = (Array)packetType.GetField("Lanes").GetValue(intactEnd);
+            object carLane = metadata.GetValue(1);
+            carLane.GetType().GetField("SpeedLimit").SetValue(carLane, 2f);
+            AssertTransitionRejected(require, intactSegment, intactStart, intactEnd, "Changed lane metadata was accepted");
+            intact = resolve.Invoke(library, new object[] { lower, flush });
+            intactStart = edgeType.GetField("Start").GetValue(intact);
+            intactEnd = edgeType.GetField("End").GetValue(intact);
+            intactSegment = edgeType.GetField("Segment").GetValue(intact);
+            object firstMode = ((Array)segmentType.GetField("Modes").GetValue(intactSegment)).GetValue(0);
+            object firstEntry = ((Array)firstMode.GetType().GetField("Entries").GetValue(firstMode)).GetValue(0);
+            firstEntry.GetType().GetField("Kind").SetValue(firstEntry, "node");
+            AssertTransitionRejected(require, intactSegment, intactStart, intactEnd, "Transition payload contained an endpoint node");
+        }
+
+        private static void AssertTransitionRejected(MethodInfo require, object segment, object start, object end, string message)
+        {
+            bool rejected = false;
+            try { require.Invoke(null, new object[] { segment, start, end }); }
+            catch (TargetInvocationException error) { rejected = error.InnerException is InvalidDataException; }
+            if (!rejected) throw new InvalidOperationException(message);
+        }
+
+        private static void ValidatePlacementLibrary(Assembly runtimeAssembly, string root)
+        {
+            Type libraryType = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.PlacementVariantLibrary", true);
+            object library = Activator.CreateInstance(libraryType, BindingFlags.Instance | BindingFlags.Public,
+                null, new object[] { root, "jp-4x4l", "placement/jp-4x4l/index.json" }, null);
+            PropertyInfo loadedCount = libraryType.GetProperty("LoadedCount");
+            MethodInfo resolve = libraryType.GetMethod("Resolve");
+            bool wrongRevisionRejected = false;
+            try { Activator.CreateInstance(libraryType, BindingFlags.Instance | BindingFlags.Public, null,
+                new object[] { root, "jp-4x4l", "placement/jp-4x4l/index.json", new string('0', 64) }, null); }
+            catch (TargetInvocationException error) { wrongRevisionRejected = error.InnerException is InvalidDataException; }
+            if (!wrongRevisionRejected) throw new InvalidOperationException("Manifest/index revision mismatch was accepted");
+            if ((int)loadedCount.GetValue(library, null) != 0)
+                throw new InvalidOperationException("Reading a placement index eagerly loaded geometry");
+            MethodInfo getChoices = libraryType.GetMethod("GetChoices");
+            if (getChoices == null) throw new InvalidOperationException("Placement UI cannot obtain the compiled choice index");
+            Array choices = (Array)getChoices.Invoke(library, null);
+            if (choices.Length != 2 || (int)loadedCount.GetValue(library, null) != 0)
+                throw new InvalidOperationException("Placement menu enumeration eagerly loaded or omitted choices");
+            object menuChoice = choices.GetValue(0);
+            Type choiceType = menuChoice.GetType();
+            if (Math.Abs((float)choiceType.GetField("TotalWidth").GetValue(menuChoice) - 32f) > 0.0001f)
+                throw new InvalidOperationException("Expanded placement width is not available before loading geometry");
+            choiceType.GetField("Key").SetValue(menuChoice, "consumer mutation");
+            choiceType.GetField("TotalWidth").SetValue(menuChoice, 999f);
+            Array freshChoices = (Array)getChoices.Invoke(library, null);
+            if ((string)choiceType.GetField("Key").GetValue(freshChoices.GetValue(0)) == "consumer mutation"
+                || Math.Abs((float)choiceType.GetField("TotalWidth").GetValue(freshChoices.GetValue(0)) - 32f) > 0.0001f)
+                throw new InvalidOperationException("A menu consumer mutated the compiled choice index");
+            object first = resolve.Invoke(library, new object[] { "NARROW|CENTERED|NONE|STANDARD|DEPRESSED" });
+            // Display metadata is not a second authority: a menu that advertises
+            // 48 m for this actual 32 m snapshot must be rejected when selected.
+            string invalidRoot = Path.Combine(Path.GetTempPath(), "RoadPlacement.Menu." + Guid.NewGuid().ToString("N"));
+            try
+            {
+                object descriptor = freshChoices.GetValue(0);
+                string relative = (string)choiceType.GetField("BundlePath").GetValue(descriptor);
+                string destination = Path.Combine(invalidRoot, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                File.Copy(Path.Combine(root, relative), destination);
+                string menu = "{\"schema_version\":2,\"base_road_id\":\"jp-4x4l\",\"default_key\":\"NARROW|CENTERED|NONE|STANDARD|DEPRESSED\",\"choices\":[{\"key\":\"NARROW|CENTERED|NONE|STANDARD|DEPRESSED\","
+                    + "\"identity\":\"" + choiceType.GetField("Identity").GetValue(descriptor) + "\","
+                    + "\"bundle_path\":\"" + relative + "\",\"content_sha256\":\""
+                    + choiceType.GetField("ContentSha256").GetValue(descriptor)
+                    + "\",\"total_width\":48,\"roadway_z\":-0.3,\"traffic_boundary\":0}]}";
+                File.WriteAllText(Path.Combine(invalidRoot, "placement/bad-menu.json"), menu);
+                object badLibrary = Activator.CreateInstance(libraryType, BindingFlags.Instance | BindingFlags.Public,
+                    null, new object[] { invalidRoot, "jp-4x4l", "placement/bad-menu.json" }, null);
+                bool mismatchRejected = false;
+                try { resolve.Invoke(badLibrary, new object[] { "NARROW|CENTERED|NONE|STANDARD|DEPRESSED" }); }
+                catch (TargetInvocationException error) { mismatchRejected = error.InnerException is InvalidDataException; }
+                if (!mismatchRejected || (int)loadedCount.GetValue(badLibrary, null) != 0)
+                    throw new InvalidOperationException("Incorrect menu dimensions were accepted or cached");
+            }
+            finally { if (Directory.Exists(invalidRoot)) Directory.Delete(invalidRoot, true); }
+            object second = resolve.Invoke(library, new object[] { "STANDARD|CENTERED|NONE|STANDARD|DEPRESSED" });
+            Type snapshotType = first.GetType();
+            string identity = (string)snapshotType.GetField("Identity").GetValue(first);
+            if (identity != (string)snapshotType.GetField("Identity").GetValue(second)
+                || (int)loadedCount.GetValue(library, null) != 1)
+                throw new InvalidOperationException("Equivalent placement choices were not reused");
+            Array lanes = (Array)snapshotType.GetField("Lanes").GetValue(first);
+            object lane = lanes.GetValue(1);
+            lane.GetType().GetField("Position").SetValue(lane, 100f);
+            object third = resolve.Invoke(library, new object[] { "NARROW|CENTERED|NONE|STANDARD|DEPRESSED" });
+            Array originalLanes = (Array)snapshotType.GetField("Lanes").GetValue(third);
+            if (Math.Abs((float)originalLanes.GetValue(1).GetType().GetField("Position").GetValue(originalLanes.GetValue(1)) + 10.5f) > 0.0001f)
+                throw new InvalidOperationException("A consumer mutated an immutable placement snapshot");
+            object asymmetric = Activator.CreateInstance(libraryType, BindingFlags.Instance | BindingFlags.Public,
+                null, new object[] { root, "jp-1x2l", "placement/jp-1x2l/index.json" }, null);
+            object packet = resolve.Invoke(asymmetric, new object[] { "NARROW|CENTERED|NONE|NONE|DEPRESSED" });
+            Array physical = (Array)snapshotType.GetField("Lanes").GetValue(packet);
+            float[] positions = { -9.5f, -1.5f, 1.5f, 4.5f, 11f };
+            float[] widths = { 12.5f, 3f, 3f, 3f, 9.5f };
+            for (int i = 0; i < positions.Length; ++i)
+            {
+                object item = physical.GetValue(i);
+                Type laneType = item.GetType();
+                if (Math.Abs((float)laneType.GetField("Position").GetValue(item) - positions[i]) > 0.0001f
+                    || Math.Abs((float)laneType.GetField("Width").GetValue(item) - widths[i]) > 0.0001f)
+                    throw new InvalidOperationException("Actual Blender placement coordinates disagree with the physical oracle");
+            }
+            object section = snapshotType.GetField("Section").GetValue(packet);
+            ValidateHeightTransitionLibrary(libraryType, asymmetric);
+            // A displaced metadata center must be rejected, not guessed from the lane pack.
+            section.GetType().GetField("TrafficBoundary").SetValue(section, (float?)1.5f);
+            bool rejected = false;
+            try
+            {
+                libraryType.GetMethod("Require", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null,
+                    new object[] { packet, "jp-1x2l", snapshotType.GetField("Identity").GetValue(packet) });
+            }
+            catch (TargetInvocationException error) { rejected = error.InnerException is InvalidDataException; }
+            if (!rejected) throw new InvalidOperationException("Wrong placement traffic boundary was accepted");
+            rejected = false;
+            try { resolve.Invoke(asymmetric, new object[] { "UNKNOWN" }); }
+            catch (TargetInvocationException error) { rejected = error.InnerException is InvalidDataException; }
+            if (!rejected) throw new InvalidOperationException("An uncompiled placement choice was guessed");
+            object intact = resolve.Invoke(asymmetric, new object[] { "NARROW|CENTERED|NONE|NONE|DEPRESSED" });
+            Type updaterType = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.PrefabUpdater", true);
+            MethodInfo compilePlacement = updaterType.GetMethod("CompilePlacementBundle", BindingFlags.Static | BindingFlags.NonPublic);
+            if (compilePlacement == null) throw new InvalidOperationException("Placement native adapter has no managed definition boundary");
+            object definition = compilePlacement.Invoke(null, new object[] { intact });
+            Type definitionType = definition.GetType();
+            if (Math.Abs((float)definitionType.GetField("HalfWidth").GetValue(definition) - 16f) > 0.0001f
+                || Math.Abs((float)definitionType.GetField("PavementWidth").GetValue(definition) - 11.5f) > 0.0001f
+                || Math.Abs((float)definitionType.GetField("SurfaceLevel").GetValue(definition) + 0.3f) > 0.0001f
+                || !ReferenceEquals(definitionType.GetField("Lanes").GetValue(definition), snapshotType.GetField("Lanes").GetValue(intact)))
+                throw new InvalidOperationException("Asymmetric section was replaced by symmetric/default native metadata");
+            // Old asymmetric snapshots did not encode a reference and must not
+            // be retroactively guessed. Preserve this conservative migration gate.
+            snapshotType.GetField("SchemaVersion").SetValue(intact, 1);
+            snapshotType.GetField("NodeReferencePavementWidth").SetValue(intact, float.NaN);
+            rejected = false;
+            try
+            {
+                compilePlacement.Invoke(null, new object[] { intact });
+            }
+            catch (TargetInvocationException error)
+            {
+                FieldInfo code = error.InnerException.GetType().GetField("EventName");
+                rejected = code != null && (string)code.GetValue(error.InnerException)
+                    == "placement_legacy_asymmetric_snapshot_requires_reexport";
+            }
+            if (!rejected) throw new InvalidOperationException("Missing legacy asymmetric reference was guessed");
+            object oneWay = Activator.CreateInstance(libraryType, BindingFlags.Instance | BindingFlags.Public,
+                null, new object[] { root, "jp-3l-oneway", "placement/jp-3l-oneway/index.json" }, null);
+            object oneWayPacket = resolve.Invoke(oneWay, new object[] { "NARROW|CENTERED|NONE|STANDARD|FLUSH" });
+            object oneWaySection = snapshotType.GetField("Section").GetValue(oneWayPacket);
+            if (oneWaySection.GetType().GetField("TrafficBoundary").GetValue(oneWaySection) != null)
+                throw new InvalidOperationException("One-way snapshot invented an opposing center boundary");
+            snapshotType.GetField("SchemaVersion").SetValue(oneWayPacket, 1);
+            snapshotType.GetField("NodeReferencePavementWidth").SetValue(oneWayPacket, float.NaN);
+            object legacy = compilePlacement.Invoke(null, new object[] { oneWayPacket });
+            if (Math.Abs((float)definitionType.GetField("PavementWidth").GetValue(legacy) - 3f) > 0.0001f)
+                throw new InvalidOperationException("Legacy symmetric reference was not preserved");
+            object wrongReference = resolve.Invoke(asymmetric, new object[] { "NARROW|CENTERED|NONE|NONE|DEPRESSED" });
+            snapshotType.GetField("NodeReferencePavementWidth").SetValue(wrongReference, 13f);
+            rejected = false;
+            try { compilePlacement.Invoke(null, new object[] { wrongReference }); }
+            catch (TargetInvocationException error) { rejected = error.InnerException is InvalidDataException; }
+            if (!rejected) throw new InvalidOperationException("Physical left sidewalk was accepted as the neutral shader reference");
+        }
+
+        private static void ValidateMeshTangentContract(Assembly runtimeAssembly)
+        {
+            MethodInfo calculate = runtimeAssembly.GetType("RoadRuntimeHost.Runtime.PrefabUpdater", true)
+                .GetMethod("CalculateMeshTangents", BindingFlags.Static | BindingFlags.NonPublic);
+            if (calculate == null) throw new InvalidOperationException("Runtime mesh tangent calculation is missing");
+            // A top face, including the reversed-U mapping used on the other
+            // side of a road. Expected tangent and handedness are geometric.
+            Vector3[] vertices = { new Vector3(0, 0, 0), new Vector3(1, 0, 0), new Vector3(0, 0, 1) };
+            Vector3[] normals = { Vector3.up, Vector3.up, Vector3.up };
+            foreach (float mirror in new float[] { 1f, -1f })
+            {
+                Vector2[] uv = { new Vector2(0, 0), new Vector2(mirror, 0), new Vector2(0, 1) };
+                Vector4[] tangents = (Vector4[])calculate.Invoke(null,
+                    new object[] { vertices, normals, uv, new int[] { 0, 2, 1 } });
+                foreach (Vector4 tangent in tangents)
+                    if (Math.Abs(tangent.x - mirror) > 0.0001f || Math.Abs(tangent.y) > 0.0001f
+                        || Math.Abs(tangent.z) > 0.0001f || Math.Abs(tangent.w + mirror) > 0.0001f)
+                        throw new InvalidOperationException("UV tangent direction or mirror handedness is incorrect");
+            }
+            // Curb wall: U runs down the wall, V runs along the road.
+            Vector3[] wall = { new Vector3(0, 1, 0), new Vector3(0, 0, 0), new Vector3(0, 1, 1) };
+            Vector3[] wallNormals = { Vector3.left, Vector3.left, Vector3.left };
+            Vector4[] wallTangents = (Vector4[])calculate.Invoke(null, new object[] {
+                wall, wallNormals, new Vector2[] { new Vector2(0, 0), new Vector2(1, 0), new Vector2(0, 1) },
+                new int[] { 0, 1, 2 } });
+            foreach (Vector4 tangent in wallTangents)
+                if (Math.Abs(tangent.x) > 0.0001f || Math.Abs(tangent.y + 1f) > 0.0001f
+                    || Math.Abs(tangent.z) > 0.0001f || Math.Abs(tangent.w - 1f) > 0.0001f)
+                    throw new InvalidOperationException("Curb wall tangent frame is incorrect");
         }
 
         private static void ValidateReferenceLanePropContract(Assembly runtimeAssembly)

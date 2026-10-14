@@ -64,7 +64,9 @@ Blender previewのMaterialはmodeや道路名から生成しない。`surface / 
 
 Elevatedの左右端部は、Blender内の右側基準Mesh Object 1つで固定断面fasciaを置換できる。Object原点のX/Zを右路面外角anchorとし、右はそのまま、左はX反転と面頂点順の反転を行って配置する。原点は配置基準であり、Meshの頂点や辺を必ず通す必要はなく、断面のlocal X/Z offsetは保持する。Z<0だけを床版厚へ追従させ、最下面に長手辺が2本ある直方体でも、道路中心側の辺を床版下面の端へweldする。長手方向のsliceはカーブ変形用に必要な通常面だけに入れる。路面高さで全面を一律分割せず、床版内部に埋まる道路中心側面の下部だけを切り取る。また64m両端の入力end capは接続先と重なるため出力しない。`CS1_NO_SPLIT` vertex groupの頂点に触れる面は柵等の剛体部として分割しない。指定時も出力はmodeごとのsegment/node各1 objectのままである。入力Object参照はBlender adapterの編集状態であり、未確定のschema v3へ追加しない。
 
-分離帯は全mode共通のsurface断面である。生成curbを選ぶ場合、左右curb上面と中央上面は別faceにし、中央上面をX=0で分割しない。分離帯下のroad faceは作らず、左右立面の路面側角を2mm下げ、長手端を2mm延長して同一面の重なりによるz-fightingを避ける。生成curbを選ばない場合はBlenderの基準Mesh Object 1つを設定幅・設定高へfitし、segment 20/node 8 sliceへ切る。64m両端のend capは出力せず、`CS1_NO_SPLIT`頂点に触れる面は切らない。基準Meshがない状態はvalidation errorであり、暗黙の箱へ置換しない。
+分離帯は全mode共通のsurface断面である。生成curbを選ぶ場合、左右curb上面と中央上面は別faceにし、中央上面をX=0で分割しない。分離帯下のroad faceは作らず、左右立面の路面側角を2mm下げ、長手端を2mm延長して同一面の重なりによるz-fightingを避ける。生成curbを選ばない場合はBlenderの基準Mesh Object 1つを設定幅・設定高へfitし、道路のsegment/node slice設定へ切る。64m両端のend capは出力せず、`CS1_NO_SPLIT`頂点に触れる面は切らない。基準Meshがない状態はvalidation errorであり、暗黙の箱へ置換しない。
+
+長手分割数はBlenderの`Shared settings > Segment subdivisions / Node subdivisions`で道路ごとに指定する。全mode共通で既定値はsegment 20、node 8、入力範囲は1〜128。`shared_geometry.segment_slices / node_slices`へ保存し、読み込みでも同じ値を使う。路面、分離帯、床版、端部、トンネルの生成に同じ設定を渡し、UV用に別の分割数を持たない。分割を増やすとmesh頂点数と生成・描画負荷も増える。`CS1_NO_SPLIT`指定面は従来どおり分割しない。
 
 ## UV ownership
 
@@ -169,6 +171,8 @@ Runtimeは同名のロード済み`NetInfo` / `PropInfo`があればそのobject
 Adaptive Roadsを前提に条件値を`namespace + value_json`で保持する。現在Runtimeが適用するnamespaceは`vanilla.lane`、`vanilla.start_node`、`vanilla.end_node`だけである。Adaptive Roads固有namespaceは失わず警告するが、reflection adapterによる反映は未実装・未検証である。
 
 ## Surface atlasのPSD移行
+
+Ground Normal確認用の一時変更として、Runtime exportのbasic surfaceにも`Custom/Net/RoadBridge`を使う。GroundのAI、mode、geometry、texture setは変えない。これはGround用shaderの確定方針ではなく、地形との馴染み・テーマ描画・curbのNormal反映を実ゲームで確認するための変更。Runtime meshは頂点・normal・UV・triangleからtangentと左右反転時のhandednessを生成する。既存bundleは旧shader指定のままなので、Reload Scripts後にBuild and export road libraryで再出力する。PSDのNormal配置ズレはこの変更では修正しない。
 
 `textures/base_layers`のsurface配置ガイド6枚と`textures/atlas_bases/surface_base_2048.png`は新配置へ更新済み。PSDと`textures/road-assets`は自動変更しない。以下は左端を含み右端を含まないpixel範囲で、全レイヤーの高さは2048 px。
 

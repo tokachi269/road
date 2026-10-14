@@ -210,6 +210,9 @@ namespace RoadRuntimeHost.Runtime
                 JsonProperty(item, "index", index, false);
                 JsonProperty(item, "mesh", entry.m_mesh == null ? string.Empty : entry.m_mesh.name, true);
                 JsonProperty(item, "material", entry.m_material == null ? string.Empty : entry.m_material.name, true);
+                JsonProperty(item, "shader", entry.m_material == null || entry.m_material.shader == null ? string.Empty : entry.m_material.shader.name, true);
+                JsonProperty(item, "render_shader", entry.m_segmentMaterial == null || entry.m_segmentMaterial.shader == null ? string.Empty : entry.m_segmentMaterial.shader.name, true);
+                JsonProperty(item, "tangent_count", entry.m_mesh == null ? 0 : entry.m_mesh.tangents.Length, true);
                 JsonProperty(item, "forward_required", entry.m_forwardRequired.ToString(), true);
                 JsonProperty(item, "forward_required2", entry.m_forwardRequired2.ToString(), true);
                 JsonProperty(item, "forward_forbidden", entry.m_forwardForbidden.ToString(), true);

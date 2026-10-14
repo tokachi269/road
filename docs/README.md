@@ -36,6 +36,7 @@ agent支援で設計や実装を行う場合は、
 | [検証方針](testing.md) | 検証 | 変更に必要な証拠とコマンドを選ぶ |
 | [CS1道路生成仕様](cs1-road-requirements.md) | 仕様資料 | CS1、RoadImporter、プロジェクト判断を区別して調べる |
 | [Runtime preview](runtime-preview.md) | 運用手順 | 通常マップ向けpreviewの入出力と制約を調べる |
+| [配置時の断面variant](placement-variants.md) | 試作・調査 | Base Road、grid、交通分界、transition、保存復元の確認範囲を調べる |
 | [設計判断](design-decisions.md) | 比較検討 | 採用候補、不採用案、実証待ちを確認する |
 | [実装詳細](reference/implementation-details.md) | 詳細資料 | UV、geometry、Runtimeの現在の詳細を調べる |
 | [Runtime preview作業表](runtime-workboard.md) | 状態記録 | 過去の進捗と未検証事項を確認する |

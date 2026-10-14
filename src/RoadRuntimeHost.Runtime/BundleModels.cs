@@ -14,6 +14,8 @@ namespace RoadRuntimeHost.Runtime
         public string BundlePath;
         public string Revision;
         public string StructuralSignature;
+        public string PlacementIndex;
+        public string PlacementRevision;
     }
     internal sealed class RoadBundle
     {
@@ -24,6 +26,9 @@ namespace RoadRuntimeHost.Runtime
         public float HalfWidth;
         public float PavementWidth;
         public float NodeMinCornerOffset = float.NaN;
+        // Placement snapshots set this explicitly. Legacy preview bundles
+        // keep the inherited template value when this field is absent.
+        public float SurfaceLevel = float.NaN;
         public ImtMarkingStyleBundle ImtMarkingStyle;
         public string Revision;
         public string StructuralSignature;

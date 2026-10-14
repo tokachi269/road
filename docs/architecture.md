@@ -114,6 +114,17 @@ CS1
 Runtime previewはAsset EditorとCRP生成とは別の開発経路である。
 Blenderで生成したmeshを通常マップへ反映するが、Runtimeで断面meshを再生成しない。
 
+Toolbar iconはbundleの車両lane方向・本数を使う表示projectionで、physical断面ではない。
+`RoadIconRaster`のrasterとalpha合成をRuntime atlas adapterとPNG出力toolが共用する。
+共通overlay PNGは独立した制作画像として扱い、道路JSONやvariantへ複製しない。
+高さ・幅・median・roadside・線種の選択で別iconやNetInfoを増やさない。
+
+配置時断面の試作では、同一水平断面のD30/D0と両方向height transitionが5modeの
+NetInfo一組を共有する。compiled geometry/metadataは不変とし、選択状態はARのsegment別
+custom flagsが所有する。Runtime adapterは当該lane chainと両端nodeへの高さ反映だけを行う。
+ARが無効または必要な描画adapterが成立しない場合、別NetInfoの大量生成へfallbackしない。
+width/divider/median/roadsideの共有と最終CRP経路は、この高さ共有で完了した扱いにしない。
+
 IMTは生成後の線、停止線、ゼブラとユーザ編集を所有する。
 RuntimeHostはmissing時だけ初期値を作り、定期pollで復元しない。
 CS1の道路ツールでは、対象道路を選択中だけ次に引く道路の3規則を表示する。

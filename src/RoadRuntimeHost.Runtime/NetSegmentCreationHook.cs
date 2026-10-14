@@ -12,6 +12,7 @@ namespace RoadRuntimeHost.Runtime
         private static Action<ushort, NetInfo> _createdHandler;
         private static Action<ushort, ushort, ushort, NetInfo> _releasedHandler;
         private static bool _startAttempted;
+        public static bool Ready { get; internal set; }
 
         public static void Start(
             Action<ushort, NetInfo> createdHandler,
@@ -36,6 +37,7 @@ namespace RoadRuntimeHost.Runtime
             }
             if (_startAttempted) InvokePatch("Stop");
             _startAttempted = false;
+            Ready = false;
         }
 
         internal static void NotifyCreated(ushort segmentId, NetInfo info)
@@ -166,21 +168,24 @@ namespace RoadRuntimeHost.Runtime
 
                 MethodInfo createPostfix = typeof(NetSegmentMutationPatch).GetMethod(
                     "CreatePostfix", BindingFlags.Static | BindingFlags.NonPublic);
+                MethodInfo createPrefix = typeof(NetSegmentMutationPatch).GetMethod(
+                    "CreatePrefix", BindingFlags.Static | BindingFlags.NonPublic);
                 MethodInfo releasePrefix = typeof(NetSegmentMutationPatch).GetMethod(
                     "ReleasePrefix", BindingFlags.Static | BindingFlags.NonPublic);
                 MethodInfo releasePostfix = typeof(NetSegmentMutationPatch).GetMethod(
                     "ReleasePostfix", BindingFlags.Static | BindingFlags.NonPublic);
-                if (createPostfix == null || releasePrefix == null || releasePostfix == null)
+                if (createPostfix == null || createPrefix == null || releasePrefix == null || releasePostfix == null)
                     throw new MissingMethodException(typeof(NetSegmentMutationPatch).FullName, "Harmony callbacks");
 
                 _harmony = new Harmony(PatchId);
                 _harmony.Unpatch(_createOriginal, HarmonyPatchType.All, PatchId);
                 _harmony.Unpatch(_releaseOriginal, HarmonyPatchType.All, PatchId);
-                _harmony.Patch(_createOriginal, null, new HarmonyMethod(createPostfix));
+                _harmony.Patch(_createOriginal, new HarmonyMethod(createPrefix), new HarmonyMethod(createPostfix));
                 _harmony.Patch(
                     _releaseOriginal,
                     new HarmonyMethod(releasePrefix),
                     new HarmonyMethod(releasePostfix));
+                NetSegmentCreationHook.Ready = true;
                 DiagnosticLog.Info(
                     "SUCCESS",
                     "net_segment_mutation_hook_installed",
@@ -190,6 +195,7 @@ namespace RoadRuntimeHost.Runtime
             }
             catch (Exception error)
             {
+                NetSegmentCreationHook.Ready = false;
                 if (_harmony != null)
                 {
                     if (_createOriginal != null)
@@ -208,8 +214,19 @@ namespace RoadRuntimeHost.Runtime
             }
         }
 
+        private static bool CreatePrefix(ref NetInfo info, bool invert, ushort startNode, ushort endNode, ref ushort segment, ref bool __result)
+        {
+            info = PlacementHeightTransitionHook.ChooseCreatedPrefab(info, invert);
+            SharedHeightHook.PrepareCreation(info, invert);
+            if (PlacementHeightTransitionHook.CanConnect(info, invert, startNode, endNode)) return true;
+            segment = 0; __result = false; return false;
+        }
+
         private static void CreatePostfix(bool __result, ushort segment, NetInfo info)
         {
+            try { SharedHeightHook.Created(segment, info, __result && segment != 0); }
+            catch (Exception error) { DiagnosticLog.Error("MOD_CONTRACT", "shared_height_create_failed", "Created road could not receive its individual height state", error); }
+            PlacementHeightTransitionHook.CompleteCreatedPrefab(info, __result && segment != 0);
             if (__result && segment != 0)
                 NetSegmentCreationHook.NotifyCreated(segment, info);
         }

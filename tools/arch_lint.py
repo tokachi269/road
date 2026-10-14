@@ -37,6 +37,7 @@ DOCUMENT_ROLES = {
     "design-decisions.md": "比較検討",
     "engineering/agent_harness.md": "作業手順",
     "handoff.md": "履歴",
+    "placement-variants.md": "試作・調査",
     "reference/implementation-details.md": "詳細資料",
     "runtime-preview.md": "運用手順",
     "runtime-workboard.md": "状態記録",

@@ -70,6 +70,33 @@ Blenderの代表経路はbackground Blenderで確認する。
 - Elevatedの主桁とカスタム端部
 - texture fixtureとRuntime bundle
 
+配置断面のdomain試作とBlender生成adapterは別途次で検査する。
+
+```powershell
+python -m unittest tests.placement_section_test
+python -m unittest tests.native_node_reference_test
+.\scripts\run-blender.ps1 -Script .\tests\blender_placement_smoke.py
+```
+
+後者は生成後の頂点と独立した寸法期待値を比較し、既存previewの手編集保全と
+placement cacheの更新境界も確認する。CS1のnode変形、zoning、lane軌道、map復元は証明しない。
+高さtransitionは両方向・全5modeの路面端点、中央高さ、歩道高さ、退化faceの不在と、
+通常snapshotを参照するsegment専用出力を検査する。Runtime contractはその実Blender出力を読み、
+水平断面・lane metadataの変化、端点参照違い、node混入を拒否することを確認する。
+これも車両軌道、専用Prefab登録、一回だけのTransition配置の証拠にはしない。
+Runtimeのmanaged高さadapterは、literalなBezier control offset、既存curveの水平座標と
+地形高さの保全、native flagsによる描画反転、両端node selector、成功時だけの一回消費を
+別々に検査する。このgreenはHarmony実呼出し、UI操作、Prefab登録の成功を証明しない。
+
+同一水平断面の高さ共有は、ARの4状態のliteral endpoint matrix、他segment/他flagの不変、
+manager交換後のbuffer参照、100回の高さ切替で1組・5modeだけをNative登録portへ要求する
+検査を持つ。Native登録portはoffline stand-inで、Unity内のPrefab数・memory・描画は未計測。
+ARが無効な場合の大量NetInfo fallbackは認めず、描画/LODのAR hook有効性を登録前に検査する。
+cache済みPrefabの再利用もこのcapability gateを通す。
+immutable配置meshのcacheは、頂点/法線/UV/三角形とnative bounds条件の独立した差を検査する。
+実compiled height entryの再要求で生成数が増えないことも確認するが、生成portはoffline
+stand-inであり、Native Material初期化、Unity/GPU memoryの計測は含まない。
+
 texture fixtureは`textures/atlas_bases`を
 `build/smoke/texture-fixture`へ複写して使う。
 Photoshop Generatorの保存処理とは競合させない。
@@ -94,6 +121,13 @@ Set-Location <repository-root>
 build成功はAsset Editorへのimportや、ゲーム内表示を証明しない。
 
 ## Runtime preview
+
+Toolbar iconは`RoadIconContract`で14 topologyのラベル、lane数、矢印向き、対向境界、
+共有overlayのstraight-alpha合成とPNG/Unityの縦方向変換を確認する。
+幅・高さ・lane位置を変えても同じbase topology表示になること、未知の交通種別へ
+Car iconを推測適用しないこと、native 5状態のsprite名とPNG header寸法も検査する。
+`scripts/generate-road-icons.ps1`の128 px出力と96 px contact sheetで見た目を確認する。
+これは実CS1 toolbarへのatlas登録やCRP thumbnail保存の検証ではない。
 
 Runtime変更ではcatalog、Blender bundle、.NET reader、CS1参照build、stagingを分けて確認する。
 

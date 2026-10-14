@@ -42,6 +42,15 @@ from .domain import (
     MEDIAN_END_OVERHANG,
     MEDIAN_Z_FIGHT_EPSILON,
     NODE_SLICES,
+    longitudinal_slice_count,
+    RoadPlacementOptions,
+    RoadPlacementSection,
+    RoadHeightTransition,
+    resolve_height_transition,
+    resolve_placement_section,
+    placement_option_matrix,
+    placement_median_uses_mesh,
+    placement_lane_geometry,
     PARKING_LANE_DEFAULT_WIDTH,
     PROFILE_SCHEMA_VERSION,
     ROADWAY_DEPRESSION,
@@ -66,14 +75,18 @@ from .domain import (
     strip_id,
     vehicle_lane_variants,
 )
-from .geometry_plan import plan_main_girders
+from .geometry_plan import plan_main_girders, collapse_curb_wall
 from .runtime_export import (
     export_prop_bundle,
     export_runtime_bundle,
+    export_placement_snapshot,
+    export_height_transition_snapshot,
+    export_placement_index,
     finalize_runtime_manifest,
     geometry_fingerprint,
     safe_road_id,
     texture_fingerprint,
+    stage_runtime_textures,
 )
 
 
@@ -526,23 +539,30 @@ def _mesh_object(
     region_attribute = mesh.attributes.new(
         name="cs1_uv_region", type="INT", domain="FACE",
     )
+    # Blender's legacy UV collection accessor is not a cheap Python list.
+    # Resolve each RNA collection once for this mesh, not once per loop.
+    kind_data, region_data, uv_data = kind_attribute.data, region_attribute.data, uv_layer.data
+    kind_values, region_values, uv_values = [], [], []
     for polygon, kind, explicit_uvs, uv_region in zip(
         mesh.polygons, face_kinds, face_uvs, face_uv_regions,
     ):
         polygon.material_index = (material_indices or {}).get(kind, 0)
-        kind_attribute.data[polygon.index].value = FACE_KIND_VALUES.get(kind, 0)
+        kind_values.append(FACE_KIND_VALUES.get(kind, 0))
         if explicit_uvs is None:
             raise ValueError(f"{name}: face {polygon.index} has no explicit UV")
         if len(explicit_uvs) != len(polygon.loop_indices):
             raise ValueError(f"{name}: face {polygon.index} UV loop count disagrees")
         try:
-            region_attribute.data[polygon.index].value = UV_REGION_VALUES[uv_region]
+            region_values.append(UV_REGION_VALUES[uv_region])
         except KeyError as error:
             raise ValueError(
                 f"{name}: face {polygon.index} has unknown UV region {uv_region!r}"
             ) from error
-        for loop_index, uv in zip(polygon.loop_indices, explicit_uvs):
-            uv_layer.data[loop_index].uv = uv
+        for uv in explicit_uvs:
+            uv_values.extend(uv)
+    kind_data.foreach_set("value", kind_values)
+    region_data.foreach_set("value", region_values)
+    uv_data.foreach_set("uv", uv_values)
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
     for material in materials:
@@ -1150,10 +1170,29 @@ def _road_uv_spans(props, road_half) -> tuple[_RoadUVSpan, ...]:
     if road_half > lane_right + 1e-8:
         spans.append(_RoadUVSpan(lane_right, road_half, "shoulder.default", True))
 
+    return _finish_road_uv_spans(spans, -road_half, road_half)
+
+
+def _placement_road_uv_spans(section) -> tuple[_RoadUVSpan, ...]:
+    spans = []
+    first, last = section.lanes[0], section.lanes[-1]
+    lane_left = first.position - first.width * 0.5
+    lane_right = last.position + last.width * 0.5
+    if section.roadside_left > 1e-8:
+        spans.append(_RoadUVSpan(section.curb_left, lane_left, "shoulder.default"))
+    for lane in section.lanes:
+        spans.append(_RoadUVSpan(lane.position - lane.width * 0.5,
+                                 lane.position + lane.width * 0.5, "lane.default"))
+    if section.roadside_right > 1e-8:
+        spans.append(_RoadUVSpan(lane_right, section.curb_right, "shoulder.default", True))
+    return _finish_road_uv_spans(spans, section.curb_left, section.curb_right)
+
+
+def _finish_road_uv_spans(spans, curb_left, curb_right) -> tuple[_RoadUVSpan, ...]:
     wall_u_max = _texture_region("curb.wall")[1]
     for index, span in enumerate(spans):
-        touches_left_curb = abs(span.x_min + road_half) < 1e-8
-        touches_right_curb = abs(span.x_max - road_half) < 1e-8
+        touches_left_curb = abs(span.x_min - curb_left) < 1e-8
+        touches_right_curb = abs(span.x_max - curb_right) < 1e-8
         if not touches_left_curb and not touches_right_curb:
             continue
         composite_id = f"curb.lower+{span.region_id}"
@@ -1309,10 +1348,15 @@ def _add_road_strips(
             )
 
 
+def _add_curb_wall(mesh, points, uvs):
+    points, uvs = collapse_curb_wall(points, uvs)
+    mesh.polygon(points, uvs=uvs, uv_region="curb.wall")
+
+
 def _add_cross_section_top(
     mesh, boundaries, markings, marking_width, road_half, total_half, y_min, y_max,
     road_start, road_end, sidewalk_start, sidewalk_end, split_center, slices,
-    uv_spans, excluded_range=None,
+    uv_spans, excluded_range=None, curb_range=None,
 ) -> None:
     _add_road_strips(
         mesh, boundaries, markings, marking_width, road_half, total_half, y_min, y_max,
@@ -1330,8 +1374,10 @@ def _add_cross_section_top(
     # profile into a narrower sidewalk. Keep the curb edge anchored to its wall.
     # Wider sidewalks retain the existing full-profile stretch; no extra face
     # is introduced just to repeat the sidewalk texture.
-    sidewalk_u_min = max(sidewalk_u_min, sidewalk_u_max - (total_half - road_half)
-                         * float(manifest["pixels_per_meter"]) / float(manifest["atlas_width_px"]))
+    curb_left, curb_right = curb_range if curb_range is not None else (-road_half, road_half)
+    uv_per_m = float(manifest["pixels_per_meter"]) / float(manifest["atlas_width_px"])
+    left_u_min = max(sidewalk_u_min, sidewalk_u_max - (total_half + curb_left) * uv_per_m)
+    right_u_min = max(sidewalk_u_min, sidewalk_u_max - (total_half - curb_right) * uv_per_m)
     for index in range(slices):
         t0, t1 = index / slices, (index + 1) / slices
         ya, yb = y_min + (y_max - y_min) * t0, y_min + (y_max - y_min) * t1
@@ -1339,40 +1385,38 @@ def _add_cross_section_top(
         row1 = _cross_section_uv_row(t1, road_half, total_half, road_start, road_end, sidewalk_start, sidewalk_end)
         mesh.quad(
             (-total_half, ya, row0["sidewalk_z"]),
-            (-road_half, ya, row0["sidewalk_z"]),
-            (-road_half, yb, row1["sidewalk_z"]),
+            (curb_left, ya, row0["sidewalk_z"]),
+            (curb_left, yb, row1["sidewalk_z"]),
             (-total_half, yb, row1["sidewalk_z"]),
-            uvs=((sidewalk_u_min, t0), (sidewalk_u_max, t0),
-                 (sidewalk_u_max, t1), (sidewalk_u_min, t1)),
+            uvs=((left_u_min, t0), (sidewalk_u_max, t0),
+                 (sidewalk_u_max, t1), (left_u_min, t1)),
             uv_region="sidewalk.default+curb.upper",
         )
         mesh.quad(
-            (road_half, ya, row0["sidewalk_z"]),
+            (curb_right, ya, row0["sidewalk_z"]),
             (total_half, ya, row0["sidewalk_z"]),
             (total_half, yb, row1["sidewalk_z"]),
-            (road_half, yb, row1["sidewalk_z"]),
-            uvs=((sidewalk_u_max, t0), (sidewalk_u_min, t0),
-                 (sidewalk_u_min, t1), (sidewalk_u_max, t1)),
+            (curb_right, yb, row1["sidewalk_z"]),
+            uvs=((sidewalk_u_max, t0), (right_u_min, t0),
+                 (right_u_min, t1), (sidewalk_u_max, t1)),
             uv_region="sidewalk.default+curb.upper",
         )
         if row0["road_z"] != row0["sidewalk_z"] or row1["road_z"] != row1["sidewalk_z"]:
-            mesh.quad(
-                (-road_half, ya, row0["road_z"]), (-road_half, yb, row1["road_z"]),
-                (-road_half, yb, row1["sidewalk_z"]), (-road_half, ya, row0["sidewalk_z"]),
-                uvs=(
+            _add_curb_wall(mesh, (
+                (curb_left, ya, row0["road_z"]), (curb_left, yb, row1["road_z"]),
+                (curb_left, yb, row1["sidewalk_z"]), (curb_left, ya, row0["sidewalk_z"])),
+                (
                     (wall_u_max, t0), (wall_u_max, t1),
                     (wall_u_min, t1), (wall_u_min, t0),
                 ),
-                uv_region="curb.wall",
             )
-            mesh.quad(
-                (road_half, ya, row0["sidewalk_z"]), (road_half, yb, row1["sidewalk_z"]),
-                (road_half, yb, row1["road_z"]), (road_half, ya, row0["road_z"]),
-                uvs=(
+            _add_curb_wall(mesh, (
+                (curb_right, ya, row0["sidewalk_z"]), (curb_right, yb, row1["sidewalk_z"]),
+                (curb_right, yb, row1["road_z"]), (curb_right, ya, row0["road_z"])),
+                (
                     (wall_u_min, t0), (wall_u_min, t1),
                     (wall_u_max, t1), (wall_u_max, t0),
                 ),
-                uv_region="curb.wall",
             )
 
 
@@ -1504,12 +1548,14 @@ def _add_deck_structure(
             )
 
 
-def _add_tunnel_envelope(mesh, half_width, y_min, y_max, side_z, roof_z, slices) -> None:
+def _add_tunnel_envelope(mesh, half_width, y_min, y_max, side_z, roof_z, slices, end_roof_z=None) -> None:
+    if end_roof_z is None:
+        end_roof_z = roof_z
     wall_u = _atlas_texture_region("tunnel", "tunnel.wall")[:2]
     roof_u = _atlas_texture_region("tunnel", "tunnel.roof")[:2]
-    mesh.vertical_strip(-half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, slices=slices, kind="structure", u_range=wall_u, uv_region="tunnel.wall")
-    mesh.vertical_strip(half_width, y_min, y_max, side_z, side_z, roof_z, roof_z, flip=True, slices=slices, kind="structure", u_range=wall_u, uv_region="tunnel.wall")
-    mesh.horizontal_strip(-half_width, half_width, y_min, y_max, roof_z, roof_z, slices, flip=True, kind="structure", u_range=roof_u, uv_region="tunnel.roof")
+    mesh.vertical_strip(-half_width, y_min, y_max, side_z, side_z, roof_z, end_roof_z, slices=slices, kind="structure", u_range=wall_u, uv_region="tunnel.wall")
+    mesh.vertical_strip(half_width, y_min, y_max, side_z, side_z, roof_z, end_roof_z, flip=True, slices=slices, kind="structure", u_range=wall_u, uv_region="tunnel.wall")
+    mesh.horizontal_strip(-half_width, half_width, y_min, y_max, roof_z, end_roof_z, slices, flip=True, kind="structure", u_range=roof_u, uv_region="tunnel.roof")
 
 
 def _add_default_lanes(props) -> None:
@@ -2398,6 +2444,8 @@ def _lane_positions(props):
 
 def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
     props = active_road(scene)
+    longitudinal_slice_count(props.segment_slices)
+    longitudinal_slice_count(props.node_slices)
     _sync_cross_section_state(props)
     _sync_lane_derived_values(props)
     roadway_width, _, total_half = _cross_section(props)
@@ -2412,21 +2460,21 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
             custom_edge_segments = (
                 _prepare_elevated_edge_mesh(
                     edge_source, "left", -half_width, surface_z, depth,
-                    SEGMENT_SLICES, group_name,
+                    props.segment_slices, group_name,
                 ),
                 _prepare_elevated_edge_mesh(
                     edge_source, "right", half_width, surface_z, depth,
-                    SEGMENT_SLICES, group_name,
+                    props.segment_slices, group_name,
                 ),
             )
             custom_edge_nodes = (
                 _prepare_elevated_edge_mesh(
                     edge_source, "left", -half_width, surface_z, depth,
-                    NODE_SLICES, group_name,
+                    props.node_slices, group_name,
                 ),
                 _prepare_elevated_edge_mesh(
                     edge_source, "right", half_width, surface_z, depth,
-                    NODE_SLICES, group_name,
+                    props.node_slices, group_name,
                 ),
             )
             if custom_edge_segments[0].connector_x >= custom_edge_segments[1].connector_x:
@@ -2465,31 +2513,31 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
         # regular node stays level.  Only a flush road needs the preview
         # profile which descends to the shared recessed node surface.
         far_z = segment_z if props.depress_roadway else -ROADWAY_DEPRESSION
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, segment_z, 0.0, 0.0, False, SEGMENT_SLICES, road_uv_spans, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, far_z, 0.0, 0.0, True, NODE_SLICES, road_uv_spans, median_range)
-        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, segment_z, segment_z, SEGMENT_SLICES)
-        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, segment_z, far_z, NODE_SLICES)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, segment_z, 0.0, 0.0, False, props.segment_slices, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, segment_z, far_z, 0.0, 0.0, True, props.node_slices, road_uv_spans, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, segment_z, segment_z, props.segment_slices)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, segment_z, far_z, props.node_slices)
     elif mode == "elevated":
         road_z, side_z = -curb_rise, 0.0
         girder_layout = plan_main_girders(total_half * 2.0)
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, road_uv_spans, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, road_uv_spans, median_range)
-        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
-        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, props.segment_slices, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, props.node_slices, road_uv_spans, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, props.segment_slices)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, props.node_slices)
         if custom_edge_segments is None:
-            _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, SEGMENT_SLICES, girder_layout)
-            _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, NODE_SLICES)
+            _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, props.segment_slices, girder_layout)
+            _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.deck_depth, props.node_slices)
         else:
             left_segment, right_segment = custom_edge_segments
             left_node, right_node = custom_edge_nodes
             _add_deck_structure(
                 segment_mesh, total_half, y_min, y_max, side_z, side_z,
-                props.deck_depth, SEGMENT_SLICES, girder_layout,
+                props.deck_depth, props.segment_slices, girder_layout,
                 left_segment.connector_x, right_segment.connector_x, False, False,
             )
             _add_deck_structure(
                 node_mesh, total_half, y_min, y_max, side_z, side_z,
-                props.deck_depth, NODE_SLICES, None,
+                props.deck_depth, props.node_slices, None,
                 left_node.connector_x, right_node.connector_x, False, False,
             )
             _append_elevated_edge(segment_mesh, left_segment)
@@ -2499,30 +2547,30 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
     elif mode == "bridge":
         road_z, side_z = -curb_rise, 0.0
         girder_layout = plan_main_girders(total_half * 2.0)
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, road_uv_spans, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, road_uv_spans, median_range)
-        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
-        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
-        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, SEGMENT_SLICES, girder_layout, fascia_region="bridge.fascia")
-        _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, NODE_SLICES, fascia_region="bridge.fascia")
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, props.segment_slices, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, props.node_slices, road_uv_spans, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, props.segment_slices)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, props.node_slices)
+        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, props.segment_slices, girder_layout, fascia_region="bridge.fascia")
+        _add_deck_structure(node_mesh, total_half, y_min, y_max, side_z, side_z, props.bridge_deck_depth, props.node_slices, fascia_region="bridge.fascia")
     elif mode == "slope":
         road_start = road_end = -curb_rise
         side_start = side_end = 0.0
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_start, road_end, side_start, side_end, False, SEGMENT_SLICES, road_uv_spans, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_end, road_end, side_end, side_end, True, NODE_SLICES, road_uv_spans, median_range)
-        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_start, road_end, SEGMENT_SLICES)
-        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_end, road_end, NODE_SLICES)
-        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_start, side_end, props.deck_depth, SEGMENT_SLICES, atlas_name="tunnel", underside_region="tunnel.roof", fascia_region="tunnel.wall")
-        _add_deck_structure(node_mesh, total_half, y_min, y_max, side_end, side_end, props.deck_depth, NODE_SLICES, atlas_name="tunnel", underside_region="tunnel.roof", fascia_region="tunnel.wall")
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_start, road_end, side_start, side_end, False, props.segment_slices, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_end, road_end, side_end, side_end, True, props.node_slices, road_uv_spans, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_start, road_end, props.segment_slices)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_end, road_end, props.node_slices)
+        _add_deck_structure(segment_mesh, total_half, y_min, y_max, side_start, side_end, props.deck_depth, props.segment_slices, atlas_name="tunnel", underside_region="tunnel.roof", fascia_region="tunnel.wall")
+        _add_deck_structure(node_mesh, total_half, y_min, y_max, side_end, side_end, props.deck_depth, props.node_slices, atlas_name="tunnel", underside_region="tunnel.roof", fascia_region="tunnel.wall")
     else:
         road_z = -curb_rise
         side_z, roof_z = 0.0, road_z + props.tunnel_clearance
-        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, SEGMENT_SLICES, road_uv_spans, median_range)
-        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, NODE_SLICES, road_uv_spans, median_range)
-        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, SEGMENT_SLICES)
-        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, NODE_SLICES)
-        _add_tunnel_envelope(segment_mesh, total_half, y_min, y_max, side_z, roof_z, SEGMENT_SLICES)
-        _add_tunnel_envelope(node_mesh, total_half, y_min, y_max, side_z, roof_z, NODE_SLICES)
+        _add_cross_section_top(segment_mesh, segment_boundaries, segment_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, False, props.segment_slices, road_uv_spans, median_range)
+        _add_cross_section_top(node_mesh, node_boundaries, node_markings, props.marking_region_width, road_half, total_half, y_min, y_max, road_z, road_z, side_z, side_z, True, props.node_slices, road_uv_spans, median_range)
+        _add_median_for_profile(segment_mesh, props, median_range, y_min, y_max, road_z, road_z, props.segment_slices)
+        _add_median_for_profile(node_mesh, props, median_range, y_min, y_max, road_z, road_z, props.node_slices)
+        _add_tunnel_envelope(segment_mesh, total_half, y_min, y_max, side_z, roof_z, props.segment_slices)
+        _add_tunnel_envelope(node_mesh, total_half, y_min, y_max, side_z, roof_z, props.node_slices)
 
     segment_materials = (material,)
     segment_indices = {}
@@ -2549,7 +2597,7 @@ def _build_mode_impl(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object
     for obj, part in ((segment, "segment"), (node, "node")):
         obj["cs1_road_mode"], obj["cs1_road_name"], obj["cs1_road_part"] = mode, props.road_name, part
         obj["cs1_local_length"] = MODE_LENGTH
-        obj["cs1_longitudinal_slices"] = SEGMENT_SLICES if part == "segment" else NODE_SLICES
+        obj["cs1_longitudinal_slices"] = props.segment_slices if part == "segment" else props.node_slices
     node["cs1_center_split"] = True
     if props.median_enabled:
         for obj in (segment, node):
@@ -2587,6 +2635,200 @@ def build_mode(scene: bpy.types.Scene, mode: str) -> list[bpy.types.Object]:
         return _build_mode_impl(scene, mode)
     finally:
         _LIVE_PREVIEW_REBUILDING = previous
+
+
+def build_placement_mode(
+    scene: bpy.types.Scene, mode: str, section: RoadPlacementSection,
+    *, rebuild: bool = False,
+) -> list[bpy.types.Object]:
+    return _build_placement_mode_impl(scene, mode, section, rebuild=rebuild)
+
+
+def build_height_transition_mode(scene: bpy.types.Scene, mode: str, transition: RoadHeightTransition,
+                                 *, rebuild: bool = False):
+    if not isinstance(transition, RoadHeightTransition):
+        raise TypeError("Height transition mesh requires resolved endpoint sections")
+    resolve_height_transition(transition.start, transition.end)
+    # Endpoint nodes remain ordinary section meshes, including any user edits.
+    # Explicit rebuild here only rebuilds the temporary transition segment.
+    start_node = build_placement_mode(scene, mode, transition.start)[1]
+    end_node = build_placement_mode(scene, mode, transition.end)[1]
+    segment = build_height_transition_segment(scene, mode, transition, rebuild=rebuild)
+    return {"segment": segment, "start_node": start_node, "end_node": end_node}
+
+
+def build_height_transition_segment(scene: bpy.types.Scene, mode: str, transition: RoadHeightTransition,
+                                    *, rebuild: bool = False):
+    # Export already has the ordinary endpoint snapshots; do not regenerate
+    # unused endpoint meshes merely to serialize the temporary segment.
+    if not isinstance(transition, RoadHeightTransition):
+        raise TypeError("Height transition mesh requires resolved endpoint sections")
+    resolve_height_transition(transition.start, transition.end)
+    return _build_placement_mode_impl(scene, mode, transition.start,
+                                      rebuild=rebuild, transition=transition)[0]
+
+
+def _build_placement_mode_impl(
+    scene: bpy.types.Scene, mode: str, section: RoadPlacementSection,
+    *, rebuild: bool = False, transition: RoadHeightTransition | None = None,
+) -> list[bpy.types.Object]:
+    """Consume one resolved section; never replace the active road preview.
+
+    A caller requests a concrete section, not an entire option Cartesian product.
+    Existing meshes for that identity are retained unless explicitly rebuilt.
+    This adapter does not register game prefabs or decide node compatibility.
+    """
+    if mode not in {item[0] for item in MODE_ITEMS}:
+        raise ValueError(f"Unknown road mode: {mode}")
+    if not isinstance(section, RoadPlacementSection):
+        raise TypeError("Placement mesh generation requires a resolved domain section")
+    props = active_road(scene)
+    source_lanes = tuple(lane for lane in props.lanes if lane.zone == "ROAD")
+    if any((lane.lane_type, lane.vehicle_type) != ("VEHICLE", "CAR")
+           for lane in source_lanes):
+        raise ValueError("Placement meshes currently require exact Vehicle/Car lanes")
+    if tuple((lane.lane_id, lane.direction, lane.width) for lane in source_lanes) != tuple(
+        (lane.lane_id, lane.direction, lane.width) for lane in section.lanes
+    ):
+        raise ValueError("Resolved placement section does not match the active Base Road")
+    identity = (transition.variant_identity(props.runtime_road_id) if transition is not None
+                else section.variant_identity(props.runtime_road_id))
+    parts = (("segment", props.segment_slices),) if transition is not None else (
+        ("segment", props.segment_slices), ("node", props.node_slices))
+    median_signature = None
+    if section.median_left is not None:
+        median_signature = (
+            placement_median_uses_mesh(props.median_profile), props.median_height,
+            props.median_curb_width, props.median_no_split_group,
+            geometry_fingerprint([props.median_mesh]) if props.median_mesh is not None else "",
+        )
+    depth = (props.bridge_deck_depth if mode == "bridge" else props.deck_depth
+             if mode in {"elevated", "slope"} else None)
+    source_signature = repr((
+        props.segment_slices, props.node_slices, median_signature, depth,
+        props.tunnel_clearance if mode == "tunnel" else None,
+        (props.elevated_edge_no_split_group,
+         geometry_fingerprint([props.elevated_edge_mesh]) if props.elevated_edge_mesh is not None else "")
+        if mode == "elevated" else None,
+    ))
+    name = f"CS1_PLACEMENT_{identity[-24:]}_{mode}"
+    existing = bpy.data.collections.get(name)
+    if existing is not None:
+        if existing.get("cs1_placement_identity") != identity:
+            raise ValueError("Placement collection identity collision")
+        if not rebuild:
+            if existing.get("cs1_placement_source") != source_signature:
+                raise ValueError("Placement geometry inputs changed; rebuild explicitly")
+            objects = {obj.get("cs1_road_part"): obj for obj in existing.objects}
+            if set(objects) != {part for part, slices in parts}:
+                raise ValueError("Placement collection is incomplete; rebuild explicitly")
+            return [objects[part] for part, slices in parts]
+    material = _material(props.marking_paint_width, props.marking_region_width, props.road_color)
+    materials = (material,)
+    material_indices = {}
+    if mode != "basic":
+        secondary = _tunnel_material() if mode in {"slope", "tunnel"} else _structure_material()
+        materials += (secondary,)
+        material_indices["structure"] = 1
+    spans = _placement_road_uv_spans(section)
+    boundaries = _surface_texture_boundaries(spans)
+    median_range = ((section.median_left, section.median_right)
+                    if section.median_left is not None else None)
+    if median_range is not None:
+        boundaries = sorted(set(boundaries).union(median_range))
+    total_half = section.total_width * 0.5
+    road_half = (section.curb_right - section.curb_left) * 0.5
+    y_min, y_max = -MODE_LENGTH * 0.5, MODE_LENGTH * 0.5
+    meshes = []
+    for part, slices in parts:
+        slices = longitudinal_slice_count(slices)
+        mesh = _SurfaceMesh()
+        part_boundaries = sorted(set(boundaries).union({0.0})) if part == "node" else boundaries
+        end_road_z = transition.end.roadway_z if transition is not None else section.roadway_z
+        _add_cross_section_top(
+            mesh, part_boundaries, [], props.marking_region_width, road_half, total_half,
+            y_min, y_max, section.roadway_z, end_road_z, 0.0, 0.0,
+            part == "node", slices, spans, median_range,
+            (section.curb_left, section.curb_right),
+        )
+        if median_range is not None:
+            if not placement_median_uses_mesh(props.median_profile):
+                _add_generated_median(mesh, median_range, y_min, y_max,
+                                      section.roadway_z, end_road_z,
+                                      props.median_height, props.median_curb_width, slices)
+            else:
+                if props.median_mesh is None:
+                    raise ValueError("Median without generated curbs needs a Median mesh")
+                plan = _prepare_median_mesh(
+                    props.median_mesh, section.median_right - section.median_left,
+                    props.median_height, section.roadway_z, end_road_z,
+                    slices, props.median_no_split_group,
+                )
+                center = section.traffic_boundary
+                shifted = _MedianMeshPlan(tuple(
+                    (tuple((x + center, y, z) for x, y, z in points), uvs)
+                    for points, uvs in plan.polygons
+                ), plan.source_name)
+                _append_median_mesh(mesh, shifted)
+        if mode in {"elevated", "bridge"}:
+            girders = plan_main_girders(section.total_width) if part == "segment" else None
+            depth = props.bridge_deck_depth if mode == "bridge" else props.deck_depth
+            if mode == "elevated" and props.elevated_edge_mesh is not None:
+                left = _prepare_elevated_edge_mesh(props.elevated_edge_mesh, "left", -total_half,
+                                                 0.0, depth, slices, props.elevated_edge_no_split_group)
+                right = _prepare_elevated_edge_mesh(props.elevated_edge_mesh, "right", total_half,
+                                                  0.0, depth, slices, props.elevated_edge_no_split_group)
+                if left.connector_x >= right.connector_x:
+                    raise ValueError("Elevated edge mesh lowest edges cross at the deck underside")
+                _add_deck_structure(mesh, total_half, y_min, y_max, 0.0, 0.0, depth, slices,
+                                    girders, left.connector_x, right.connector_x, False, False)
+                _append_elevated_edge(mesh, left)
+                _append_elevated_edge(mesh, right)
+            else:
+                fascia = "bridge.fascia" if mode == "bridge" else "elevated.fascia"
+                _add_deck_structure(mesh, total_half, y_min, y_max, 0.0, 0.0, depth, slices,
+                                    girders, fascia_region=fascia)
+        elif mode == "slope":
+            _add_deck_structure(mesh, total_half, y_min, y_max, 0.0, 0.0, props.deck_depth,
+                                slices, atlas_name="tunnel", underside_region="tunnel.roof",
+                                fascia_region="tunnel.wall")
+        elif mode == "tunnel":
+            _add_tunnel_envelope(mesh, total_half, y_min, y_max, 0.0,
+                                 section.roadway_z + props.tunnel_clearance, slices,
+                                 end_road_z + props.tunnel_clearance)
+        meshes.append((part, slices, mesh))
+    # Build in an unlinked staging collection. Failed creation leaves any previous
+    # placement mesh and the user's normal preview untouched.
+    staging = bpy.data.collections.new(f"{name}_staging")
+    try:
+        objects = []
+        for part, slices, mesh in meshes:
+            obj = mesh.create(staging, f"placement_{mode}_{part}", materials, material_indices)
+            obj["cs1_road_mode"], obj["cs1_road_part"] = mode, part
+            obj["cs1_road_name"] = props.road_name
+            obj["cs1_local_length"], obj["cs1_longitudinal_slices"] = MODE_LENGTH, slices
+            obj["cs1_placement_identity"] = identity
+            obj["cs1_center_split"] = part == "node"
+            if transition is not None:
+                obj["cs1_transition_start_z"] = transition.start.roadway_z
+                obj["cs1_transition_end_z"] = transition.end.roadway_z
+            objects.append(obj)
+    except Exception:
+        _clear_collection(staging)
+        bpy.data.collections.remove(staging)
+        raise
+    if existing is not None:
+        _clear_collection(existing)
+        bpy.data.collections.remove(existing)
+    staging.name = name
+    staging["cs1_placement_identity"] = identity
+    staging["cs1_placement_source"] = source_signature
+    root = bpy.data.collections.get("CS1_PLACEMENT")
+    if root is None:
+        root = bpy.data.collections.new("CS1_PLACEMENT")
+        scene.collection.children.link(root)
+    root.children.link(staging)
+    return objects
 
 
 class CS1RoadLane(PropertyGroup):
@@ -2745,6 +2987,16 @@ class CS1RoadBuilderProperties(PropertyGroup):
         name="Min corner offset", default=0.0, min=0.0, max=128.0,
         unit="LENGTH",
         description="CS1 NetInfo.m_minCornerOffset; increases node corner smoothing",
+    )
+    segment_slices: IntProperty(
+        name="Segment subdivisions", default=SEGMENT_SLICES, min=1, max=128,
+        description="Longitudinal divisions of the 64 m segment mesh; shared by all modes",
+        update=_on_geometry_update,
+    )
+    node_slices: IntProperty(
+        name="Node subdivisions", default=NODE_SLICES, min=1, max=128,
+        description="Longitudinal divisions of the 64 m node mesh; shared by all modes",
+        update=_on_geometry_update,
     )
     road_color: FloatVectorProperty(
         name="Road color", subtype="COLOR_GAMMA", size=3,
@@ -3441,6 +3693,107 @@ def _runtime_lanes(props, profile):
     return lanes
 
 
+def _release_temporary_placement_meshes(old_collections):
+    # Export owns only newly generated collections, never existing manual edits.
+    for collection in list(bpy.data.collections):
+        if collection.as_pointer() in old_collections or not collection.get("cs1_placement_identity"):
+            continue
+        temporary_meshes = [obj.data for obj in collection.objects if obj.type == "MESH"]
+        _clear_collection(collection)
+        bpy.data.collections.remove(collection)
+        for mesh in temporary_meshes:
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+
+def export_placement_choices(scene, options, output_root):
+    """Compile explicitly requested choices; no change to the regular manifest.
+
+    Each choice uses the same resolved section for lanes and generated meshes.
+    The runtime reads a selected immutable snapshot instead of inferring layout.
+    """
+    props = active_road(scene)
+    profile = _profile_for_road(scene, props)
+    if profile is None:
+        raise ValueError(f"Road profile not found: {props.profile_id}")
+    matrix = (placement_option_matrix(props.lanes) if options is None else
+              tuple((option, resolve_placement_section(props.lanes, option)) for option in options))
+    # Validate the whole requested menu before publishing any snapshot. A bad
+    # choice must not leave the UI pointing at a partially compiled menu.
+    keys = ["|".join(option) for option, section in matrix]
+    if not keys or len(keys) != len(set(keys)):
+        raise ValueError("Placement choices must be nonempty and unique")
+    full_menu = options is None
+    old_collections = {c.as_pointer() for c in bpy.data.collections}
+    texture_bindings, _texture_revision = stage_runtime_textures(Path(output_root), DEFAULT_TEXTURE_LAYOUT)
+    material_families = {SHARED_SURFACE_MATERIAL: "surface", SHARED_STRUCTURE_MATERIAL: "structure",
+                         SHARED_TUNNEL_MATERIAL: "tunnel"}
+    choices = []
+    compiled = {}
+    for option, section in matrix:
+        key = "|".join(option)
+        geometry_identity = section.variant_identity(props.runtime_road_id)
+        if geometry_identity not in compiled:
+            lane_geometry = {lane.lane_id: lane for lane in placement_lane_geometry(section, props.lanes)}
+            lane_data = []
+            for lane in props.lanes:
+                if lane.zone != "ROAD" and (lane.lane_type, lane.vehicle_type) != ("PEDESTRIAN", "NONE"):
+                    raise ValueError("Placement sidewalks require exact Pedestrian/None metadata")
+                coordinate = lane_geometry[lane.lane_id]
+                lane_data.append({
+                    "lane_id": lane.lane_id, "position": coordinate.position,
+                    "width": coordinate.width, "vertical_offset": coordinate.vertical_offset,
+                    "stop_offset": _lane_setting(profile, lane, "stop_offset").value,
+                    "speed_limit": _lane_setting(profile, lane, "speed_limit").value,
+                    "direction": lane.direction, "lane_type": lane.lane_type,
+                    "vehicle_type": lane.vehicle_type,
+                    "allow_connect": _lane_setting(profile, lane, "allow_connect").value,
+                })
+            try:
+                modes = {mode: build_placement_mode(scene, mode, section) for mode, _, _ in MODE_ITEMS}
+                compiled[geometry_identity] = export_placement_snapshot(
+                    Path(output_root), props.runtime_road_id, geometry_identity,
+                    props.runtime_template_name.strip() or "Basic Road", props.node_min_corner_offset,
+                    section._asdict(), lane_data, modes, DEFAULT_TEXTURE_LAYOUT,
+                    material_families, section.node_reference_pavement_width,
+                    texture_bindings=texture_bindings,
+                )
+            finally:
+                if full_menu:
+                    _release_temporary_placement_meshes(old_collections)
+        choices.append({"key": key, "total_width": section.total_width,
+                        "roadway_z": section.roadway_z, "traffic_boundary": section.traffic_boundary,
+                        **compiled[geometry_identity]})
+    by_key = {"|".join(option): section for option, section in matrix}
+    normal_choices = {choice["key"]: choice for choice in choices}
+    transitions, compiled_transitions = [], {}
+    for option, section in matrix:
+        other_option = option._replace(level="FLUSH" if option.level == "DEPRESSED" else "DEPRESSED")
+        from_key, to_key = "|".join(option), "|".join(other_option)
+        if to_key not in by_key:
+            continue
+        transition = resolve_height_transition(section, by_key[to_key])
+        geometry_identity = transition.variant_identity(props.runtime_road_id)
+        if geometry_identity not in compiled_transitions:
+            try:
+                modes = {mode: [build_height_transition_segment(scene, mode, transition)]
+                         for mode, _, _ in MODE_ITEMS}
+                compiled_transitions[geometry_identity] = export_height_transition_snapshot(
+                    Path(output_root), props.runtime_road_id, geometry_identity,
+                    normal_choices[from_key]["identity"], normal_choices[to_key]["identity"],
+                    modes, material_families, texture_bindings,
+                )
+            finally:
+                if full_menu:
+                    _release_temporary_placement_meshes(old_collections)
+        transitions.append({"from_key": from_key, "to_key": to_key,
+                            **compiled_transitions[geometry_identity]})
+    default_key = "|".join(RoadPlacementOptions())
+    return export_placement_index(Path(output_root), props.runtime_road_id, choices,
+                                  default_key if default_key in keys else keys[0],
+                                  height_transitions=transitions)
+
+
 def _runtime_mode_objects():
     result = {}
     for mode, _, _ in MODE_ITEMS:
@@ -3546,6 +3899,7 @@ def _authoring_fingerprint(props, profile=None):
         props.marking_region_width, props.line_mesh_enabled,
         props.node_shoulder_bands,
         props.node_min_corner_offset, tuple(props.road_color),
+        props.segment_slices, props.node_slices,
         props.profile_id,
         tuple(_imt_appearance_data(profile).items()) if profile is not None else (),
         (
@@ -3673,6 +4027,7 @@ class CS1ROAD_OT_export_all_runtime(Operator):
                 for mode, _, _ in MODE_ITEMS:
                     build_mode(scene, mode)
                 _export_runtime_scene(scene, output_root)
+                export_placement_choices(scene, None, output_root)
             manifest = finalize_runtime_manifest(output_root, road_ids)
         except (OSError, ValueError, TypeError) as error:
             self.report({"ERROR"}, str(error))
@@ -3861,6 +4216,8 @@ class CS1ROAD_OT_import_spec(Operator, ImportHelper):
             return {"CANCELLED"}
         props.road_color = tuple(float(value) for value in road_color)
         cross = data.get("shared_geometry", data.get("cross_section", {}))
+        props.segment_slices = longitudinal_slice_count(cross.get("segment_slices", SEGMENT_SLICES))
+        props.node_slices = longitudinal_slice_count(cross.get("node_slices", NODE_SLICES))
         requested_span = cross.get("between_sidewalks_width")
         if requested_span is not None:
             props.between_sidewalks_width = float(requested_span)
@@ -4044,7 +4401,7 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
             "profile_id": props.profile_id,
             "shared_geometry": {
                 "segment_length": MODE_LENGTH, "node_length": MODE_LENGTH,
-                "segment_slices": SEGMENT_SLICES, "node_slices": NODE_SLICES,
+                "segment_slices": props.segment_slices, "node_slices": props.node_slices,
                 "curb_height": ROADWAY_DEPRESSION,
                 "surface_profile": "DEPRESSED" if props.depress_roadway else "FLUSH",
                 "line_mesh_enabled": props.line_mesh_enabled,
@@ -4380,6 +4737,9 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
         primary.label(text="Width budget")
         primary.prop(props, "depress_roadway")
         primary.prop(props, "node_min_corner_offset")
+        subdivisions = primary.row(align=True)
+        subdivisions.prop(props, "segment_slices")
+        subdivisions.prop(props, "node_slices")
         primary.prop(props, "between_sidewalks_width")
         primary.prop(props, "roadside_use")
         if props.roadside_use == "PARKING":
@@ -4456,7 +4816,7 @@ class CS1ROAD_PT_cross_section(_CS1RoadChildPanel, Panel):
         box.label(text=(
             f"{len(props.lanes)} lanes (F{counts['FORWARD']} / B{counts['BACKWARD']} / P{counts['BOTH']}) | "
             f"{roadway_width:.2f} m road / {total_width:.2f} m total | "
-            f"target {allocation.target_width:.2f} m | 64 m / 20 slices"
+            f"target {allocation.target_width:.2f} m | 64 m / {props.segment_slices} slices"
         ))
 
 

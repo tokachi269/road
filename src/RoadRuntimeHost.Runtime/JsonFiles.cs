@@ -38,6 +38,8 @@ namespace RoadRuntimeHost.Runtime
 
         private static object ConvertValue(object value, Type target, string path)
         {
+            Type nullable = Nullable.GetUnderlyingType(target);
+            if (nullable != null) return value == null ? null : ConvertValue(value, nullable, path);
             if (value == null)
             {
                 if (!target.IsValueType) return null;

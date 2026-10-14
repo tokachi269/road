@@ -16,6 +16,16 @@ SPEC.loader.exec_module(geometry_plan)
 
 
 class GeometryPlanTest(unittest.TestCase):
+    def test_tapered_curb_ends_as_a_triangle_with_matching_uv_corners(self):
+        points = ((-3, -32, -0.3), (-3, 32, 0), (-3, 32, 0), (-3, -32, 0))
+        uvs = ((0.2, 0), (0.2, 1), (0.1, 1), (0.1, 0))
+        self.assertEqual(geometry_plan.collapse_curb_wall(points, uvs),
+                         ((points[0], points[1], points[3]), (uvs[0], uvs[1], uvs[3])))
+        flat_points = ((3, -32, 0), (3, 32, 0), (3, 32, -0.3), (3, -32, -0.3))
+        self.assertEqual(geometry_plan.collapse_curb_wall(flat_points, uvs), (flat_points, uvs))
+        collapsed = ((3, -32, 0), (3, 32, 0), (3, 32, 0), (3, -32, 0))
+        self.assertEqual(len(geometry_plan.collapse_curb_wall(collapsed, uvs)[0]), 2)
+
     def test_standard_module_selection_keeps_girder_count_even(self) -> None:
         cases = (
             (8.0, 2, 3.8),

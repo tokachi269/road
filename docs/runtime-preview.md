@@ -2,6 +2,46 @@
 
 > 文書種別: 運用手順
 
+## Toolbar icon: Expected impact
+
+- ベース道路のlane構成だけを表示する。上約73%は車線・矢印・対向境界の記号図、
+  下は`1+2`または`→3`の1行ラベル。高さ、median、roadside、幅、配置時variantは含めない。
+- ownerはRuntimeの単一raster renderer。PNG出力toolも同じsourceを使い、別の描画判断を持たない。
+  Runtime adapterは同じatlasを全modeへ渡す。NetInfo追加、lane/mesh変更、schema追加はしない。
+- 共通透過PNGはpreview内の`icons/overlay.png`。128×128を全アイコンへalpha合成する。
+  無指定なら無し。不正な指定画像は警告し、前の有効atlasを変更しない。
+- 同じatlasを共有し、通常/hover/focus/press/disabledのnative sprite名を全て登録する。
+  PNGと縮小contact sheetで目視確認する。既存catalogのToolbar順序は変更しない。
+
+### PNG出力と共通overlayの操作
+
+```powershell
+.\scripts\generate-road-icons.ps1
+# 共通レイヤーを指定して出力・previewへ配置
+.\scripts\generate-road-icons.ps1 -OverlayPath .\textures\toolbar\overlay.png
+.\scripts\publish-runtime-hot.ps1
+```
+
+既定の出力先は`build/runtime-preview/icons`。`-PreviewPath`で変更できるが、Hostの
+`preview.path`自体は変更しない。14枚の128×128 PNG、96 px縮小の`contact-sheet.png`、
+未作成時だけ完全透過の`overlay-template.png`を生成する。
+templateをコピーして絵を加え、128×128の透過PNGとして保存する。文字・矢印を隠さない
+配置は画像側で調整する。RuntimeとPNG出力は同じstraight-alpha compositorを使用する。
+透過pixelは元の絵を保ち、半透明pixelは合成される。overlayは全道路・全mode共通であり、
+道路ごとの保存設定にはしない。
+
+明示指定がなければ制作元の`textures/toolbar/overlay.png`、次に既存previewの`icons/overlay.png`を
+使用し、どちらもなければ重ねない。指定画像は128×128 PNG・1 MiB以下を検査してから
+出力する。不正画像の再読込みを毎frame行わない。更新後は生成コマンドとhot publishを
+実行する。PNG生成だけではゲーム内atlasを再読込みした扱いにしない。
+
+- Actual: pure managed rendererをPNG toolとRuntime adapterから共用し、14 topologyの
+  矢印・対向境界・ラベルとalpha合成、PNG/Unityの縦方向変換を独立contractで確認した。
+  PNG一覧の縮小表示も確認した。Native UI登録・CRP thumbnail保存は実ゲーム未確認。
+- Delta: bundle/schema、Blender UI/geometry、catalog順序、AR/IMT、NetInfo数を変更していない。
+  Runtime atlasは512×512を1枚、14 source textureを持ち、5状態のsprite名は同じregionを
+  参照する。UIボタンの既存backgroundで選択状態を示し、状態ごとのtextureを増やさない。
+
 ## 目的
 
 Asset Editorを往復せず、Blenderで作った道路・Prop・Decal meshと表形式metadataを通常マップへ反映する開発用Hostである。最終CRPを作る機能ではない。

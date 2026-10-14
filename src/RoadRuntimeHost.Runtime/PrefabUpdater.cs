@@ -2,11 +2,24 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using ColossalFramework;
 using UnityEngine;
 
 namespace RoadRuntimeHost.Runtime
 {
+    internal sealed class PlacementPrefabIdentity : MonoBehaviour
+    {
+        public string Identity;
+    }
+
+    internal sealed class HeightTransitionDefinition
+    {
+        public RoadBundle Bundle;
+        public float[] StartOffsets;
+        public float[] EndOffsets;
+    }
+
     internal sealed class PrefabUpdater
     {
         private sealed class PackedTextureState
@@ -22,10 +35,93 @@ namespace RoadRuntimeHost.Runtime
         private readonly HashSet<string> _unsupportedConditionNamespaces = new HashSet<string>();
         private readonly Dictionary<string, Texture2D> _textures = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, PackedTextureState> _packedTextures = new Dictionary<string, PackedTextureState>(StringComparer.Ordinal);
+        private readonly Dictionary<string, NetInfo> _placementInfos = new Dictionary<string, NetInfo>(StringComparer.Ordinal);
+        private readonly Dictionary<string, NetInfo> _sharedHeights = new Dictionary<string, NetInfo>(StringComparer.Ordinal);
+        private readonly Func<SharedHeightFamily, CatalogRoad, NetInfo> _sharedHeightFactory;
+        private readonly NetworkGeometryCache _networkMeshes = new NetworkGeometryCache(BuildMesh);
+        private readonly RoadToolbarIcons _toolbarIcons;
 
         public PrefabUpdater(string previewPath)
+            : this(previewPath, null) { }
+
+        internal PrefabUpdater(string previewPath, Func<SharedHeightFamily, CatalogRoad, NetInfo> sharedHeightFactory)
         {
             _previewPath = previewPath;
+            _sharedHeightFactory = sharedHeightFactory;
+            _toolbarIcons = new RoadToolbarIcons(previewPath);
+        }
+
+        internal NetInfo GetOrCreateSharedHeight(SharedHeightFamily family, CatalogRoad catalog)
+        {
+            if (family == null) throw new ArgumentNullException("family");
+            if (_sharedHeightFactory == null) SharedHeightHook.RequireReady();
+            NetInfo info;
+            if (_sharedHeights.TryGetValue(family.Identity, out info)) return info;
+            info = _sharedHeightFactory == null ? CreateSharedHeightNative(family, catalog) : _sharedHeightFactory(family, catalog);
+            if (ReferenceEquals(info, null)) throw new InvalidDataException("Shared height native registration returned no prefab");
+            _sharedHeights.Add(family.Identity, info);
+            return info;
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private NetInfo CreateSharedHeightNative(SharedHeightFamily family, CatalogRoad catalog)
+        {
+            SharedHeightHook.RequireReady();
+            RoadBundle bundle = CompilePlacementBundle(family.Depressed);
+            bundle.RoadId = family.Identity;
+            bundle.PrefabName = "RoadRuntimeHost.Placement.SharedHeight." + family.Identity;
+            NetInfo loaded = PrefabCollection<NetInfo>.FindLoaded(bundle.PrefabName);
+            if (loaded != null) {
+                SharedHeightHook.Data known = SharedHeightHook.Find(loaded);
+                if (known == null || known.Identity != family.Identity) throw new InvalidDataException("Shared height prefab name collision");
+                return loaded;
+            }
+            // One allocation of the five linked native modes, not four sets.
+            // Initialize only the completed selector arrays. Native
+            // InitializePrefab creates per-entry render materials; running it
+            // on the intermediate D30 subset would allocate them twice.
+            NetInfo basic = ApplyRoadCore(bundle, catalog, family.Identity, deferInitialization: true);
+            float[] depressed = family.Offsets(0, true), flush = family.Offsets(1, true);
+            float[][] starts = { depressed, flush, depressed, flush }, ends = { depressed, flush, flush, depressed };
+            List<SharedHeightData> completed = new List<SharedHeightData>();
+            foreach (ModeBundle mode in bundle.Modes)
+            {
+                NetInfo info = ModeTemplate(basic, mode.Mode);
+                List<NetInfo.Segment> segments = new List<NetInfo.Segment>(info.m_segments);
+                List<int> codes = new List<int>();
+                foreach (NetInfo.Segment entry in info.m_segments) codes.Add(0);
+                List<NetInfo.Node> nodes = new List<NetInfo.Node>(info.m_nodes);
+                List<bool> nodeFlush = new List<bool>();
+                foreach (NetInfo.Node entry in info.m_nodes) nodeFlush.Add(false);
+                ModeBundle[] extraModes = { FindMode(family.Flush.Modes, mode.Mode),
+                    FindMode(family.Rise.Modes, mode.Mode), FindMode(family.Fall.Modes, mode.Mode) };
+                for (int code = 1; code <= 3; ++code)
+                {
+                    ApplyGeometry(info, mode.Mode, extraModes[code-1].Entries, catalog, true);
+                    foreach (NetInfo.Segment entry in info.m_segments) { segments.Add(entry); codes.Add(code); }
+                    if (code == 1)
+                        foreach (NetInfo.Node entry in info.m_nodes) { nodes.Add(entry); nodeFlush.Add(true); }
+                }
+                info.m_segments = segments.ToArray(); info.m_nodes = nodes.ToArray();
+                foreach (NetInfo.Segment entry in info.m_segments) ConfigureHeightSegmentFacing(entry);
+                SharedHeightData tag = info.gameObject.AddComponent<SharedHeightData>();
+                tag.Identity = family.Identity; tag.Starts = starts; tag.Ends = ends;
+                tag.SegmentCodes = codes.ToArray(); tag.NodeFlush = nodeFlush.ToArray();
+                SharedHeightHook.Bridge.Configure(info, tag.SegmentCodes, tag.NodeFlush);
+                info.InitializePrefab(); info.m_availableIn = (ItemClass.Availability)0;
+                completed.Add(tag);
+            }
+            foreach (SharedHeightData tag in completed) tag.Complete = true;
+            DiagnosticLog.Info("SUCCESS", "shared_height_family_registered", "Four height states share five native modes and two endpoint node sets",
+                "family", family.Identity, "net_info_count", "5", "height_states", "4",
+                "network_mesh_cache_count", _networkMeshes.Count.ToString());
+            return basic;
+        }
+
+        private static ModeBundle FindMode(ModeBundle[] modes, string name)
+        {
+            foreach (ModeBundle mode in modes) if (mode.Mode == name) return mode;
+            throw new InvalidDataException("Compiled shared height mode is missing: " + name);
         }
 
         public int ReloadTextures()
@@ -63,40 +159,217 @@ namespace RoadRuntimeHost.Runtime
 
         public NetInfo ApplyRoad(RoadBundle bundle, CatalogRoad catalogRoad)
         {
+            return ApplyRoadCore(bundle, catalogRoad, null);
+        }
+
+        internal NetInfo GetOrCreatePlacement(PlacementVariantSnapshot snapshot, CatalogRoad catalogRoad)
+        {
+            RoadBundle bundle = CompilePlacementBundle(snapshot);
+            return GetOrCreatePlacementNative(snapshot, bundle, catalogRoad);
+        }
+
+        internal static RoadBundle CompilePlacementBundle(PlacementVariantSnapshot snapshot)
+        {
+            if (snapshot == null) throw new ArgumentNullException("snapshot");
+            PlacementVariantLibrary.Require(snapshot, snapshot.BaseRoadId, snapshot.Identity);
+            float reference = snapshot.NodeReferencePavementWidth;
+            if (snapshot.SchemaVersion == 1)
+            {
+                if (Math.Abs(snapshot.Section.SidewalkLeft - snapshot.Section.SidewalkRight) > 0.0001f)
+                    throw new DiagnosticException("MOD_CONTRACT", "placement_legacy_asymmetric_snapshot_requires_reexport",
+                        "Legacy asymmetric snapshot has no explicit native reference; export it again");
+                reference = snapshot.Section.SidewalkLeft;
+            }
+            return new RoadBundle {
+                SchemaVersion = 2, RoadId = snapshot.Identity,
+                PrefabName = "RoadRuntimeHost.Placement." + snapshot.Identity,
+                TemplateName = snapshot.TemplateName, HalfWidth = snapshot.Section.TotalWidth * 0.5f,
+                PavementWidth = reference, SurfaceLevel = snapshot.Section.RoadwayZ,
+                NodeMinCornerOffset = snapshot.NodeMinCornerOffset, Lanes = snapshot.Lanes, Modes = snapshot.Modes
+            };
+        }
+
+        internal static HeightTransitionDefinition CompileHeightTransition(ResolvedHeightTransition transition)
+        {
+            if (transition == null) throw new ArgumentNullException("transition");
+            PlacementVariantLibrary.RequireHeightTransition(transition.Segment, transition.Start, transition.End);
+            RoadBundle bundle = CompilePlacementBundle(transition.Start);
+            bundle.RoadId = transition.Segment.Identity;
+            bundle.PrefabName = "RoadRuntimeHost.Placement." + transition.Segment.Identity;
+            bundle.Modes = transition.Segment.Modes;
+            float[] start = new float[transition.Start.Lanes.Length], end = new float[start.Length];
+            for (int i = 0; i < start.Length; ++i)
+            {
+                start[i] = transition.Start.Lanes[i].VerticalOffset;
+                end[i] = transition.End.Lanes[i].VerticalOffset;
+            }
+            return new HeightTransitionDefinition { Bundle = bundle, StartOffsets = start, EndOffsets = end };
+        }
+
+        internal NetInfo GetOrCreateHeightTransition(ResolvedHeightTransition transition, CatalogRoad catalogRoad)
+        {
+            HeightTransitionDefinition definition = CompileHeightTransition(transition);
+            NetInfo start = GetOrCreatePlacement(transition.Start, catalogRoad);
+            NetInfo end = GetOrCreatePlacement(transition.End, catalogRoad);
+            return GetOrCreateHeightTransitionNative(transition.Segment.Identity, definition, start, end, catalogRoad);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private NetInfo GetOrCreateHeightTransitionNative(string identity, HeightTransitionDefinition definition,
+            NetInfo start, NetInfo end, CatalogRoad catalogRoad)
+        {
+            NetInfo cached;
+            if (_placementInfos.TryGetValue(identity, out cached)) return cached;
+            NetInfo loaded = PrefabCollection<NetInfo>.FindLoaded(definition.Bundle.PrefabName);
+            if (loaded != null)
+            {
+                foreach (Component component in loaded.gameObject.GetComponents(typeof(Component)))
+                    if (component != null && component.GetType().FullName == typeof(PlacementHeightTransitionData).FullName
+                        && (string)component.GetType().GetField("Identity").GetValue(component) == identity)
+                    { _placementInfos.Add(identity, loaded); return loaded; }
+                throw new InvalidDataException("Existing height transition prefab has no matching immutable identity");
+            }
+            NetInfo result = ApplyRoadCore(definition.Bundle, catalogRoad, identity, definition, start, end);
+            _placementInfos.Add(identity, result); return result;
+        }
+
+        // Keep the managed input/capability gate outside methods containing
+        // Unity ECalls. Outside the game, JIT-compiling those calls fails even
+        // when a branch would reject the input before executing the call.
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private NetInfo GetOrCreatePlacementNative(PlacementVariantSnapshot snapshot, RoadBundle bundle, CatalogRoad catalogRoad)
+        {
+            NetInfo cached;
+            if (_placementInfos.TryGetValue(snapshot.Identity, out cached)) return cached;
+            string name = "RoadRuntimeHost.Placement." + snapshot.Identity;
+            NetInfo loaded = PrefabCollection<NetInfo>.FindLoaded(name);
+            if (loaded != null)
+            {
+                // Identity tags also work after hot reload, when their managed
+                // type belongs to the previous versioned runtime assembly.
+                bool owned = false;
+                foreach (Component component in loaded.gameObject.GetComponents(typeof(Component)))
+                {
+                    if (component == null || component.GetType().FullName != typeof(PlacementPrefabIdentity).FullName) continue;
+                    FieldInfo field = component.GetType().GetField("Identity");
+                    owned |= field != null && string.Equals(field.GetValue(component) as string,
+                                                           snapshot.Identity, StringComparison.Ordinal);
+                }
+                if (!owned) throw new DiagnosticException("MOD_CONTRACT", "placement_prefab_name_collision",
+                    "A placement prefab name exists without the matching immutable identity");
+                _placementInfos.Add(snapshot.Identity, loaded);
+                return loaded;
+            }
+            NetInfo created = ApplyRoadCore(bundle, catalogRoad, snapshot.Identity);
+            _placementInfos.Add(snapshot.Identity, created);
+            return created;
+        }
+
+        private NetInfo ApplyRoadCore(RoadBundle bundle, CatalogRoad catalogRoad, string placementIdentity,
+            HeightTransitionDefinition height = null, NetInfo start = null, NetInfo end = null, bool deferInitialization = false)
+        {
             NetInfo template = PrefabCollection<NetInfo>.FindLoaded(bundle.TemplateName);
             if (template == null) throw new DiagnosticException("CS1_ENVIRONMENT", "road_template_not_loaded", "Road template is not loaded: " + bundle.TemplateName);
 
             Dictionary<string, NetInfo> modes = new Dictionary<string, NetInfo>();
             if (bundle.Modes == null) throw new InvalidDataException("Road bundle has no modes: " + bundle.RoadId);
+            if (placementIdentity != null)
+                foreach (ModeBundle candidate in bundle.Modes)
+                {
+                    if (ModeTemplate(template, candidate.Mode) == null)
+                        throw new DiagnosticException("CS1_ENVIRONMENT", "placement_mode_template_missing",
+                            "Placement template does not provide mode " + candidate.Mode);
+                    if (PrefabCollection<NetInfo>.FindLoaded(ModeName(bundle.PrefabName, candidate.Mode)) != null)
+                        throw new DiagnosticException("MOD_CONTRACT", "placement_mode_name_collision",
+                            "Existing placement modes will not be overwritten");
+                }
             foreach (ModeBundle mode in bundle.Modes)
             {
                 NetInfo modeTemplate = ModeTemplate(template, mode.Mode);
                 if (modeTemplate == null)
                 {
+                    if (placementIdentity != null)
+                        throw new DiagnosticException("CS1_ENVIRONMENT", "placement_mode_template_missing",
+                            "Placement template does not provide mode " + mode.Mode);
                     DiagnosticLog.Warn("CS1_ENVIRONMENT", "road_mode_template_missing", "Template does not expose the requested mode; that mode is skipped", "road_id", bundle.RoadId ?? string.Empty, "template", bundle.TemplateName ?? string.Empty, "mode", mode.Mode ?? string.Empty);
                     continue;
                 }
                 string name = ModeName(bundle.PrefabName, mode.Mode);
-                NetInfo info = FindOrCloneNet(name, modeTemplate, bundle.RoadId + "." + mode.Mode);
+                if (placementIdentity != null && PrefabCollection<NetInfo>.FindLoaded(name) != null)
+                    throw new DiagnosticException("MOD_CONTRACT", "placement_mode_name_collision",
+                        "Existing placement mode will not be overwritten: " + name);
+                NetInfo info = FindOrCloneNet(name, modeTemplate, bundle.RoadId + "." + mode.Mode, placementIdentity != null);
                 info.m_halfWidth = bundle.HalfWidth;
                 info.m_pavementWidth = bundle.PavementWidth;
                 info.m_minCornerOffset = bundle.NodeMinCornerOffset;
+                if (!float.IsNaN(bundle.SurfaceLevel)) info.m_surfaceLevel = bundle.SurfaceLevel;
                 ApplyLanes(info, modeTemplate, bundle.Lanes, catalogRoad);
-                ApplyGeometry(info, mode.Mode, mode.Entries, catalogRoad);
+                ApplyGeometry(info, mode.Mode, mode.Entries, catalogRoad, placementIdentity != null);
+                if (height != null)
+                {
+                    NetInfo startMode = ModeTemplate(start, mode.Mode), endMode = ModeTemplate(end, mode.Mode);
+                    if (startMode == null || endMode == null) throw new InvalidDataException("Height transition endpoint mode is missing");
+                    foreach (NetInfo.Segment segment in info.m_segments) ConfigureHeightSegmentFacing(segment);
+                    info.m_nodes = HeightEndpointNodes(startMode.m_nodes, endMode.m_nodes);
+                    PlacementHeightTransitionData tag = info.gameObject.AddComponent<PlacementHeightTransitionData>();
+                    tag.Identity = placementIdentity; tag.Mode = mode.Mode; tag.StartInfo = startMode; tag.EndInfo = endMode;
+                    tag.StartOffsets = (float[])height.StartOffsets.Clone(); tag.EndOffsets = (float[])height.EndOffsets.Clone();
+                }
                 if (catalogRoad != null)
                 {
                     SetUiCategory(info, catalogRoad.Category);
                     info.m_UIPriority = catalogRoad.UiPriority;
                 }
-                info.InitializePrefab();
+                try { _toolbarIcons.Apply(info, bundle.Lanes); }
+                catch (Exception error) { DiagnosticLog.Error("DATA_INVALID", "road_toolbar_icon_failed", "The previous toolbar icon was preserved", error); }
+                if (!deferInitialization) info.InitializePrefab();
+                if (placementIdentity != null)
+                    info.m_availableIn = (ItemClass.Availability)0;
                 modes[mode.Mode] = info;
                 DiagnosticLog.Info("SUCCESS", "road_mode_applied", "Road mode prefab was updated", "road_id", bundle.RoadId ?? string.Empty, "mode", mode.Mode ?? string.Empty, "prefab_name", name, "half_width", info.m_halfWidth.ToString(System.Globalization.CultureInfo.InvariantCulture), "pavement_width", info.m_pavementWidth.ToString(System.Globalization.CultureInfo.InvariantCulture), "min_corner_offset", info.m_minCornerOffset.ToString(System.Globalization.CultureInfo.InvariantCulture), "lane_count", (info.m_lanes == null ? 0 : info.m_lanes.Length).ToString(), "segment_entry_count", (info.m_segments == null ? 0 : info.m_segments.Length).ToString(), "node_entry_count", (info.m_nodes == null ? 0 : info.m_nodes.Length).ToString());
             }
             NetInfo basic;
             if (!modes.TryGetValue("basic", out basic)) throw new InvalidDataException("Road bundle has no usable basic mode");
             LinkModes(basic, modes);
-            RefreshExistingInstances(modes.Values);
+            if (placementIdentity == null) RefreshExistingInstances(modes.Values);
+            else
+                basic.gameObject.AddComponent<PlacementPrefabIdentity>().Identity = placementIdentity;
             return basic;
+        }
+
+        internal static void ConfigureHeightSegmentFacing(NetInfo.Segment segment)
+        {
+            segment.m_forwardRequired &= ~NetSegment.Flags.Invert;
+            segment.m_forwardForbidden |= NetSegment.Flags.Invert;
+            segment.m_backwardRequired |= NetSegment.Flags.Invert;
+            segment.m_backwardForbidden &= ~NetSegment.Flags.Invert;
+            // A bend must use the ordinary endpoint node, not bend the ramp
+            // segment again inside the node.
+            segment.m_disableBendNodes = true;
+        }
+
+        internal static NetInfo.Node[] HeightEndpointNodes(NetInfo.Node[] start, NetInfo.Node[] end)
+        {
+            List<NetInfo.Node> nodes = new List<NetInfo.Node>();
+            foreach (NetInfo.Node source in start)
+            {
+                NetInfo.Node node = CopyNode(source);
+                node.m_mesh = source.m_mesh; node.m_nodeMesh = source.m_nodeMesh;
+                node.m_material = source.m_material; node.m_nodeMaterial = source.m_nodeMaterial;
+                node.flagsRequired |= NetNode.FlagsLong.OnSegmentStart;
+                node.flagsForbidden |= NetNode.FlagsLong.OnSegmentEnd;
+                nodes.Add(node);
+            }
+            foreach (NetInfo.Node source in end)
+            {
+                NetInfo.Node node = CopyNode(source);
+                node.m_mesh = source.m_mesh; node.m_nodeMesh = source.m_nodeMesh;
+                node.m_material = source.m_material; node.m_nodeMaterial = source.m_nodeMaterial;
+                node.flagsRequired |= NetNode.FlagsLong.OnSegmentEnd;
+                node.flagsForbidden |= NetNode.FlagsLong.OnSegmentStart;
+                nodes.Add(node);
+            }
+            return nodes.ToArray();
         }
 
         private void ApplyProp(CatalogProp definition)
@@ -374,7 +647,7 @@ namespace RoadRuntimeHost.Runtime
             }
         }
 
-        private void ApplyGeometry(NetInfo info, string mode, GeometryEntry[] entries, CatalogRoad catalogRoad)
+        private void ApplyGeometry(NetInfo info, string mode, GeometryEntry[] entries, CatalogRoad catalogRoad, bool immutable = false)
         {
             List<NetInfo.Segment> segments = new List<NetInfo.Segment>();
             List<NetInfo.Node> nodes = new List<NetInfo.Node>();
@@ -385,8 +658,13 @@ namespace RoadRuntimeHost.Runtime
                 foreach (GeometryEntry entry in entries)
                 {
                     if (entry == null || entry.Mesh == null) continue;
-                    Mesh mesh = BuildMesh(entry.Mesh);
-                    if (string.Equals(entry.Kind, "node", StringComparison.OrdinalIgnoreCase))
+                    bool node = string.Equals(entry.Kind, "node", StringComparison.OrdinalIgnoreCase);
+                    // Mutable preview rebuilds must not accumulate every edit
+                    // in this cache. Placement prefabs are immutable and stay
+                    // referenced by the engine for the lifetime of the map.
+                    Mesh mesh = immutable ? _networkMeshes.Get(entry.Mesh, node, info.m_minHeight, info.m_maxHeight, info.m_maxSlope)
+                        : BuildMesh(entry.Mesh);
+                    if (node)
                     {
                         NetInfo.Node value = CopyNode(nodeTemplate);
                         value.m_mesh = value.m_nodeMesh = mesh;
@@ -520,8 +798,42 @@ namespace RoadRuntimeHost.Runtime
             mesh.triangles = source.Triangles ?? new int[0];
             if (source.Normals != null && source.Normals.Length == source.Vertices.Length) mesh.normals = normals;
             else mesh.RecalculateNormals();
+            mesh.tangents = CalculateMeshTangents(vertices, mesh.normals, uv, mesh.triangles);
             mesh.RecalculateBounds();
             return mesh;
+        }
+
+        private static Vector4[] CalculateMeshTangents(Vector3[] vertices, Vector3[] normals,
+            Vector2[] uv, int[] triangles)
+        {
+            Vector3[] alongU = new Vector3[vertices.Length];
+            Vector3[] alongV = new Vector3[vertices.Length];
+            for (int offset = 0; offset + 2 < triangles.Length; offset += 3)
+            {
+                int a = triangles[offset], b = triangles[offset + 1], c = triangles[offset + 2];
+                Vector3 edgeB = vertices[b] - vertices[a], edgeC = vertices[c] - vertices[a];
+                Vector2 uvB = uv[b] - uv[a], uvC = uv[c] - uv[a];
+                float determinant = uvB.x * uvC.y - uvC.x * uvB.y;
+                if (Math.Abs(determinant) < 1e-12f) continue;
+                Vector3 u = (edgeB * uvC.y - edgeC * uvB.y) / determinant;
+                Vector3 v = (edgeC * uvB.x - edgeB * uvC.x) / determinant;
+                alongU[a] += u; alongU[b] += u; alongU[c] += u;
+                alongV[a] += v; alongV[b] += v; alongV[c] += v;
+            }
+            Vector4[] result = new Vector4[vertices.Length];
+            for (int index = 0; index < vertices.Length; ++index)
+            {
+                Vector3 normal = normals[index].normalized;
+                Vector3 tangent = alongU[index] - normal * Vector3.Dot(normal, alongU[index]);
+                // Degenerate UVs have no texture direction. Keep the frame
+                // finite and orthogonal rather than feeding zeros to a shader.
+                if (tangent.sqrMagnitude < 1e-12f)
+                    tangent = Vector3.Cross(normal, Math.Abs(normal.y) < 0.9f ? Vector3.up : Vector3.forward);
+                tangent.Normalize();
+                float handedness = Vector3.Dot(Vector3.Cross(normal, tangent), alongV[index]) < 0f ? -1f : 1f;
+                result[index] = new Vector4(tangent.x, tangent.y, tangent.z, handedness);
+            }
+            return result;
         }
 
         private Material BuildMaterial(MaterialBundle source, Material fallback)
@@ -727,13 +1039,14 @@ namespace RoadRuntimeHost.Runtime
             }
         }
 
-        private static NetInfo FindOrCloneNet(string name, NetInfo template, string collection)
+        private static NetInfo FindOrCloneNet(string name, NetInfo template, string collection, bool hidden = false)
         {
             NetInfo existing = PrefabCollection<NetInfo>.FindLoaded(name);
             if (existing != null) return existing;
             GameObject clone = UnityEngine.Object.Instantiate(template.gameObject) as GameObject;
             clone.name = name;
             NetInfo info = clone.GetComponent<NetInfo>();
+            if (hidden) info.m_availableIn = (ItemClass.Availability)0;
             PrefabCollection<NetInfo>.InitializePrefabs("RoadRuntimeHost." + collection, info, null);
             PrefabCollection<NetInfo>.BindPrefabs();
             return info;
@@ -753,7 +1066,7 @@ namespace RoadRuntimeHost.Runtime
             return string.Equals(mode, "basic", StringComparison.OrdinalIgnoreCase) ? name : name + " [" + mode + "]";
         }
 
-        private static NetInfo ModeTemplate(NetInfo basic, string mode)
+        internal static NetInfo ModeTemplate(NetInfo basic, string mode)
         {
             if (string.Equals(mode, "basic", StringComparison.OrdinalIgnoreCase)) return basic;
             RoadAI ai = basic.m_netAI as RoadAI;

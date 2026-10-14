@@ -14,6 +14,15 @@ domain = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(domain)
 
 
+class LongitudinalSliceCountTest(unittest.TestCase):
+    def test_explicit_counts_are_preserved_and_invalid_counts_rejected(self):
+        for count in (1, 8, 20, 37, 128):
+            self.assertEqual(domain.longitudinal_slice_count(count), count)
+        for value in (0, -1, 129, True, 3.5, "20"):
+            with self.assertRaises(ValueError):
+                domain.longitudinal_slice_count(value)
+
+
 @dataclass
 class Lane:
     lane_id: str

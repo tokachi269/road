@@ -91,6 +91,24 @@ namespace RoadRuntimeHost.Runtime
             }
         }
 
+        public void BindPlacementGeometry(RoadPlacementGeometryController geometry)
+        {
+            _placementMarkings.Geometry = geometry;
+        }
+
+        public void RegisterPlacement(string roadId, NetInfo info, ImtMarkingStyleBundle style)
+        {
+            if (info == null) return;
+            style = EffectiveStyle(style);
+            RegisterTarget(roadId, info, style);
+            RoadAI ai = info.m_netAI as RoadAI;
+            if (ai == null) return;
+            RegisterTarget(roadId, ai.m_elevatedInfo, style);
+            RegisterTarget(roadId, ai.m_bridgeInfo, style);
+            RegisterTarget(roadId, ai.m_slopeInfo, style);
+            RegisterTarget(roadId, ai.m_tunnelInfo, style);
+        }
+
         private void ForgetTargetSegments(NetInfo info)
         {
             if (info == null) return;

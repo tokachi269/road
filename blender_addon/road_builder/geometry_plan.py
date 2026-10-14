@@ -3,6 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+
+def collapse_curb_wall(points, uvs):
+    """Keep a tapered curb wall renderable when its height reaches zero.
+
+    Only coincident adjacent corners are removed, with their corresponding UV.
+    This does not weld different faces, smooth normals, or add endpoint caps.
+    """
+    if len(points) != len(uvs):
+        raise ValueError("Curb wall points and UVs must have equal counts")
+    corners = []
+    for point, uv in zip(points, uvs):
+        item = (tuple(point), tuple(uv))
+        if not corners or item[0] != corners[-1][0]:
+            corners.append(item)
+    if len(corners) > 1 and corners[0][0] == corners[-1][0]:
+        corners.pop()
+    return tuple(v[0] for v in corners), tuple(v[1] for v in corners)
+
+
 @dataclass(frozen=True)
 class GirderLayout:
     count: int
