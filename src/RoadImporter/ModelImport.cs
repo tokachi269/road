@@ -20,6 +20,7 @@ namespace RoadImporter
             public string texture;
             public Material material = null;
             public Material lodMaterial = null;
+            public float[] mainTextureScale;
         }
 
         public static RoadImporterThreading worker;
@@ -38,6 +39,10 @@ namespace RoadImporter
 
         public static void RunImport(Job job)
         {
+            if (job.mainTextureScale != null && (job.mainTextureScale.Length != 2
+                || float.IsNaN(job.mainTextureScale[0]) || float.IsInfinity(job.mainTextureScale[0]) || job.mainTextureScale[0] <= 0f
+                || float.IsNaN(job.mainTextureScale[1]) || float.IsInfinity(job.mainTextureScale[1]) || job.mainTextureScale[1] <= 0f))
+                throw new ArgumentException("mainTextureScale must contain two finite positive values");
             if (Environment.optLevel <= 1)
             {
                 job.material = Environment.FindMaterial(job.texture, job.name);
@@ -79,7 +84,9 @@ namespace RoadImporter
                 }
                 else
                 {
-                    Environment.CacheMaterial(job.texture, job.target.m_nodes[job.meshid].m_material);
+                    // Keep per-entry scale out of the shared texture cache.
+                    Environment.CacheMaterial(job.texture, job.mainTextureScale == null
+                        ? job.target.m_nodes[job.meshid].m_material : new Material(job.target.m_nodes[job.meshid].m_material));
                     Environment.CacheMaterial(job.texture + "_lod", job.target.m_nodes[job.meshid].m_lodMaterial);
                 }
                 job.target.m_nodes[job.meshid].m_material.shader = job.shader;
@@ -115,7 +122,8 @@ namespace RoadImporter
                 }
                 else
                 {
-                    Environment.CacheMaterial(job.texture, job.target.m_segments[job.meshid].m_material);
+                    Environment.CacheMaterial(job.texture, job.mainTextureScale == null
+                        ? job.target.m_segments[job.meshid].m_material : new Material(job.target.m_segments[job.meshid].m_material));
                     Environment.CacheMaterial(job.texture + "_lod", job.target.m_segments[job.meshid].m_lodMaterial);
                 }
                 job.target.m_segments[job.meshid].m_material.shader = job.shader;
@@ -128,7 +136,14 @@ namespace RoadImporter
                     //job.target.m_segments[job.meshid].m_material.color = job.color;
                     job.target.m_segments[job.meshid].m_material.name = $"CSUR_TEXTURE/{job.texture}";
                 }
-            } 
+            }
+            if (job.mainTextureScale != null)
+            {
+                Vector2 scale = new Vector2(job.mainTextureScale[0],job.mainTextureScale[1]);
+                Material material = job.isNode ? job.target.m_nodes[job.meshid].m_material : job.target.m_segments[job.meshid].m_material;
+                material.mainTextureScale = scale;
+                // LOD uses a separate UV layout; do not apply the main-mesh scale to it.
+            }
         }
     }
 }

@@ -14,6 +14,7 @@ namespace RoadImporter
             public string shader = "";
             public string texture = "";
             public string name = "";
+            public float[] mainTextureScale;
         }
 
         public string mode = "Basic";
@@ -37,7 +38,8 @@ namespace RoadImporter
                         name = nodeMeshes[i].name,
                         shader = Shader.Find(nodeMeshes[i].shader),
                         color = new Color(nodeMeshes[i].color[0], nodeMeshes[i].color[1], nodeMeshes[i].color[2], 1),
-                        texture = nodeMeshes[i].texture
+                        texture = nodeMeshes[i].texture,
+                        mainTextureScale = nodeMeshes[i].mainTextureScale
                     };
                     ModelImport.worker.ProduceJob(job);
                 }
@@ -55,7 +57,8 @@ namespace RoadImporter
                         name = segmentMeshes[i].name,
                         shader = Shader.Find(segmentMeshes[i].shader),
                         color = new Color(segmentMeshes[i].color[0], segmentMeshes[i].color[1], segmentMeshes[i].color[2], 1),
-                        texture = segmentMeshes[i].texture
+                        texture = segmentMeshes[i].texture,
+                        mainTextureScale = segmentMeshes[i].mainTextureScale
                     };
                     ModelImport.worker.ProduceJob(job);
                 }
@@ -76,6 +79,7 @@ namespace RoadImporter
                     index = i,
                     name = gameNet.m_nodes[i].m_mesh.name,
                     shader = gameNet.m_nodes[i].m_material.shader.name,
+                    mainTextureScale = new float[]{gameNet.m_nodes[i].m_material.mainTextureScale.x,gameNet.m_nodes[i].m_material.mainTextureScale.y},
                 };
                 for (int d = 0; d < 3; d++)
                 {
@@ -89,6 +93,7 @@ namespace RoadImporter
                     index = i,
                     name = gameNet.m_segments[i].m_mesh.name,
                     shader = gameNet.m_segments[i].m_material.shader.name,
+                    mainTextureScale = new float[]{gameNet.m_segments[i].m_material.mainTextureScale.x,gameNet.m_segments[i].m_material.mainTextureScale.y},
                 };
                 for (int d = 0; d < 3; d++)
                 {

@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading;
 using UnityEngine;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal sealed class DiagnosticException : Exception

@@ -20,9 +20,14 @@
     <Reference Include="IntersectionMarkingTool"><HintPath>$(IntersectionMarkingToolPath)</HintPath><Private>true</Private></Reference>
     <Reference Include="IntersectionMarkingTool.API"><HintPath>$(IntersectionMarkingToolApiPath)</HintPath><Private>true</Private></Reference>
     <Reference Include="System" />
+    <Reference Include="System.Xml" />
     <Reference Include="UnityEngine"><HintPath>$(CitiesSkylinesManagedDir)\UnityEngine.dll</HintPath><Private>true</Private></Reference>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\RoadImporter\RoadImporter.csproj">
+      <Project>{44CBAC7C-1937-4580-8CA8-DA19A60D4797}</Project>
+      <Name>RoadImporter</Name>
+    </ProjectReference>
     <ProjectReference Include="..\..\src\RoadRuntimeHost.Loader\RoadRuntimeHost.Loader.csproj">
       <Project>{59158D23-ACD2-4D6C-A46F-0EA97874AA01}</Project>
       <Name>RoadRuntimeHost.Loader</Name>

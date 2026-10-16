@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using UnityEngine;
+using ColossalFramework;
+using RoadBuilder.Import;
 
 namespace RoadImporter
 {
@@ -57,6 +59,9 @@ namespace RoadImporter
         public NetModelInfo tunnelModel = new NetModelInfo();
 
         public string name;
+        // Optional import contract. Existing XML without it is unchanged.
+        // The template is resolved at import; generated props are saved in CRP.
+        public string referencePropTemplate;
 
         public void ReadFromGame(NetInfo gameNetInfo)
         {
@@ -99,6 +104,13 @@ namespace RoadImporter
 
         public void WriteToGame(NetInfo gameNetInfo)
         {
+            NetInfo.Lane[][] referenceProps = null;
+            if (!string.IsNullOrEmpty(referencePropTemplate))
+            {
+                NetInfo reference = PrefabCollection<NetInfo>.FindLoaded(referencePropTemplate);
+                if (reference == null) throw new InvalidOperationException("Reference prop road is not loaded: " + referencePropTemplate);
+                referenceProps = ReferenceLaneProps.CaptureModes(reference);
+            }
             gameNetInfo.name = this.name;
             Utils.CopyToGame(this.basic, gameNetInfo);
             RoadAI gameRoadAI = (RoadAI)gameNetInfo.m_netAI;
@@ -128,6 +140,19 @@ namespace RoadImporter
             Utils.CopyToGame(this.bridgeAI, gameRoadAI.m_bridgeInfo?.GetAI());
             Utils.CopyToGame(this.slopeAI, gameRoadAI.m_slopeInfo?.GetAI());
             Utils.CopyToGame(this.tunnelAI, gameRoadAI.m_tunnelInfo?.GetAI());
+            if (referenceProps != null)
+            {
+                NetInfo[] targets = ReferenceLaneProps.Modes(gameNetInfo);
+                CSNetInfo[] definitions = {basic,elevated,bridge,slope,tunnel};
+                for (int m=0; m<targets.Length; ++m)
+                {
+                    CSNetInfo.Lane[] lanes = definitions[m] == null ? null : definitions[m].m_lanes;
+                    if (lanes == null) continue;
+                    bool[] explicitProps = new bool[lanes.Length];
+                    for (int i=0; i<lanes.Length; ++i) explicitProps[i] = lanes[i] != null && lanes[i].m_laneProps != null;
+                    ReferenceLaneProps.ApplyDefaults(targets[m],referenceProps[m],explicitProps);
+                }
+            }
             Utils.RefreshRoadEditor();
             Debug.Log(this.basicModel);
             this.basicModel?.Apply(gameNetInfo, "Basic");

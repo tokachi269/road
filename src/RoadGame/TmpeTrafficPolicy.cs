@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     // TM:PE is optional. Keep every API reference behind reflection so the

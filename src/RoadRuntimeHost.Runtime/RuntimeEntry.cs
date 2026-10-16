@@ -38,8 +38,7 @@ namespace RoadRuntimeHost.Runtime
         private PrefabUpdater _updater;
         private TestLayoutManager _layouts;
         private PrefabInspectionService _inspector;
-        private ImtPreviewService _imtPreview;
-        private RoadPlacementGeometryController _placementGeometry;
+        private RoadGameSession _game;
         private bool _reportedMissingCatalog;
         private bool _reportedMissingManifest;
         private string _catalogFailureSignature;
@@ -95,11 +94,8 @@ namespace RoadRuntimeHost.Runtime
             _updater = new PrefabUpdater(_previewPath);
             _layouts = new TestLayoutManager();
             _inspector = new PrefabInspectionService(_previewPath);
-            _imtPreview = new ImtPreviewService();
-            _placementGeometry = new RoadPlacementGeometryController(_updater, _imtPreview);
-            SharedHeightHook.Start(_placementGeometry.SharedPlacementCode, _placementGeometry.OnTransitionPlaced);
-            PlacementHeightTransitionHook.Start(_placementGeometry.IsTransitionArmed, _placementGeometry.OnTransitionPlaced);
-            _imtPreview.BindPlacementGeometry(_placementGeometry);
+            _game = new RoadGameSession(new PreviewPlacementPrefabs(_updater, FindCatalogRoad));
+            _game.Start();
             _stopped = false;
             DiagnosticLog.Info("MOD", "runtime_start", "Hot runtime started", "preview_path", _previewPath, "load_mode", loadMode, "log_path", logPath);
             Poll(true);
@@ -118,9 +114,7 @@ namespace RoadRuntimeHost.Runtime
         {
             if (_stopped) return;
             _stopped = true;
-            if (_imtPreview != null) _imtPreview.Stop();
-            PlacementHeightTransitionHook.Stop();
-            SharedHeightHook.Stop();
+            if (_game != null) _game.Dispose();
             if (_layouts != null) _layouts.ReleaseAll();
             int appliedRoadCount = _roads.Count;
             _roads.Clear();
@@ -297,7 +291,7 @@ namespace RoadRuntimeHost.Runtime
         private void RegisterPlacementMenu(ManifestRoad entry, AppliedRoad road, bool force)
         {
             try {
-                _placementGeometry.Register(_previewPath, entry.RoadId, road.Info, FindCatalogRoad(entry.RoadId), road.Style,
+                _game.RegisterPlacementMenu(_previewPath, entry.RoadId, road.Info, road.Style,
                     entry.PlacementIndex, entry.PlacementRevision, force);
             }
             catch (Exception menuError) {
@@ -356,7 +350,7 @@ namespace RoadRuntimeHost.Runtime
                         _layouts.Rebuild(entry.RoadId, info, scenario, catalogRoad != null ? catalogRoad.UiPriority : 0);
                     else _layouts.Release(entry.RoadId);
                 }
-                _imtPreview.ApplyRoad(entry.RoadId, info, bundle.ImtMarkingStyle);
+                _game.RegisterRoad(entry.RoadId, info, bundle.ImtMarkingStyle);
                 RegisterPlacementMenu(entry, applied, true);
                 DiagnosticLog.Info("SUCCESS", "road_apply_success", "Road bundle applied", "road_id", entry.RoadId ?? string.Empty, "revision", entry.Revision ?? string.Empty, "mode_count", (bundle.Modes == null ? 0 : bundle.Modes.Length).ToString(), "lane_count", (bundle.Lanes == null ? 0 : bundle.Lanes.Length).ToString(), "structural_changed", structuralChanged.ToString(), "test_changed", testChanged.ToString(), "elapsed_ms", stopwatch.ElapsedMilliseconds.ToString());
                 return true;

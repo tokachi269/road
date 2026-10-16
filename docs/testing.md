@@ -122,11 +122,28 @@ build成功はAsset Editorへのimportや、ゲーム内表示を証明しない
 
 ## Runtime preview
 
-Toolbar iconは`RoadIconContract`で14 topologyのラベル、lane数、矢印向き、対向境界、
-共有overlayのstraight-alpha合成とPNG/Unityの縦方向変換を確認する。
-幅・高さ・lane位置を変えても同じbase topology表示になること、未知の交通種別へ
-Car iconを推測適用しないこと、native 5状態のsprite名とPNG header寸法も検査する。
-`scripts/generate-road-icons.ps1`の128 px出力と96 px contact sheetで見た目を確認する。
+ゲーム機能の分離は、Hostを参照しない別の検証用exeで確認する。
+
+```powershell
+.\scripts\test-road-game-contract.ps1
+.\scripts\run-blender.ps1 -Script .\tests\blender_output_contract_smoke.py
+```
+
+前者は`RoadGame.projitems`だけからIMT/UI/信号/ARをcompileし、Host assembly参照の不在、
+Prefab供給port、設定提案の非破壊性、Propのmanaged選択・複製、個別lane変更の局所性を確認する。
+後者はBlenderの実JSON出力と実mesh serializationで全5modeのshader/scaleを比較する。
+native Propのprefab取得、公開MOD起動、ゲーム描画はこの検査では証明しない。
+Runtime contractには旧Importer XMLの未指定値保全、参照Prop指定、明示空配列の保全、
+shader/scaleのXML round-tripと不正scale拒否も含める。
+
+Toolbar iconのoffline生成は`python -m unittest tests.road_icon_test`で検査する。
+14 topologyのラベル、lane数・方向、白い中央線、文字のantialiasing、overlay合成、
+footer高さ・文字サイズの変更、無効入力で既存成果物を変更しないことを確認する。
+RoadImporter用5状態とRuntime用PNGのbyte一致も確認する。
+`RoadIconContract`は実Python出力を読み、byte保全、missing/不正PNGの拒否、native 5状態名を
+検査する。幅・高さ・lane位置で画像選択が変わらず、未知交通種別へCar iconを推測適用しない。
+`scripts/test-runtime-contract.ps1`は実Python出力をfixtureとして生成する。
+128 px出力と96 px contact sheetで見た目を確認する。
 これは実CS1 toolbarへのatlas登録やCRP thumbnail保存の検証ではない。
 
 Runtime変更ではcatalog、Blender bundle、.NET reader、CS1参照build、stagingを分けて確認する。

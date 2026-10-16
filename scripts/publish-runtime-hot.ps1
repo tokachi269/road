@@ -29,6 +29,15 @@ if ($PreviewPath) {
     Move-Item -LiteralPath $previewTemporary -Destination (Join-Path $target 'preview.path') -Force
 }
 
+# Keep the installed input path unchanged, but stage the same offline artwork
+# used for asset import before switching to the PNG-only consumer.
+$iconPreview = if ($PreviewPath) { $resolvedPreview } else {
+    (Get-Content -LiteralPath (Join-Path $target 'preview.path') -Raw).Trim()
+}
+if (-not (Test-Path -LiteralPath $iconPreview -PathType Container)) { throw 'Installed preview input directory is missing' }
+& (Join-Path $PSScriptRoot 'generate-road-icons.ps1') -PreviewPath $iconPreview
+if ($LASTEXITCODE -ne 0) { throw 'Offline road icon staging failed' }
+
 & (Join-Path $PSScriptRoot 'build-runtime-host.ps1') -Configuration $Configuration
 if ($LASTEXITCODE -ne 0) { throw "Runtime Host build failed with exit code $LASTEXITCODE" }
 $runtime = Join-Path $repoRoot "src\RoadRuntimeHost.Runtime\bin\$Configuration\RoadRuntimeHost.Runtime.dll"

@@ -24,6 +24,9 @@ Blender UIとJSONは編集adapterであり、同じ判断を独自に実装し�
 | atlas領域とUV profile | `textures/dimensions.json` | Blender、texture検証 |
 | Blender preview mesh | 生成後のBlender mesh | Runtime preview bundle |
 | Runtimeへ適用するlane値 | Blender authoring bundle | RuntimeHost |
+| network shader・main texture scale | `domain.py`の出力方針 | 道路JSON、mesh bundle、Importer入力 |
+| 矢印・信号Propの選択と複製 | `src/RoadImport/ReferenceLaneProps.cs` | Runtime Prefab adapter、RoadImporter |
+| IMT・配置UI・信号・ARの動作 | `src/RoadGame` | 現在は確認Hostが起動。将来の公開MODも同じmoduleを利用 |
 | CS1向けentry | Output Entry Plan | RoadImporter、RuntimeHost |
 
 `layout.strips`はcompiled topologyであり、編集正本にしない。
@@ -56,6 +59,7 @@ Blenderはgeometryを生成し、RoadImporterとRuntimeHostはCS1向けentryへ�
 RoadImporter XMLとRuntime bundleを編集正本にしない。
 Runtime catalogのlane列は移行期間中のcontract checkerとして残す。bundleと一致しなければ
 拒否するが、一致後にRuntimeへ適用する値をcatalog laneへ置換しない。
+catalogのlane metadataは明示snapshotを要求し、空欄から既定値や交通種別を推測しない。
 
 `surface`、`structure`、`tunnel`はgeometryを整理する呼称である。
 CS1の登録単位はselector、shader、texture setも含めて決める。
@@ -114,8 +118,45 @@ CS1
 Runtime previewはAsset EditorとCRP生成とは別の開発経路である。
 Blenderで生成したmeshを通常マップへ反映するが、Runtimeで断面meshを再生成しない。
 
-Toolbar iconはbundleの車両lane方向・本数を使う表示projectionで、physical断面ではない。
-`RoadIconRaster`のrasterとalpha合成をRuntime atlas adapterとPNG出力toolが共用する。
+### ゲーム機能分離のExpected impact
+
+SWEBOKのSoftware Architecture（責務分離・依存逆転）とSoftware Construction
+（共通出力契約）の変更として扱う。現在の公開単位は増やさない。
+
+- IMT、配置UI、信号、AR、高さ接続は`src/RoadGame`のゲーム機能とし、確認Hostの
+  bundle監視、Prefab差し替え、試験配置、調査コマンドから分離する。
+- Hostは解決済み道路を登録するadapterとなる。ゲーム側が要求するPrefab供給は
+  interfaceで受け、ゲーム機能から`PrefabUpdater`やcatalogを参照しない。
+- 同じDLLにsource includeするが、Host sourceなしでもcompile・contract実行できる検査を置く。
+  既存DTO/type名はhot Runtimeのreflection互換のため維持する。namespaceはassembly依存ではない。
+- shaderの現行RoadBridge指定をdomainで所有し、JSONとbundleへ同じ値を渡す。
+  catalogは検証用snapshotなのでlane値を推測補完せず、空欄を拒否する。
+- 参照道路の矢印・信号Prop選択は共有import adapterへ移し、Importerから明示的に使えるようにする。
+  XMLで明示したPropは保全し、指定のない既存import jobの挙動を変えない。
+- geometry、線の生成規則、全segment走査の有無、NetInfo数は変えない。
+  texture packingは今回shader/scaleの出力契約を揃え、未確認のchannel変換は変更しない。
+
+### ゲーム機能分離のActual / Architecture Delta
+
+`RoadGameSession`がIMT・UI・信号・ARの起動停止と道路登録を所有する。
+`RoadPlacementGeometryController`は`IPlacementPrefabFactory`だけを要求する。
+確認Hostは`PreviewPlacementPrefabs`でcatalogと開発用Prefab更新へ接続する。
+`RoadGame.projitems`を現在のRuntime DLLへsource includeし、別の公開MODは作成しない。
+`RoadGame.ContractSmoke`は同じsourcesをHost source/assembly参照なしでcompile・実行する
+検証専用exeであり、配布物ではない。単なるfolder分けでなく、このcompile境界とlintが
+Hostへの逆依存を検出する。
+
+shader・scaleはdomainへ統一し、Groundの現行RoadBridge試行値を保持した。
+Prop複製規則は共通sourceを両consumerへincludeした。Importerでは
+`referencePropTemplate`が明示されたjobだけ参照Propを追加し、明示配列を優先する。
+型名・hook IDは互換性のため変えず、線生成規則やAR flag割当て、NetInfo生成数も変えていない。
+channelsのnative import変換、公開MODのentrypoint/CRP発見・登録・配布は今回の実装に含めない。
+
+Toolbar iconはphysical断面ではなく、ベース道路を識別する制作成果物である。
+`tools/generate_road_icons.py`が描画とoverlay合成を所有し、道路構成は`domain.py`の
+標準variantから受け取る。共通の表示入力は`textures/toolbar/icons.json`に置く。
+生成PNGをRoadImporterの既存thumbnail入力とRuntime previewが消費する。
+RuntimeはPNGの読込みとatlasへの格納だけを行い、線・矢印・文字を描画しない。
 共通overlay PNGは独立した制作画像として扱い、道路JSONやvariantへ複製しない。
 高さ・幅・median・roadside・線種の選択で別iconやNetInfoを増やさない。
 

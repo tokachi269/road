@@ -39,35 +39,17 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BundleModels.cs" />
-    <Compile Include="AdaptiveRoadsBridge.cs" />
-    <Compile Include="SharedHeightFamily.cs" />
-    <Compile Include="SharedHeightHook.cs" />
-    <Compile Include="SharedHeightPatch.cs" />
     <Compile Include="NetworkGeometryCache.cs" />
-    <Compile Include="CrosswalkWallGeometry.cs" />
-    <Compile Include="DiagnosticLog.cs" />
-    <Compile Include="JsonFiles.cs" />
-    <Compile Include="ImtCrosswalkWallHook.cs" />
-    <Compile Include="ImtPreviewService.cs" />
-    <Compile Include="ImtInternalAdapter.cs" />
-    <Compile Include="ImtNodePolicy.cs" />
-    <Compile Include="ImtRestoreDefaultsHook.cs" />
-    <Compile Include="ImtTopologyUpdateHook.cs" />
     <Compile Include="LaneContractValidator.cs" />
-    <Compile Include="NetSegmentCreationHook.cs" />
     <Compile Include="PrefabInspectionService.cs" />
     <Compile Include="PrefabUpdater.cs" />
-    <Compile Include="PlacementVariantLibrary.cs" />
-    <Compile Include="PlacementHeightTransitionHook.cs" />
-    <Compile Include="RoadPlacementGeometryController.cs" />
-    <Compile Include="RoadPlacementMarkingPanel.cs" />
+    <Compile Include="PreviewPlacementPrefabs.cs" />
+    <Compile Include="..\RoadImport\ReferenceLaneProps.cs" />
     <Compile Include="RoadToolbarRefresh.cs" />
-    <Compile Include="RoadIconRaster.cs" />
+    <Compile Include="RoadIconAssets.cs" />
     <Compile Include="RoadToolbarIcons.cs" />
     <Compile Include="RuntimeEntry.cs" />
-    <Compile Include="RuntimeMarkingPlan.cs" />
     <Compile Include="TestLayoutManager.cs" />
-    <Compile Include="TmpeTrafficPolicy.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Target Name="RequireIntersectionMarkingToolApi" BeforeTargets="ResolveReferences" Condition="!Exists('$(IntersectionMarkingToolApiPath)')">
@@ -76,5 +58,6 @@
   <Target Name="RequireImtCrosswalkHookDependencies" BeforeTargets="ResolveReferences" Condition="!Exists('$(IntersectionMarkingToolPath)') Or !Exists('$(CitiesHarmonyApiPath)') Or !Exists('$(CitiesHarmonyPath)')">
     <Error Text="IMT 1.15 and CitiesHarmony were not found. Install Workshop items 2140418403 and 2040656402 or pass their assembly paths." />
   </Target>
+  <Import Project="..\RoadGame\RoadGame.projitems" />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

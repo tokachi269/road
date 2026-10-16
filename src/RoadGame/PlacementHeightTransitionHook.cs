@@ -7,6 +7,7 @@ using CitiesHarmony.API;
 using HarmonyLib;
 using UnityEngine;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal static class HeightTransitionKernel
@@ -273,7 +274,7 @@ namespace RoadRuntimeHost.Runtime
             if (data == null || data.Identity != _operation.Identity) return requested;
             string selected = _operation.Run.Choose(data.Identity, invert);
             if (selected == _operation.Identity) return requested;
-            if (selected == _operation.ReverseIdentity) return PrefabUpdater.ModeTemplate(_operation.ReverseBasic, data.Mode);
+            if (selected == _operation.ReverseIdentity) return NetworkModes.Find(_operation.ReverseBasic, data.Mode);
             return data.EndInfo;
         }
 

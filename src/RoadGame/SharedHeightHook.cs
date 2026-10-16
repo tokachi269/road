@@ -4,6 +4,7 @@ using System.Reflection;
 using System.IO;
 using UnityEngine;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal sealed class SharedHeightData : MonoBehaviour

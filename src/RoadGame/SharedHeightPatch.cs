@@ -4,6 +4,7 @@ using CitiesHarmony.API;
 using HarmonyLib;
 using ColossalFramework.Math;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal static class SharedHeightPatch

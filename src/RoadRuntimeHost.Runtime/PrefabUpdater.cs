@@ -481,7 +481,8 @@ namespace RoadRuntimeHost.Runtime
             Dictionary<string, List<PropPlacement>> placements,
             string laneId)
         {
-            List<NetLaneProps.Prop> result = CopyReferenceLaneProps(referenceLanes, lane);
+            List<NetLaneProps.Prop> result = RoadBuilder.Import.ReferenceLaneProps.Copy(
+                referenceLanes, lane.Position, lane.LaneType, lane.VehicleType);
             List<PropPlacement> source;
             if (!placements.TryGetValue(laneId, out source)) return result.ToArray();
             foreach (PropPlacement placement in source)
@@ -509,100 +510,6 @@ namespace RoadRuntimeHost.Runtime
             return result.ToArray();
         }
 
-        private static List<NetLaneProps.Prop> CopyReferenceLaneProps(
-            NetInfo.Lane[] referenceLanes,
-            LaneBundle target)
-        {
-            List<NetLaneProps.Prop> result = new List<NetLaneProps.Prop>();
-            bool vehicleLane = string.Equals(
-                target.LaneType, "Vehicle", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(
-                    target.VehicleType, "Car", StringComparison.OrdinalIgnoreCase);
-            bool pedestrianLane = string.Equals(
-                target.LaneType, "Pedestrian", StringComparison.OrdinalIgnoreCase);
-            if (!vehicleLane && !pedestrianLane) return result;
-
-            NetInfo.Lane reference = FindReferenceLane(
-                referenceLanes, target.Position, vehicleLane);
-            if (reference == null || reference.m_laneProps == null
-                || reference.m_laneProps.m_props == null) return result;
-
-            foreach (NetLaneProps.Prop prop in reference.m_laneProps.m_props)
-            {
-                if (prop == null) continue;
-                if (vehicleLane && IsRoadArrowProp(prop))
-                    result.Add(CloneLaneProp(prop));
-                else if (pedestrianLane && IsTrafficLightProp(prop))
-                    result.Add(CloneLaneProp(prop));
-            }
-            return result;
-        }
-
-        private static NetInfo.Lane FindReferenceLane(
-            NetInfo.Lane[] lanes,
-            float targetPosition,
-            bool vehicleLane)
-        {
-            NetInfo.Lane best = null;
-            float bestDistance = float.MaxValue;
-            foreach (NetInfo.Lane lane in lanes)
-            {
-                if (lane == null) continue;
-                bool matches = vehicleLane
-                    ? (lane.m_laneType & NetInfo.LaneType.Vehicle) != 0
-                        && (lane.m_vehicleType & VehicleInfo.VehicleType.Car) != 0
-                    : (lane.m_laneType & NetInfo.LaneType.Pedestrian) != 0;
-                if (!matches || lane.m_laneProps == null) continue;
-                float distance = Mathf.Abs(lane.m_position - targetPosition);
-                if (distance >= bestDistance) continue;
-                best = lane;
-                bestDistance = distance;
-            }
-            return best;
-        }
-
-        private static bool IsRoadArrowProp(NetLaneProps.Prop prop)
-        {
-            PropInfo info = prop.m_prop ?? prop.m_finalProp;
-            return info != null && info.name != null
-                && info.name.StartsWith("Road Arrow ", StringComparison.Ordinal);
-        }
-
-        private static bool IsTrafficLightProp(NetLaneProps.Prop prop)
-        {
-            NetNode.Flags required = prop.m_startFlagsRequired | prop.m_endFlagsRequired;
-            return (required & NetNode.Flags.TrafficLights) != 0;
-        }
-
-        private static NetLaneProps.Prop CloneLaneProp(NetLaneProps.Prop source)
-        {
-            NetLaneProps.Prop value = new NetLaneProps.Prop();
-            value.m_flagsRequired = source.m_flagsRequired;
-            value.m_flagsForbidden = source.m_flagsForbidden;
-            value.m_startFlagsRequired = source.m_startFlagsRequired;
-            value.m_startFlagsRequired2 = source.m_startFlagsRequired2;
-            value.m_startFlagsForbidden = source.m_startFlagsForbidden;
-            value.m_startFlagsForbidden2 = source.m_startFlagsForbidden2;
-            value.m_endFlagsRequired = source.m_endFlagsRequired;
-            value.m_endFlagsRequired2 = source.m_endFlagsRequired2;
-            value.m_endFlagsForbidden = source.m_endFlagsForbidden;
-            value.m_endFlagsForbidden2 = source.m_endFlagsForbidden2;
-            value.m_colorMode = source.m_colorMode;
-            value.m_prop = source.m_prop;
-            value.m_tree = source.m_tree;
-            value.m_position = source.m_position;
-            value.m_angle = source.m_angle;
-            value.m_segmentOffset = source.m_segmentOffset;
-            value.m_repeatDistance = source.m_repeatDistance;
-            value.m_minLength = source.m_minLength;
-            value.m_cornerAngle = source.m_cornerAngle;
-            value.m_probability = source.m_probability;
-            value.m_upgradable = source.m_upgradable;
-            value.m_disableRuined = source.m_disableRuined;
-            value.m_finalProp = source.m_finalProp;
-            value.m_finalTree = source.m_finalTree;
-            return value;
-        }
 
         private void ApplyCondition(NetLaneProps.Prop target, string conditionId)
         {
@@ -1068,14 +975,7 @@ namespace RoadRuntimeHost.Runtime
 
         internal static NetInfo ModeTemplate(NetInfo basic, string mode)
         {
-            if (string.Equals(mode, "basic", StringComparison.OrdinalIgnoreCase)) return basic;
-            RoadAI ai = basic.m_netAI as RoadAI;
-            if (ai == null) return null;
-            if (string.Equals(mode, "elevated", StringComparison.OrdinalIgnoreCase)) return ai.m_elevatedInfo;
-            if (string.Equals(mode, "bridge", StringComparison.OrdinalIgnoreCase)) return ai.m_bridgeInfo;
-            if (string.Equals(mode, "slope", StringComparison.OrdinalIgnoreCase)) return ai.m_slopeInfo;
-            if (string.Equals(mode, "tunnel", StringComparison.OrdinalIgnoreCase)) return ai.m_tunnelInfo;
-            return null;
+            return NetworkModes.Find(basic, mode);
         }
 
         private static void LinkModes(NetInfo basic, Dictionary<string, NetInfo> modes)

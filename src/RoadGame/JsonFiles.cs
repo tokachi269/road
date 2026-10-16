@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using System.Text;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal static class JsonFiles

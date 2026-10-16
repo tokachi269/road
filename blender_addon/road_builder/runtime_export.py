@@ -15,10 +15,10 @@ from array import array
 
 import bpy
 from mathutils import Vector
+from .domain import NETWORK_MAIN_TEXTURE_SCALE, network_shader
 
 
 BUNDLE_SCHEMA_VERSION = 2
-NETWORK_MAIN_TEXTURE_SCALE = (1.0, 0.5)
 SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -373,8 +373,7 @@ def serialize_network_modes(modes, material_families, texture_bindings) -> list[
     serialized = []
     for mode, objects in sorted(modes.items()):
         entries = []
-        # Temporary Ground normal-map trial; keep the policy in this one owner.
-        shader = "Custom/Net/RoadBridge"
+        shader = network_shader(mode)
         for index, obj in enumerate(objects):
             for mesh in serialize_mesh_entries(obj, shader, material_families, texture_bindings):
                 entries.append({"kind": "segment" if index == 0 else "node", "mesh": mesh})

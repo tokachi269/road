@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>RoadGame.ContractSmoke</AssemblyName>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <OutputPath>bin\Release\</OutputPath>
+    <NoWarn>0649</NoWarn>
+    <IntersectionMarkingToolPath Condition=" '$(IntersectionMarkingToolPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\IntersectionMarkingTool.dll</IntersectionMarkingToolPath>
+    <IntersectionMarkingToolApiPath Condition=" '$(IntersectionMarkingToolApiPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\IntersectionMarkingTool.API.dll</IntersectionMarkingToolApiPath>
+    <CitiesHarmonyApiPath Condition=" '$(CitiesHarmonyApiPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2140418403\CitiesHarmony.API.dll</CitiesHarmonyApiPath>
+    <CitiesHarmonyPath Condition=" '$(CitiesHarmonyPath)' == '' ">$(CitiesSkylinesManagedDir)\..\..\..\..\workshop\content\255710\2040656402\CitiesHarmony.Harmony.dll</CitiesHarmonyPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml" />
+    <Reference Include="Assembly-CSharp"><HintPath>$(CitiesSkylinesManagedDir)\Assembly-CSharp.dll</HintPath></Reference>
+    <Reference Include="ColossalManaged"><HintPath>$(CitiesSkylinesManagedDir)\ColossalManaged.dll</HintPath></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(CitiesSkylinesManagedDir)\UnityEngine.dll</HintPath></Reference>
+    <Reference Include="IntersectionMarkingTool"><HintPath>$(IntersectionMarkingToolPath)</HintPath></Reference>
+    <Reference Include="IntersectionMarkingTool.API"><HintPath>$(IntersectionMarkingToolApiPath)</HintPath></Reference>
+    <Reference Include="CitiesHarmony.API"><HintPath>$(CitiesHarmonyApiPath)</HintPath></Reference>
+    <Reference Include="CitiesHarmony.Harmony"><HintPath>$(CitiesHarmonyPath)</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\RoadRuntimeHost.ContractSmoke\SegmentLaneIsolationContract.cs" />
+    <Compile Include="..\..\src\RoadImport\ReferenceLaneProps.cs" />
+  </ItemGroup>
+  <Import Project="..\..\src\RoadGame\RoadGame.projitems" />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

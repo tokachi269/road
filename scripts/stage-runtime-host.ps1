@@ -13,12 +13,16 @@ $PreviewPath = [IO.Path]::GetFullPath($PreviewPath)
 $stage = Join-Path $repoRoot 'build\runtime-host'
 $runtimeStage = Join-Path $stage 'runtime'
 
-if (-not $SkipBuild) { & (Join-Path $PSScriptRoot 'build-runtime-host.ps1') -Configuration $Configuration }
-if ($LASTEXITCODE -ne 0) { throw "Runtime Host build failed with exit code $LASTEXITCODE" }
+if (-not $SkipBuild) {
+    & (Join-Path $PSScriptRoot 'build-runtime-host.ps1') -Configuration $Configuration
+    if ($LASTEXITCODE -ne 0) { throw "Runtime Host build failed with exit code $LASTEXITCODE" }
+}
 
 New-Item -ItemType Directory -Force -Path $PreviewPath, $runtimeStage | Out-Null
 & python (Join-Path $repoRoot 'generator\runtime_catalog.py') (Join-Path $repoRoot 'catalog') $PreviewPath
 if ($LASTEXITCODE -ne 0) { throw "Catalog compile failed with exit code $LASTEXITCODE" }
+& (Join-Path $PSScriptRoot 'generate-road-icons.ps1') -PreviewPath $PreviewPath
+if ($LASTEXITCODE -ne 0) { throw 'Offline road icon staging failed' }
 
 $loader = Join-Path $repoRoot "src\RoadRuntimeHost.Loader\bin\$Configuration\RoadRuntimeHost.Loader.dll"
 $runtime = Join-Path $repoRoot "src\RoadRuntimeHost.Runtime\bin\$Configuration\RoadRuntimeHost.Runtime.dll"

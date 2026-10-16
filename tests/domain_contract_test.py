@@ -37,6 +37,13 @@ def road_lane(index: int, direction: str) -> Lane:
 
 
 class DomainContractTest(unittest.TestCase):
+    def test_network_shader_output_owner_preserves_current_ground_normal_trial(self):
+        self.assertEqual(domain.NETWORK_MAIN_TEXTURE_SCALE, (1.0, 0.5))
+        for mode in ("basic", "elevated", "bridge", "slope", "tunnel"):
+            self.assertEqual(domain.network_shader(mode), "Custom/Net/RoadBridge")
+        with self.assertRaises(ValueError):
+            domain.network_shader("unknown")
+
     def test_two_three_and_four_lane_widths_are_derived_from_lane_input(self) -> None:
         for count in (2, 3, 4):
             lanes = [road_lane(index, "FORWARD") for index in range(count)]

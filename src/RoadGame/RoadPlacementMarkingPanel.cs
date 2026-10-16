@@ -5,6 +5,7 @@ using ColossalFramework;
 using ColossalFramework.UI;
 using UnityEngine;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal sealed class RoadPlacementMarkingSelection

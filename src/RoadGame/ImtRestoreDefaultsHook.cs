@@ -10,6 +10,7 @@ using IMT.Utilities;
 using ModsCommon;
 using ModsCommon.UI;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal static class ImtRestoreDefaultsHook

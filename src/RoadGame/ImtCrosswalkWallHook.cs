@@ -7,6 +7,7 @@ using IMT.Manager;
 using ModsCommon.Utilities;
 using UnityEngine;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal static class ImtCrosswalkWallHook

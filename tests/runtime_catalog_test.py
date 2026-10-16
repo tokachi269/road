@@ -2,14 +2,46 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from generator.runtime_catalog import CatalogError, compile_catalog, load_catalog
+from generator import runtime_catalog
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimeCatalogTest(unittest.TestCase):
+    def test_lane_snapshot_requires_explicit_metadata_including_unknown_tuples(self):
+        read = runtime_catalog._read_tsv
+        for field in ("speed_limit", "stop_offset", "allow_connect", "direction", "lane_type", "vehicle_type"):
+            for lane_type, vehicle_type in (("Pedestrian", "None"), ("Vehicle", "Bicycle")):
+                def missing(path):
+                    rows = read(path)
+                    if path.stem == "lanes":
+                        rows[0].update(lane_type=lane_type, vehicle_type=vehicle_type)
+                        rows[0][field] = ""
+                    return rows
+                with self.subTest(field=field, tuple=(lane_type,vehicle_type)), \
+                     patch.object(runtime_catalog, "_read_tsv", side_effect=missing), \
+                     self.assertRaisesRegex(CatalogError, field):
+                    load_catalog(ROOT / "catalog")
+
+    def test_explicit_unknown_tuple_metadata_is_preserved(self):
+        read = runtime_catalog._read_tsv
+
+        def explicit(path):
+            rows = read(path)
+            if path.stem == "lanes":
+                rows[0].update(lane_type="Vehicle", vehicle_type="Bicycle",
+                               speed_limit="0.42", stop_offset="0.7", allow_connect="false")
+            return rows
+
+        with patch.object(runtime_catalog, "_read_tsv", side_effect=explicit):
+            lane = load_catalog(ROOT / "catalog")["roads"][0]["lanes"][0]
+        self.assertEqual((lane["lane_type"],lane["vehicle_type"]), ("Vehicle","Bicycle"))
+        self.assertEqual((lane["speed_limit"],lane["stop_offset"],lane["allow_connect"]), (0.42,0.7,False))
+
     def test_sample_catalog_compiles_with_stable_priority_and_signatures(self):
         catalog = load_catalog(ROOT / "catalog")
         self.assertEqual(1, catalog["schema_version"])

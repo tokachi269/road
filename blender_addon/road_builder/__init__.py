@@ -62,6 +62,8 @@ from .domain import (
     cross_section_widths,
     expected_boundaries,
     lane_metadata_defaults,
+    network_shader,
+    NETWORK_MAIN_TEXTURE_SCALE,
     lane_vertical_offset,
     marking_rule,
     migrate_authoring_spec_v3_to_v4,
@@ -4443,11 +4445,15 @@ class CS1ROAD_OT_export_spec(Operator, ExportHelper):
             },
             "lanes": _export_lanes(props),
             "modes": {
-                "basic": {"shader": "Custom/Net/Road"},
-                "elevated": {"height": props.elevated_height, "deck_depth": props.deck_depth, "shader": "Custom/Net/RoadBridge"},
-                "bridge": {"height": props.bridge_height, "deck_depth": props.bridge_deck_depth, "shader": "Custom/Net/RoadBridge"},
-                "slope": {"tunnel_depth": props.tunnel_depth, "shader": "Custom/Net/RoadBridge"},
-                "tunnel": {"depth": props.tunnel_depth, "clearance_height": props.tunnel_clearance, "shader": "Custom/Net/RoadBridge"},
+                mode: {**dimensions, "shader": network_shader(mode),
+                       "main_texture_scale": list(NETWORK_MAIN_TEXTURE_SCALE)}
+                for mode, dimensions in {
+                    "basic": {},
+                    "elevated": {"height": props.elevated_height, "deck_depth": props.deck_depth},
+                    "bridge": {"height": props.bridge_height, "deck_depth": props.bridge_deck_depth},
+                    "slope": {"tunnel_depth": props.tunnel_depth},
+                    "tunnel": {"depth": props.tunnel_depth, "clearance_height": props.tunnel_clearance},
+                }.items()
             },
         }
         Path(self.filepath).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

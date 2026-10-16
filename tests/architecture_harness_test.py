@@ -71,13 +71,13 @@ class ArchitectureHarnessTest(unittest.TestCase):
             encoding="utf-8"
         )
         service = (
-            ROOT / "src" / "RoadRuntimeHost.Runtime" / "ImtPreviewService.cs"
+            ROOT / "src" / "RoadGame" / "ImtPreviewService.cs"
         ).read_text(encoding="utf-8")
         hook = (
-            ROOT / "src" / "RoadRuntimeHost.Runtime" / "NetSegmentCreationHook.cs"
+            ROOT / "src" / "RoadGame" / "NetSegmentCreationHook.cs"
         ).read_text(encoding="utf-8")
         topology_hook = (
-            ROOT / "src" / "RoadRuntimeHost.Runtime" / "ImtTopologyUpdateHook.cs"
+            ROOT / "src" / "RoadGame" / "ImtTopologyUpdateHook.cs"
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("_imtPreview.Poll()", entry)
@@ -95,7 +95,7 @@ class ArchitectureHarnessTest(unittest.TestCase):
         self.assertNotIn("_imtPreview.Tick()", entry)
         corner_body = service.split("private void ApplyCornerLines(", 1)[1]
         self.assertNotIn("BoundaryRoles(", corner_body.split("private RuntimeNodeSnapshot", 1)[0])
-        plan = (ROOT / "src" / "RoadRuntimeHost.Runtime" / "RuntimeMarkingPlan.cs").read_text(
+        plan = (ROOT / "src" / "RoadGame" / "RuntimeMarkingPlan.cs").read_text(
             encoding="utf-8"
         )
         self.assertIn("RuntimeNodeSnapshot", plan)
@@ -105,6 +105,20 @@ class ArchitectureHarnessTest(unittest.TestCase):
         self.assertIn('"Update"', topology_hook)
         self.assertIn("UpdatePostfix", topology_hook)
         self.assertNotIn("m_segments.m_buffer.Length", service)
+
+    def test_game_module_rejects_preview_host_dependencies(self):
+        manifest = json.loads((ROOT / "tools/arch_manifest.json").read_text(encoding="utf-8"))
+        game = next(layer for layer in manifest["layers"] if layer["name"] == "road_game")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src/RoadGame").mkdir(parents=True)
+            for forbidden in ("PrefabUpdater", "CatalogRoad", "RuntimeEntry"):
+                (root / "src/RoadGame/Probe.cs").write_text(f"class Probe {{ {forbidden} value; }}", encoding="utf-8")
+                result = lint_architecture(root, {
+                    "scan": {"roots":["src/RoadGame"],"extensions":[".cs"],"exclude_patterns":[]},
+                    "layers":[game],
+                })
+                self.assertTrue(any(forbidden in error for error in result.errors), result.errors)
 
 
 if __name__ == "__main__":

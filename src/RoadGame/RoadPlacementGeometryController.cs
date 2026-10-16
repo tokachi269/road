@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using UnityEngine;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     // Protocol order is the compiled option key order. No metre values or
@@ -40,7 +41,6 @@ namespace RoadRuntimeHost.Runtime
         {
             public string RoadId;
             public PlacementVariantLibrary Library;
-            public CatalogRoad Catalog;
             public ImtMarkingStyleBundle Style;
             public NetInfo Basic;
             public string Revision;
@@ -64,7 +64,7 @@ namespace RoadRuntimeHost.Runtime
             public volatile bool Placed;
         }
 
-        private readonly PrefabUpdater _updater;
+        private readonly IPlacementPrefabFactory _prefabs;
         private readonly ImtPreviewService _markings;
         private readonly Dictionary<NetInfo, Target> _targets = new Dictionary<NetInfo, Target>();
         private readonly object _targetSync = new object();
@@ -74,13 +74,13 @@ namespace RoadRuntimeHost.Runtime
         private volatile PendingTransition _pendingTransition;
         public int Revision { get { return Interlocked.CompareExchange(ref _revision, 0, 0); } }
 
-        public RoadPlacementGeometryController(PrefabUpdater updater, ImtPreviewService markings)
+        public RoadPlacementGeometryController(IPlacementPrefabFactory prefabs, ImtPreviewService markings)
         {
-            _updater = updater;
+            _prefabs = prefabs;
             _markings = markings;
         }
 
-        public void Register(string root, string roadId, NetInfo basic, CatalogRoad catalog, ImtMarkingStyleBundle style,
+        public void Register(string root, string roadId, NetInfo basic, ImtMarkingStyleBundle style,
             string indexPath, string revision, bool force)
         {
             string relative = string.IsNullOrEmpty(indexPath) ? "placement/" + roadId + "/index.json" : indexPath;
@@ -88,7 +88,7 @@ namespace RoadRuntimeHost.Runtime
             if (!force && _menuRevisions.TryGetValue(roadId, out previous) && previous == (revision ?? string.Empty)) return;
             if (!File.Exists(Path.Combine(root, relative))) return;
             PlacementVariantLibrary library = new PlacementVariantLibrary(root, roadId, relative, revision);
-            Binding binding = new Binding { RoadId = roadId, Library = library, Basic = basic, Catalog = catalog,
+            Binding binding = new Binding { RoadId = roadId, Library = library, Basic = basic,
                 Style = style, Revision = revision ?? string.Empty };
             if (_selection == null) _selection = new PlacementOptionSelection(library.DefaultKey);
             List<NetInfo> variants = new List<NetInfo>();
@@ -193,7 +193,7 @@ namespace RoadRuntimeHost.Runtime
                 parts[4] = parts[4] == "DEPRESSED" ? "FLUSH" : "DEPRESSED";
                 string toKey = string.Join("|", parts);
                 SharedHeightFamily family = target.Binding.Library.ResolveSharedHeight(fromKey);
-                NetInfo basic = _updater.GetOrCreateSharedHeight(family, target.Binding.Catalog);
+                NetInfo basic = _prefabs.GetOrCreateSharedHeight(family, target.Binding.RoadId);
                 NetInfo mode = GetMode(basic, target.Mode);
                 if (mode == null) throw new InvalidDataException("Transition is missing the selected mode");
                 _markings.RegisterPlacement(target.Binding.RoadId, basic, target.Binding.Style);
@@ -263,7 +263,7 @@ namespace RoadRuntimeHost.Runtime
             if (target.Shared && target.Key == proposed && _pendingTransition == null
                 && target.SelectionRevision == target.Binding.Revision) return selected;
             SharedHeightFamily family = target.Binding.Library.ResolveSharedHeight(proposed);
-            NetInfo basic = _updater.GetOrCreateSharedHeight(family, target.Binding.Catalog);
+            NetInfo basic = _prefabs.GetOrCreateSharedHeight(family, target.Binding.RoadId);
             NetInfo mode = GetMode(basic, target.Mode);
             if (mode == null) throw new InvalidDataException("Placement variant is missing the selected network mode");
             // Registration is event-driven and does not create any segments.
@@ -306,7 +306,7 @@ namespace RoadRuntimeHost.Runtime
 
         private static NetInfo GetMode(NetInfo basic, string mode)
         {
-            return PrefabUpdater.ModeTemplate(basic, mode);
+            return NetworkModes.Find(basic, mode);
         }
     }
 }

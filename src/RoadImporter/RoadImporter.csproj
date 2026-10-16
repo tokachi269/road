@@ -57,6 +57,7 @@
     <Compile Include="ModelImport.cs" />
     <Compile Include="NetModelInfo.cs" />
     <Compile Include="RoadAssetInfo.cs" />
+    <Compile Include="..\RoadImport\ReferenceLaneProps.cs" />
     <Compile Include="TestJobThreading.cs" />
     <Compile Include="TrainTrackAssetInfo.cs" />
     <Compile Include="Utils.cs" />

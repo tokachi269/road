@@ -17,6 +17,18 @@ from typing import Any, Iterable, Mapping, NamedTuple, Protocol
 MODE_LENGTH = 64.0
 SEGMENT_SLICES = 20
 NODE_SLICES = 8
+NETWORK_MAIN_TEXTURE_SCALE = (1.0, 0.5)
+
+
+def network_shader(mode: str) -> str:
+    """CS1 network output policy, shared by authoring and mesh exports.
+
+    Preserve the current Ground normal-map trial; this is not a new shader
+    experiment or a claim of visual equivalence to the vanilla Ground shader.
+    """
+    if mode not in {"basic", "elevated", "bridge", "slope", "tunnel"}:
+        raise ValueError(f"Unknown network mode: {mode}")
+    return "Custom/Net/RoadBridge"
 
 
 def longitudinal_slice_count(value):

@@ -2,47 +2,82 @@
 
 > 文書種別: 運用手順
 
-## Toolbar icon: Expected impact
+## Toolbar iconのoffline制作とpreview
 
-- ベース道路のlane構成だけを表示する。上約73%は車線・矢印・対向境界の記号図、
-  下は`1+2`または`→3`の1行ラベル。高さ、median、roadside、幅、配置時variantは含めない。
-- ownerはRuntimeの単一raster renderer。PNG出力toolも同じsourceを使い、別の描画判断を持たない。
-  Runtime adapterは同じatlasを全modeへ渡す。NetInfo追加、lane/mesh変更、schema追加はしない。
-- 共通透過PNGはpreview内の`icons/overlay.png`。128×128を全アイコンへalpha合成する。
-  無指定なら無し。不正な指定画像は警告し、前の有効atlasを変更しない。
-- 同じatlasを共有し、通常/hover/focus/press/disabledのnative sprite名を全て登録する。
-  PNGと縮小contact sheetで目視確認する。既存catalogのToolbar順序は変更しない。
+アイコンはAsset Editorでのimportにも使うPNG成果物であり、Runtime機能ではない。
+Python + Pillowの`tools/generate_road_icons.py`が描画・文字・overlay合成を所有する。
+Runtimeは生成済みPNGの読込みとatlasへの格納だけを行う。
 
-### PNG出力と共通overlayの操作
+### Expected impact
+
+- SWEBOK: Software Architectureの責務分離・依存方向と、Software Constructionの
+  offline asset pipelineとして扱う。Runtime描画を共用する旧方式は制作をゲームDLLへ依存させた。
+- ownerをPythonへ移す。入力はdomainの標準14 variant、`textures/toolbar/icons.json`、
+  TrueType font、任意の共通overlay。出力PNGのconsumerはRoadImporterとRuntime。
+- 白い中央線、左↑・右↓、細長い矢印、滑らかな文字を維持する。
+  footer高さ・文字サイズ・font・overlayを指定可能にする。無効設定は出力前に失敗させる。
+- 道路schema、Blender UI/geometry、AR/IMT、NetInfo数、catalog順序は変更しない。
+  Pillow依存は制作側だけに置く。CS1へfontやglyph maskを埋め込まない。
+
+### 操作
 
 ```powershell
+# import用PNGだけを生成（Blender/CS1不要）
+python tools/generate_road_icons.py
+# 同じPNGをpreviewにも配置
 .\scripts\generate-road-icons.ps1
-# 共通レイヤーを指定して出力・previewへ配置
-.\scripts\generate-road-icons.ps1 -OverlayPath .\textures\toolbar\overlay.png
 .\scripts\publish-runtime-hot.ps1
 ```
 
-既定の出力先は`build/runtime-preview/icons`。`-PreviewPath`で変更できるが、Hostの
-`preview.path`自体は変更しない。14枚の128×128 PNG、96 px縮小の`contact-sheet.png`、
-未作成時だけ完全透過の`overlay-template.png`を生成する。
-templateをコピーして絵を加え、128×128の透過PNGとして保存する。文字・矢印を隠さない
-配置は画像側で調整する。RuntimeとPNG出力は同じstraight-alpha compositorを使用する。
-透過pixelは元の絵を保ち、半透明pixelは合成される。overlayは全道路・全mode共通であり、
-道路ごとの保存設定にはしない。
+制作出力は`build/road-icons`。`import`内には既存RoadImporterの
+`<job>_thumb.png / _hovered.png / _pressed.png / _focused.png / _disabled.png`を出力する。
+job名の既定はroad ID。違う場合は共通設定の`import_job_names`で明示する。
+PNGは同じjobのXML等と一緒にImporterへ渡す。PNG生成だけでCRPが保存された扱いにしない。
 
-明示指定がなければ制作元の`textures/toolbar/overlay.png`、次に既存previewの`icons/overlay.png`を
-使用し、どちらもなければ重ねない。指定画像は128×128 PNG・1 MiB以下を検査してから
-出力する。不正画像の再読込みを毎frame行わない。更新後は生成コマンドとhot publishを
-実行する。PNG生成だけではゲーム内atlasを再読込みした扱いにしない。
+設定とoverlayの作り方は[制作手順](../textures/toolbar/README.md)を参照する。
+footer高さの既定は20 px、文字はNoto Sans 16 px。128 px出力と96 px一覧を生成する。
+PowerShell wrapperは`build/runtime-preview/icons`にも同じ14 PNGを配置する。
+`-PreviewPath`で別previewへ置けるが、このコマンドはHostの`preview.path`を変えない。
+hot publishはインストール済みpreview.pathを読み、その入力先へPNGを配置する。
 
-- Actual: pure managed rendererをPNG toolとRuntime adapterから共用し、14 topologyの
-  矢印・対向境界・ラベルとalpha合成、PNG/Unityの縦方向変換を独立contractで確認した。
-  PNG一覧の縮小表示も確認した。Native UI登録・CRP thumbnail保存は実ゲーム未確認。
-- Delta: bundle/schema、Blender UI/geometry、catalog順序、AR/IMT、NetInfo数を変更していない。
-  Runtime atlasは512×512を1枚、14 source textureを持ち、5状態のsprite名は同じregionを
-  参照する。UIボタンの既存backgroundで選択状態を示し、状態ごとのtextureを増やさない。
+Runtimeは1回のatlas作成時にPNGを読み、512×512のatlasを1枚共有する。
+14 source textureと各5状態のsprite名を持ち、全modeで同じ絵を使う。
+PNGがない・不正な場合、ゲーム内で再描画せず前のiconを保全して診断を出す。
+frameごとの再読込みは行わない。画像変更後はhot publishでRuntimeを更新する。
+
+### Actual / Architecture Delta
+
+- Runtime raster rendererと埋込みglyph経路を廃止し、Python出力をそのまま読むadapterへ変更した。
+  `generate-road-icons.ps1`はPython wrapperとなり、CS1 DLLのbuild/reflectionを必要としない。
+- Python検査は14種類の方向・白線・文字、overlay、footer/文字サイズ変更、無効設定の保全、
+  import用70 PNGとpreview用14 PNGのbyte一致を確認する。
+  managed contractは実PNGの読込み・byte保全と欠落/不正headerの拒否を確認する。
+- 変更は予定した制作設定・Python・PNG consumerとstagingの境界内。
+  Blender、道路定義、lane/mesh、AR/IMTは変更していない。
+  Runtime atlasのNative登録とCRP thumbnail保存は実ゲーム未確認。
 
 ## 目的
+
+### ゲーム用機能と確認Hostの境界
+
+IMT・配置UI・信号・ARは`src/RoadGame`のゲーム用moduleに置く。
+現在はRuntime DLLへsource includeしており、MODやDLLの公開単位は増やしていない。
+確認Hostは`RoadGameSession`へ道路を登録し、Prefab供給だけを開発用adapterで実装する。
+将来の公開MODは同じmoduleをasset側のproviderと組み合わせ、確認Hostを配布しない。
+公開用entrypoint、CRPの発見/登録とpackagingはまだ作成していない。
+
+### Importerへ渡すmaterial・参照Prop設定
+
+道路JSONの各modeにある`shader`と`main_texture_scale`はdomain出力方針の派生値。
+XMLでは各`CSMesh`の`shader`と`mainTextureScale`へ渡す。
+例: `<mainTextureScale><float>1</float><float>0.5</float></mainTextureScale>`。
+未指定の既存XMLはscaleを書き換えない。main meshのscaleをLODへ流用しない。
+
+RoadImporterの道路XMLで`<referencePropTemplate>Basic Road</referencePropTemplate>`を明示すると、
+その参照道路の全modeから矢印/信号Propを共通規則でコピーし、CRPに保存するlane propsへ入れる。
+`m_laneProps`が明示されたlaneは空配列を含めて優先し、参照Propで上書きしない。
+未指定jobは従来通り。参照道路が見つからなければ変更前に失敗する。
+この機能はXML入力consumerの追加であり、FBX/XMLの全自動生成完了を意味しない。
 
 Asset Editorを往復せず、Blenderで作った道路・Prop・Decal meshと表形式metadataを通常マップへ反映する開発用Hostである。最終CRPを作る機能ではない。
 

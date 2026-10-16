@@ -8,6 +8,8 @@
       "tools",
       "scripts",
       "src/RoadImporter",
+      "src/RoadGame",
+      "src/RoadImport",
       "src/RoadRuntimeHost.Loader",
       "src/RoadRuntimeHost.Runtime"
     ],
@@ -46,6 +48,16 @@
       "name": "automation",
       "patterns": ["scripts/*.ps1", "scripts/*.py"],
       "forbidden_tokens": []
+    },
+    {
+      "name": "road_game",
+      "patterns": ["src/RoadGame/*.cs", "src/RoadGame/**/*.cs"],
+      "forbidden_tokens": ["PrefabUpdater", "CatalogRoad", "RuntimeEntry", "TestLayoutManager", "PrefabInspectionService", "ManifestRoad"]
+    },
+    {
+      "name": "shared_import",
+      "patterns": ["src/RoadImport/*.cs"],
+      "forbidden_tokens": ["RoadRuntimeHost", "LaneBundle", "CatalogRoad", "RuntimeEntry"]
     },
     {
       "name": "road_importer",

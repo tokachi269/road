@@ -28,7 +28,9 @@ namespace RoadRuntimeHost.ContractSmoke
                 SegmentLaneIsolationContract.Validate(typeof(RuntimeEntry).Assembly);
                 SharedHeightContract.Validate(typeof(RuntimeEntry).Assembly, args[1]);
                 NetworkGeometryCacheContract.Validate(typeof(RuntimeEntry).Assembly, args[1]);
-                RoadIconContract.Validate(typeof(RuntimeEntry).Assembly);
+                RoadIconContract.Validate(typeof(RuntimeEntry).Assembly, args[0]);
+                ValidateGameModuleBoundary(typeof(RuntimeEntry).Assembly);
+                ValidateImporterOutputContract();
                 if (!typeof(IUserMod).IsAssignableFrom(typeof(RoadRuntimeHostMod))) throw new InvalidOperationException("loader mod entry is missing");
                 if (!typeof(ILoadingExtension).IsAssignableFrom(typeof(RoadRuntimeHostLoading))) throw new InvalidOperationException("loader loading entry is missing");
                 if (!typeof(IThreadingExtension).IsAssignableFrom(typeof(RoadRuntimeHostThreading))) throw new InvalidOperationException("loader threading entry is missing");
@@ -713,13 +715,65 @@ namespace RoadRuntimeHost.ContractSmoke
                     throw new InvalidOperationException("Curb wall tangent frame is incorrect");
         }
 
+        private static void ValidateGameModuleBoundary(Assembly assembly)
+        {
+            Type entry = assembly.GetType("RoadRuntimeHost.Runtime.RuntimeEntry",true);
+            Type session = assembly.GetType("RoadRuntimeHost.Runtime.RoadGameSession",true);
+            if (!CallsMethod(entry.GetMethod("Start"),session.FullName,"Start")
+                || !CallsMethod(entry.GetMethod("Stop"),session.FullName,"Dispose"))
+                throw new InvalidOperationException("Preview does not delegate game lifecycle to the separable module");
+            Type controller = assembly.GetType("RoadRuntimeHost.Runtime.RoadPlacementGeometryController",true);
+            Type port = assembly.GetType("RoadRuntimeHost.Runtime.IPlacementPrefabFactory",true);
+            foreach (FieldInfo field in controller.GetFields(BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic))
+                if (field.FieldType.FullName=="RoadRuntimeHost.Runtime.PrefabUpdater"
+                    || field.FieldType.FullName=="RoadRuntimeHost.Runtime.CatalogRoad")
+                    throw new InvalidOperationException("Game controller holds a preview implementation");
+            if (controller.GetConstructor(new Type[]{port,assembly.GetType("RoadRuntimeHost.Runtime.ImtPreviewService",true)})==null)
+                throw new InvalidOperationException("Game prefab capability port is missing");
+        }
+
+        private static void ValidateImporterOutputContract()
+        {
+            System.Xml.Serialization.XmlSerializer serializer = new System.Xml.Serialization.XmlSerializer(typeof(RoadImporter.RoadAssetInfo));
+            RoadImporter.RoadAssetInfo legacy;
+            using (StringReader reader = new StringReader("<RoadAssetInfo><name>old job</name><basicModel><segmentMeshes><CSMesh><name>road</name><shader>Custom/Net/Road</shader></CSMesh></segmentMeshes></basicModel></RoadAssetInfo>"))
+                legacy = (RoadImporter.RoadAssetInfo)serializer.Deserialize(reader);
+            if (legacy.referencePropTemplate!=null || legacy.basicModel.segmentMeshes[0].mainTextureScale!=null)
+                throw new InvalidOperationException("Old importer XML acquired implicit prop or scale settings");
+            RoadImporter.RoadAssetInfo source = new RoadImporter.RoadAssetInfo {
+                name="new job",referencePropTemplate="Basic Road",
+                basic=new RoadImporter.CSNetInfo {m_lanes=new RoadImporter.CSNetInfo.Lane[]{
+                    new RoadImporter.CSNetInfo.Lane {m_laneProps=new RoadImporter.CSNetInfo.Prop[0]},
+                    new RoadImporter.CSNetInfo.Lane {m_laneProps=null}}}
+            };
+            source.basicModel.segmentMeshes=new RoadImporter.NetModelInfo.CSMesh[]{
+                new RoadImporter.NetModelInfo.CSMesh {shader="Custom/Net/RoadBridge",mainTextureScale=new float[]{1f,0.5f}}};
+            string xml;
+            using (StringWriter writer=new StringWriter()) {serializer.Serialize(writer,source);xml=writer.ToString();}
+            RoadImporter.RoadAssetInfo restored;
+            using(StringReader reader=new StringReader(xml)) restored=(RoadImporter.RoadAssetInfo)serializer.Deserialize(reader);
+            if(restored.referencePropTemplate!="Basic Road" || restored.basicModel.segmentMeshes[0].shader!="Custom/Net/RoadBridge"
+                || restored.basicModel.segmentMeshes[0].mainTextureScale[1]!=0.5f
+                || restored.basic.m_lanes[0].m_laneProps==null || restored.basic.m_lanes[0].m_laneProps.Length!=0
+                || restored.basic.m_lanes[1].m_laneProps!=null)
+                throw new InvalidOperationException("Importer output contract lost explicit/default ownership");
+            if(!CallsMethod(typeof(RoadImporter.RoadAssetInfo).GetMethod("WriteToGame"),"RoadBuilder.Import.ReferenceLaneProps","ApplyDefaults"))
+                throw new InvalidOperationException("Importer bypasses shared prop selection");
+            foreach(float[] invalid in new float[][]{new float[]{1f},new float[]{1f,0f},new float[]{float.NaN,1f}})
+            {
+                bool rejected=false;
+                try {RoadImporter.ModelImport.RunImport(new RoadImporter.ModelImport.Job {mainTextureScale=invalid});}
+                catch(ArgumentException) {rejected=true;}
+                if(!rejected) throw new InvalidOperationException("Invalid texture scale reached the native importer");
+            }
+            Console.WriteLine("IMPORT_OUTPUT_CONTRACT_OK legacy_preserved explicit_props template shader scale");
+        }
+
         private static void ValidateReferenceLanePropContract(Assembly runtimeAssembly)
         {
             Type updater = runtimeAssembly.GetType(
-                "RoadRuntimeHost.Runtime.PrefabUpdater", true);
-            if (updater.GetMethod(
-                    "CopyReferenceLaneProps",
-                    BindingFlags.Static | BindingFlags.NonPublic) == null
+                "RoadBuilder.Import.ReferenceLaneProps", true);
+            if (updater.GetMethod("Copy", BindingFlags.Static | BindingFlags.Public) == null
                 || updater.GetMethod(
                     "IsRoadArrowProp",
                     BindingFlags.Static | BindingFlags.NonPublic) == null

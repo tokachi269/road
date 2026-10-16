@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)AdaptiveRoadsBridge.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)SharedHeightFamily.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)SharedHeightHook.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)SharedHeightPatch.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)CrosswalkWallGeometry.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)DiagnosticLog.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)JsonFiles.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ImtCrosswalkWallHook.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ImtPreviewService.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ImtInternalAdapter.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ImtNodePolicy.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ImtRestoreDefaultsHook.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ImtTopologyUpdateHook.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)NetSegmentCreationHook.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)PlacementVariantLibrary.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)PlacementHeightTransitionHook.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)RoadPlacementGeometryController.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)RoadPlacementMarkingPanel.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)RuntimeMarkingPlan.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)TmpeTrafficPolicy.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)CompiledRoadModels.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)NetworkModes.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)RoadGameSession.cs" />
+  </ItemGroup>
+</Project>

@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.IO;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     // Only the installed AR API is consumed here. No AR assembly reference is

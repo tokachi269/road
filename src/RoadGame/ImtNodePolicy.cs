@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     internal enum ImtBoundaryRole

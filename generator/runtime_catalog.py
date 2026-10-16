@@ -173,6 +173,11 @@ def load_catalog(table_dir: Path) -> dict:
         if not SAFE_ID.fullmatch(lane_id) or lane_id in lane_ids[road_id]:
             raise CatalogError(f"lanes:{line}: invalid or duplicate lane_id {lane_id!r}")
         lane_ids[road_id].add(lane_id)
+        # Catalog lanes are contract-checker snapshots, not authoring defaults.
+        # Missing metadata must not invent Car settings for another tuple.
+        for field in ("speed_limit", "stop_offset", "allow_connect", "direction", "lane_type", "vehicle_type"):
+            if not row.get(field, "").strip():
+                raise CatalogError(f"lanes:{line}.{field}: explicit snapshot value is required")
         compiled_roads[road_id]["lanes"].append({
             "lane_id": lane_id,
             "order": _integer(row.get("order", ""), f"lanes:{line}.order"),
@@ -180,11 +185,11 @@ def load_catalog(table_dir: Path) -> dict:
             "position": _number(row.get("position", ""), f"lanes:{line}.position"),
             "vertical_offset": _number(row.get("vertical_offset", ""), f"lanes:{line}.vertical_offset"),
             "stop_offset": _number(row.get("stop_offset", ""), f"lanes:{line}.stop_offset"),
-            "direction": row.get("direction") or "Forward",
-            "lane_type": row.get("lane_type") or "Vehicle",
-            "vehicle_type": row.get("vehicle_type") or "Car",
-            "speed_limit": _number(row.get("speed_limit", ""), f"lanes:{line}.speed_limit", 1.0),
-            "allow_connect": _boolean(row.get("allow_connect", ""), f"lanes:{line}.allow_connect", True),
+            "direction": row["direction"],
+            "lane_type": row["lane_type"],
+            "vehicle_type": row["vehicle_type"],
+            "speed_limit": _number(row["speed_limit"], f"lanes:{line}.speed_limit"),
+            "allow_connect": _boolean(row["allow_connect"], f"lanes:{line}.allow_connect"),
         })
 
     compiled_props = {}

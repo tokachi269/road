@@ -2,6 +2,7 @@ using System;
 using System.Reflection;
 using IMT.API;
 
+// Source-linked game module; independent of the preview Host assembly.
 namespace RoadRuntimeHost.Runtime
 {
     // IMT 1.15's public API cannot retrieve a crosswalk provider or a regular
